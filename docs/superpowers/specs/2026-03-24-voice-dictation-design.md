@@ -56,6 +56,7 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
 - Exposes permission state for StatusManager to display
 - Guides user through granting permissions on first launch
 - App must be re-launched after granting Accessibility permission
+- Monitors permission state at runtime via periodic polling (every 5s) — if Accessibility is revoked while running, disable hotkey listener and show error in menu bar
 
 ### HotkeyManager
 - Designed with a protocol so hotkey strategies can be swapped
@@ -65,12 +66,13 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
   - Track Fn flag transitions: flag appeared = "key down", flag disappeared = "key up"
   - Known risk: macOS Ventura+ may intercept Globe key before our event tap for emoji picker/dictation
   - User must set "Press Globe key to: Do Nothing" in System Settings > Keyboard
+  - On first launch, detect Globe key setting: read `com.apple.HIToolbox` defaults for `AppleFnUsageType`. If set to emoji/dictation, show a warning with instructions to change it.
   - Alternative detection: `NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged)` if CGEvent tap fails
 - **Fallback strategy: configurable hotkey**
   - Default: `Cmd+Shift+Space`
   - Standard keyDown/keyUp detection via CGEvent tap
   - Switch to this if Globe key proves unreliable
-- **Cancel mechanism:** pressing Escape while recording discards the recording and returns to idle
+- **Cancel mechanism:** pressing Escape while recording discards the recording and returns to idle. Canceling during transcription is not supported in v1 — the transcription is fast enough (~1-2s) that it's not worth the complexity.
 - Requires Accessibility permission
 
 ### AudioRecorder
@@ -81,19 +83,18 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
 - Writes to temp file via `AVAudioFile` at `FileManager.default.temporaryDirectory`
 - Plays subtle system tick sound (`NSSound`) on record start and stop for feedback
 - Discards recordings shorter than 0.5 seconds (accidental taps)
-- Handles audio session conflicts gracefully (e.g., if another app has exclusive microphone access)
+- Audio session conflict handling: if `AVAudioEngine.start()` throws (e.g., another app has exclusive mic access), set StatusManager to error state with message "Microphone in use by another app" and do not attempt recording until next hotkey press
 - Cleans up temp WAV files after transcription completes
 
 ### Transcriber
 - Runs whisper.cpp CLI via `Process` (Foundation)
 - Binary location resolution order:
-  1. Bundled binary in app resources (if we bundle it)
-  2. `/opt/homebrew/bin/whisper-cpp` (Homebrew, Apple Silicon)
-  3. `/usr/local/bin/whisper-cpp` (Homebrew, Intel)
-- Invocation: `whisper-cpp -m <model-path> -f <wav-file> --no-timestamps -nt`
+  1. `/opt/homebrew/bin/whisper-cpp` (Homebrew, Apple Silicon)
+  2. `/usr/local/bin/whisper-cpp` (Homebrew, Intel)
+- Invocation: `whisper-cpp -m <model-path> -f <wav-file> --no-timestamps`
 - Parses stdout for transcribed text, stderr for errors
 - Timeout: `max(10, recordingDuration * 3)` seconds — scales with recording length
-- Queues transcription requests — if user records again while transcribing, queue it (don't kill previous)
+- Queues transcription requests — if user records again while transcribing, queue it (max depth: 3, drop oldest if exceeded). Queued transcriptions paste sequentially with 200ms gap between them. Menu bar shows queue count in status line (e.g., "Transcribing... (2 queued)").
 - Error handling:
   - Binary not found: surface in menu bar, suggest Homebrew install
   - Model corrupted/missing: trigger re-download
@@ -105,18 +106,20 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
   1. Save current `NSPasteboard.general` contents (all types/data from all items)
   2. Clear pasteboard, set transcribed text as `.string`
   3. Simulate `Cmd+V` via `CGEvent` (keycode `0x09` = kVK_ANSI_V, with `.maskCommand`)
-  4. After 100ms delay, restore previous clipboard contents
+  4. After 200ms delay, restore previous clipboard contents (200ms chosen to accommodate slower apps like Electron-based editors; may need tuning)
 - Requires Accessibility permission (same as hotkey detection)
-- Handles edge case: if pasteboard restore is complex (images, rich text, files), v1 accepts briefly overwriting clipboard with a TODO to improve deep-copy in v2
+- v1 limitation: clipboard restore saves/restores string content only. Complex clipboard contents (images, rich text, files) will be lost. Deep-copy restore is a v2 improvement.
 
 ### ModelManager
 - Model: `ggml-base.en.bin` (~150MB)
 - Storage: `~/Library/Application Support/VoiceDictation/models/`
-- Downloads from Hugging Face on first launch
+- Downloads from Hugging Face on first launch: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
 - Uses `URLSession` with delegate for download progress tracking
+- Supports resume on network failure via `Range` header (resume partial download)
 - Progress displayed in menu bar dropdown during download
-- Validates model file integrity after download (file size check)
+- Validates model file integrity after download: expected size ~148MB (exact size checked against known value)
 - If model is missing or corrupted at runtime, triggers re-download
+- Retry strategy: up to 3 automatic retries with exponential backoff on network failure
 
 ### StatusManager
 - Manages menu bar icon state machine:
@@ -140,7 +143,7 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
 2. Request Microphone permission
 3. Check for whisper-cpp binary, show install guidance if missing
 4. Download whisper base.en model with progress indicator
-5. Show notification: "VoiceDictation is ready — hold Globe key to dictate"
+5. Update menu bar status to "Ready" and show a brief `NSAlert` dialog: "VoiceDictation is ready — hold Globe key to dictate" (no `UNUserNotificationCenter` — avoids needing notification permission)
 
 ### Normal Launch
 1. Verify permissions still granted
@@ -183,7 +186,7 @@ VoiceDictation/
 
 ## Requirements
 
-- macOS 13+ (Ventura) — for `SMAppService` and modern SF Symbols
+- macOS 13+ (Ventura) — for `SMAppService` and modern SF Symbols. Set deployment target to macOS 13.0 in Xcode project.
 - Apple Silicon or Intel Mac
 - whisper-cpp installed via Homebrew (`brew install whisper-cpp`)
 - Accessibility permission granted in System Settings
