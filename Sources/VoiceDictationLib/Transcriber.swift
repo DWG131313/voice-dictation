@@ -155,19 +155,7 @@ public class Transcriber {
     }
 
     public static func findBinaryPath() -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/whisper-cli",
-            "/usr/local/bin/whisper-cli",
-            "/opt/homebrew/bin/whisper-cpp",
-            "/usr/local/bin/whisper-cpp"
-        ]
-
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        return nil
+        BundledBinary.findWhisperCLI()
     }
 
     public static func calculateTimeout(recordingDuration: TimeInterval) -> TimeInterval {
