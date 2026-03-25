@@ -35,7 +35,7 @@ public class Transcriber {
 
     private func runTranscription(fileURL: URL, recordingDuration: TimeInterval) {
         guard let binaryPath = Self.findBinaryPath() else {
-            delegate?.transcriptionFailed(error: "whisper-cpp not found. Install via: brew install whisper-cpp")
+            delegate?.transcriptionFailed(error: "whisper-cli not found. Install via: brew install whisper-cpp")
             return
         }
 
@@ -156,6 +156,8 @@ public class Transcriber {
 
     public static func findBinaryPath() -> String? {
         let candidates = [
+            "/opt/homebrew/bin/whisper-cli",
+            "/usr/local/bin/whisper-cli",
             "/opt/homebrew/bin/whisper-cpp",
             "/usr/local/bin/whisper-cpp"
         ]

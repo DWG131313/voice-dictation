@@ -50,7 +50,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check for whisper-cpp binary at startup
         if Transcriber.findBinaryPath() == nil {
-            statusManager.updateStatus(.error(message: "whisper-cpp not found. Run: brew install whisper-cpp"))
+            statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
         }
 
         // Start permission monitoring
@@ -76,7 +76,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard Transcriber.findBinaryPath() != nil else {
-            statusManager.updateStatus(.error(message: "whisper-cpp not found. Run: brew install whisper-cpp"))
+            statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
             return
         }
 
