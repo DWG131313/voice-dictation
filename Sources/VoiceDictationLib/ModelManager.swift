@@ -9,14 +9,17 @@ public protocol ModelManagerDelegate: AnyObject {
 public class ModelManager: NSObject {
     public weak var delegate: ModelManagerDelegate?
 
-    private static let modelFileName = "ggml-base.en.bin"
-    private static let downloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")!
-    private static let expectedMinSize: Int64 = 140_000_000 // ~148MB, use min threshold
-
     private var downloadTask: URLSessionDownloadTask?
     private var urlSession: URLSession!
     private var retryCount = 0
     private static let maxRetries = 3
+
+    // Minimum sizes per model to detect corruption (approximate)
+    private static let minSizes: [String: Int64] = [
+        "tiny.en": 70_000_000,
+        "base.en": 140_000_000,
+        "small.en": 450_000_000,
+    ]
 
     public var modelDirectoryURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -24,15 +27,30 @@ public class ModelManager: NSObject {
     }
 
     public var modelFileURL: URL {
-        modelDirectoryURL.appendingPathComponent(Self.modelFileName)
+        let model = PreferencesManager.shared.selectedModel
+        return modelDirectoryURL.appendingPathComponent(model.fileName)
     }
 
     public var isModelPresent: Bool {
+        let model = PreferencesManager.shared.selectedModel
+        let url = modelDirectoryURL.appendingPathComponent(model.fileName)
         let fm = FileManager.default
-        guard fm.fileExists(atPath: modelFileURL.path) else { return false }
-        guard let attrs = try? fm.attributesOfItem(atPath: modelFileURL.path),
+        guard fm.fileExists(atPath: url.path) else { return false }
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int64 else { return false }
-        return size >= Self.expectedMinSize
+        let minSize = Self.minSizes[model.id] ?? 50_000_000
+        return size >= minSize
+    }
+
+    /// Check if a specific model is downloaded
+    public func isModelDownloaded(_ model: PreferencesManager.WhisperModel) -> Bool {
+        let url = modelDirectoryURL.appendingPathComponent(model.fileName)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return false }
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else { return false }
+        let minSize = Self.minSizes[model.id] ?? 50_000_000
+        return size >= minSize
     }
 
     public override init() {
@@ -47,15 +65,27 @@ public class ModelManager: NSObject {
             return
         }
 
-        // Create directory
         try? FileManager.default.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
-
         startDownload()
+    }
+
+    /// Switch to a different model, downloading if necessary
+    public func switchModel(to modelId: String) {
+        PreferencesManager.shared.selectedModelId = modelId
+
+        if isModelPresent {
+            delegate?.modelDownloadCompleted()
+        } else {
+            retryCount = 0
+            try? FileManager.default.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
+            startDownload()
+        }
     }
 
     private func startDownload() {
         retryCount += 1
-        downloadTask = urlSession.downloadTask(with: Self.downloadURL)
+        let model = PreferencesManager.shared.selectedModel
+        downloadTask = urlSession.downloadTask(with: model.downloadURL)
         downloadTask?.resume()
     }
 }
@@ -63,17 +93,17 @@ public class ModelManager: NSObject {
 extension ModelManager: URLSessionDownloadDelegate {
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         do {
-            // Remove existing file if present (partial/corrupt)
-            if FileManager.default.fileExists(atPath: modelFileURL.path) {
-                try FileManager.default.removeItem(at: modelFileURL)
+            let destURL = modelFileURL
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                try FileManager.default.removeItem(at: destURL)
             }
-            try FileManager.default.moveItem(at: location, to: modelFileURL)
+            try FileManager.default.moveItem(at: location, to: destURL)
 
             if isModelPresent {
                 retryCount = 0
                 delegate?.modelDownloadCompleted()
             } else {
-                try? FileManager.default.removeItem(at: modelFileURL)
+                try? FileManager.default.removeItem(at: destURL)
                 handleDownloadFailure(error: "Downloaded file is too small — may be corrupted")
             }
         } catch {
@@ -95,7 +125,7 @@ extension ModelManager: URLSessionDownloadDelegate {
 
     private func handleDownloadFailure(error: String) {
         if retryCount < Self.maxRetries {
-            let delay = pow(2.0, Double(retryCount)) // Exponential backoff: 2, 4, 8 seconds
+            let delay = pow(2.0, Double(retryCount))
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.startDownload()
             }
