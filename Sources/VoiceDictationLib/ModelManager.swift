@@ -10,7 +10,7 @@ public class ModelManager: NSObject {
     public weak var delegate: ModelManagerDelegate?
 
     private static let modelFileName = "ggml-base.en.bin"
-    private static let downloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/v1.5.4/ggml-base.en.bin")!
+    private static let downloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")!
     private static let expectedMinSize: Int64 = 140_000_000 // ~148MB, use min threshold
 
     private var downloadTask: URLSessionDownloadTask?
