@@ -18,36 +18,41 @@
 
 | File | Responsibility |
 |------|---------------|
-| `VoiceDictation/AppDelegate.swift` | App entry point, menu bar setup, component wiring |
-| `VoiceDictation/PermissionManager.swift` | Accessibility + Microphone permission checks, runtime monitoring |
-| `VoiceDictation/StatusManager.swift` | Menu bar icon state machine, dropdown menu |
-| `VoiceDictation/HotkeyManager.swift` | Globe key event tap, Escape cancel, protocol for swappable strategies |
-| `VoiceDictation/AudioRecorder.swift` | AVAudioEngine recording to 16kHz mono WAV |
-| `VoiceDictation/Transcriber.swift` | whisper-cpp CLI invocation, output parsing, queue management |
-| `VoiceDictation/PasteEngine.swift` | Clipboard save/paste/restore via CGEvent |
-| `VoiceDictation/ModelManager.swift` | Model download, validation, path resolution |
-| `VoiceDictation/Info.plist` | LSUIElement, deployment target, bundle ID |
-| `VoiceDictation/VoiceDictation.entitlements` | Hardened runtime entitlements |
-| `VoiceDictationTests/TranscriberTests.swift` | Unit tests for output parsing and queue logic |
-| `VoiceDictationTests/ModelManagerTests.swift` | Unit tests for path resolution and validation |
+| `Sources/VoiceDictationLib/AppDelegate.swift` | Menu bar setup, component wiring (no `@main`) |
+| `Sources/VoiceDictationLib/PermissionManager.swift` | Accessibility + Microphone permission checks, runtime monitoring |
+| `Sources/VoiceDictationLib/StatusManager.swift` | Menu bar icon state machine, dropdown menu |
+| `Sources/VoiceDictationLib/HotkeyManager.swift` | Globe key event tap, Escape cancel, protocol for swappable strategies |
+| `Sources/VoiceDictationLib/AudioRecorder.swift` | AVAudioEngine recording to 16kHz mono WAV |
+| `Sources/VoiceDictationLib/Transcriber.swift` | whisper-cpp CLI invocation, output parsing, queue management |
+| `Sources/VoiceDictationLib/PasteEngine.swift` | Clipboard save/paste/restore via CGEvent |
+| `Sources/VoiceDictationLib/ModelManager.swift` | Model download, validation, path resolution |
+| `Sources/VoiceDictation/main.swift` | Thin entry point — creates NSApplication and AppDelegate |
+| `Resources/Info.plist` | LSUIElement, deployment target, bundle ID |
+| `Resources/VoiceDictation.entitlements` | Hardened runtime entitlements |
+| `Tests/VoiceDictationTests/TranscriberTests.swift` | Unit tests for output parsing and queue logic |
+| `Tests/VoiceDictationTests/ModelManagerTests.swift` | Unit tests for path resolution and validation |
 
 ---
 
 ### Task 1: Xcode Project Scaffold
 
 **Files:**
-- Create: `VoiceDictation.xcodeproj` (via `swift package init` + Xcode project)
-- Create: `VoiceDictation/AppDelegate.swift`
-- Create: `VoiceDictation/Info.plist`
-- Create: `VoiceDictation/VoiceDictation.entitlements`
+- Create: `Package.swift`
+- Create: `Sources/VoiceDictationLib/AppDelegate.swift`
+- Create: `Sources/VoiceDictation/main.swift`
+- Create: `Resources/Info.plist`
+- Create: `Resources/VoiceDictation.entitlements`
+- Create: `.gitignore`
 
 - [ ] **Step 1: Create the project structure and .gitignore**
 
 Create directory structure and a Swift-appropriate .gitignore:
 
 ```
-mkdir -p VoiceDictation
-mkdir -p VoiceDictationTests
+mkdir -p Sources/VoiceDictationLib
+mkdir -p Sources/VoiceDictation
+mkdir -p Tests/VoiceDictationTests
+mkdir -p Resources
 ```
 
 Create `.gitignore`:
@@ -63,7 +68,7 @@ DerivedData/
 
 - [ ] **Step 2: Create Info.plist**
 
-Create `VoiceDictation/Info.plist`:
+Create `Resources/Info.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -94,7 +99,7 @@ Create `VoiceDictation/Info.plist`:
 
 - [ ] **Step 3: Create entitlements file**
 
-Create `VoiceDictation/VoiceDictation.entitlements`:
+Create `Resources/VoiceDictation.entitlements`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -116,8 +121,7 @@ Create `VoiceDictation/AppDelegate.swift`:
 ```swift
 import Cocoa
 
-@main
-class AppDelegate: NSObject, NSApplicationDelegate {
+public class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -151,36 +155,24 @@ let package = Package(
         // Library target with all logic (testable)
         .target(
             name: "VoiceDictationLib",
-            path: "VoiceDictation",
-            exclude: ["main.swift", "Info.plist", "VoiceDictation.entitlements"],
-            sources: [
-                "StatusManager.swift",
-                "PermissionManager.swift",
-                "HotkeyManager.swift",
-                "AudioRecorder.swift",
-                "Transcriber.swift",
-                "PasteEngine.swift",
-                "ModelManager.swift",
-                "AppDelegate.swift",
-            ]
+            path: "Sources/VoiceDictationLib"
         ),
         // Thin executable — just the entry point
         .executableTarget(
             name: "VoiceDictation",
             dependencies: ["VoiceDictationLib"],
-            path: "VoiceDictation",
-            sources: ["main.swift"]
+            path: "Sources/VoiceDictation"
         ),
         .testTarget(
             name: "VoiceDictationTests",
             dependencies: ["VoiceDictationLib"],
-            path: "VoiceDictationTests"
+            path: "Tests/VoiceDictationTests"
         ),
     ]
 )
 ```
 
-Also create `VoiceDictation/main.swift` (the thin entry point):
+Also create `Sources/VoiceDictation/main.swift` (the thin entry point):
 
 ```swift
 import Cocoa
@@ -205,7 +197,7 @@ Expected: App launches with no dock icon, mic icon appears in menu bar, clicking
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .gitignore Package.swift VoiceDictation/AppDelegate.swift VoiceDictation/main.swift VoiceDictation/Info.plist VoiceDictation/VoiceDictation.entitlements
+git add .gitignore Package.swift Sources/ Resources/
 git commit -m "scaffold: project with menu bar icon and build system"
 ```
 
@@ -214,12 +206,12 @@ git commit -m "scaffold: project with menu bar icon and build system"
 ### Task 2: StatusManager — Menu Bar State Machine
 
 **Files:**
-- Create: `VoiceDictation/StatusManager.swift`
-- Modify: `VoiceDictation/AppDelegate.swift`
+- Create: `Sources/VoiceDictationLib/StatusManager.swift`
+- Modify: `Sources/VoiceDictationLib/AppDelegate.swift`
 
 - [ ] **Step 1: Create StatusManager with state enum**
 
-Create `VoiceDictation/StatusManager.swift`:
+Create `Sources/VoiceDictationLib/StatusManager.swift`:
 
 ```swift
 import Cocoa
@@ -258,6 +250,7 @@ class StatusManager {
     }
 
     func updateStatus(_ status: AppStatus) {
+        dispatchPrecondition(condition: .onQueue(.main))
         errorClearTimer?.invalidate()
 
         guard let button = statusItem.button else { return }
@@ -312,8 +305,7 @@ Replace the manual status bar setup in `AppDelegate.swift` with:
 ```swift
 import Cocoa
 
-@main
-class AppDelegate: NSObject, NSApplicationDelegate {
+public class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusManager: StatusManager!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -330,7 +322,7 @@ Expected: Menu bar shows mic icon, dropdown shows "Status: Ready", "Model: base.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add VoiceDictation/StatusManager.swift VoiceDictation/AppDelegate.swift
+git add Sources/VoiceDictationLib/StatusManager.swift Sources/VoiceDictationLib/AppDelegate.swift
 git commit -m "feat: add StatusManager with menu bar state machine"
 ```
 
@@ -339,12 +331,12 @@ git commit -m "feat: add StatusManager with menu bar state machine"
 ### Task 3: PermissionManager
 
 **Files:**
-- Create: `VoiceDictation/PermissionManager.swift`
-- Modify: `VoiceDictation/AppDelegate.swift`
+- Create: `Sources/VoiceDictationLib/PermissionManager.swift`
+- Modify: `Sources/VoiceDictationLib/AppDelegate.swift`
 
 - [ ] **Step 1: Create PermissionManager**
 
-Create `VoiceDictation/PermissionManager.swift`:
+Create `Sources/VoiceDictationLib/PermissionManager.swift`:
 
 ```swift
 import Cocoa
@@ -358,6 +350,8 @@ class PermissionManager {
     weak var delegate: PermissionManagerDelegate?
 
     private var pollingTimer: Timer?
+
+    deinit { stopMonitoring() }
     private(set) var isAccessibilityGranted: Bool = false
     private(set) var isMicrophoneGranted: Bool = false
 
@@ -440,8 +434,7 @@ Update `AppDelegate.swift` to create PermissionManager, check permissions at lau
 ```swift
 import Cocoa
 
-@main
-class AppDelegate: NSObject, NSApplicationDelegate {
+public class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusManager: StatusManager!
     private var permissionManager: PermissionManager!
 
@@ -494,7 +487,7 @@ Expected: On first run, system prompts for Accessibility and Microphone. If Glob
 - [ ] **Step 4: Commit**
 
 ```bash
-git add VoiceDictation/PermissionManager.swift VoiceDictation/AppDelegate.swift
+git add Sources/VoiceDictationLib/PermissionManager.swift Sources/VoiceDictationLib/AppDelegate.swift
 git commit -m "feat: add PermissionManager with accessibility and mic checks"
 ```
 
@@ -503,12 +496,12 @@ git commit -m "feat: add PermissionManager with accessibility and mic checks"
 ### Task 4: HotkeyManager — Globe Key Detection
 
 **Files:**
-- Create: `VoiceDictation/HotkeyManager.swift`
-- Modify: `VoiceDictation/AppDelegate.swift`
+- Create: `Sources/VoiceDictationLib/HotkeyManager.swift`
+- Modify: `Sources/VoiceDictationLib/AppDelegate.swift`
 
 - [ ] **Step 1: Create HotkeyManager protocol and Globe key implementation**
 
-Create `VoiceDictation/HotkeyManager.swift`:
+Create `Sources/VoiceDictationLib/HotkeyManager.swift`:
 
 ```swift
 import Cocoa
@@ -531,6 +524,10 @@ class GlobeKeyStrategy: HotkeyStrategy {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
+
+    deinit {
+        stop()
+    }
 
     func start() {
         let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
@@ -669,7 +666,7 @@ Test: Hold Globe key — menu bar should turn red, console prints "Globe key pre
 - [ ] **Step 4: Commit**
 
 ```bash
-git add VoiceDictation/HotkeyManager.swift VoiceDictation/AppDelegate.swift
+git add Sources/VoiceDictationLib/HotkeyManager.swift Sources/VoiceDictationLib/AppDelegate.swift
 git commit -m "feat: add HotkeyManager with Globe key event tap"
 ```
 
@@ -678,12 +675,12 @@ git commit -m "feat: add HotkeyManager with Globe key event tap"
 ### Task 5: AudioRecorder
 
 **Files:**
-- Create: `VoiceDictation/AudioRecorder.swift`
-- Modify: `VoiceDictation/AppDelegate.swift`
+- Create: `Sources/VoiceDictationLib/AudioRecorder.swift`
+- Modify: `Sources/VoiceDictationLib/AppDelegate.swift`
 
 - [ ] **Step 1: Create AudioRecorder**
 
-Create `VoiceDictation/AudioRecorder.swift`:
+Create `Sources/VoiceDictationLib/AudioRecorder.swift`:
 
 ```swift
 import AVFoundation
@@ -757,9 +754,16 @@ class AudioRecorder {
             guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: convertFormat, frameCapacity: frameCount) else { return }
 
             var error: NSError?
+            var hasData = true  // Track whether input buffer has been consumed
             converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
+                if hasData {
+                    hasData = false
+                    outStatus.pointee = .haveData
+                    return buffer
+                } else {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
             }
 
             if error == nil {
@@ -900,7 +904,7 @@ Test: Hold Globe key, speak, release. Check console for "Recording saved to /tmp
 - [ ] **Step 4: Commit**
 
 ```bash
-git add VoiceDictation/AudioRecorder.swift VoiceDictation/AppDelegate.swift
+git add Sources/VoiceDictationLib/AudioRecorder.swift Sources/VoiceDictationLib/AppDelegate.swift
 git commit -m "feat: add AudioRecorder with AVAudioEngine and tick sounds"
 ```
 
@@ -909,12 +913,12 @@ git commit -m "feat: add AudioRecorder with AVAudioEngine and tick sounds"
 ### Task 6: ModelManager
 
 **Files:**
-- Create: `VoiceDictation/ModelManager.swift`
-- Create: `VoiceDictationTests/ModelManagerTests.swift`
+- Create: `Sources/VoiceDictationLib/ModelManager.swift`
+- Create: `Tests/VoiceDictationTests/ModelManagerTests.swift`
 
 - [ ] **Step 1: Write tests for ModelManager path resolution**
 
-Create `VoiceDictationTests/ModelManagerTests.swift`:
+Create `Tests/VoiceDictationTests/ModelManagerTests.swift`:
 
 ```swift
 import XCTest
@@ -950,7 +954,7 @@ Expected: FAIL — `ModelManager` not defined.
 
 - [ ] **Step 3: Create ModelManager**
 
-Create `VoiceDictation/ModelManager.swift`:
+Create `Sources/VoiceDictationLib/ModelManager.swift`:
 
 ```swift
 import Foundation
@@ -965,7 +969,7 @@ class ModelManager: NSObject {
     weak var delegate: ModelManagerDelegate?
 
     private static let modelFileName = "ggml-base.en.bin"
-    private static let downloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")!
+    private static let downloadURL = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/v1.5.4/ggml-base.en.bin")!
     private static let expectedMinSize: Int64 = 140_000_000 // ~148MB, use min threshold
 
     private var downloadTask: URLSessionDownloadTask?
@@ -1070,7 +1074,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add VoiceDictation/ModelManager.swift VoiceDictationTests/ModelManagerTests.swift
+git add Sources/VoiceDictationLib/ModelManager.swift Tests/VoiceDictationTests/ModelManagerTests.swift
 git commit -m "feat: add ModelManager with download, validation, and retry"
 ```
 
@@ -1079,12 +1083,12 @@ git commit -m "feat: add ModelManager with download, validation, and retry"
 ### Task 7: Transcriber — whisper-cpp CLI Wrapper
 
 **Files:**
-- Create: `VoiceDictation/Transcriber.swift`
-- Create: `VoiceDictationTests/TranscriberTests.swift`
+- Create: `Sources/VoiceDictationLib/Transcriber.swift`
+- Create: `Tests/VoiceDictationTests/TranscriberTests.swift`
 
 - [ ] **Step 1: Write tests for Transcriber output parsing**
 
-Create `VoiceDictationTests/TranscriberTests.swift`:
+Create `Tests/VoiceDictationTests/TranscriberTests.swift`:
 
 ```swift
 import XCTest
@@ -1138,7 +1142,7 @@ Expected: FAIL — `Transcriber` not defined.
 
 - [ ] **Step 3: Create Transcriber**
 
-Create `VoiceDictation/Transcriber.swift`:
+Create `Sources/VoiceDictationLib/Transcriber.swift`:
 
 ```swift
 import Foundation
@@ -1182,7 +1186,7 @@ class Transcriber {
             return
         }
 
-        isTranscribing = true
+        isTranscribing = true  // Set BEFORE dispatch to prevent race condition
         let timeout = Self.calculateTimeout(recordingDuration: recordingDuration)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1222,20 +1226,23 @@ class Transcriber {
             }
             timer.resume()
 
+            // Read pipe data BEFORE waitUntilExit to avoid deadlock
+            // (if whisper-cpp fills the pipe buffer, it blocks, and waitUntilExit never returns)
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+
             process.waitUntilExit()
             timer.cancel()
 
             // Clean up WAV file
             try? FileManager.default.removeItem(at: fileURL)
 
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: outputData, encoding: .utf8) ?? ""
 
             DispatchQueue.main.async {
                 self.isTranscribing = false
 
                 if process.terminationStatus != 0 {
-                    let errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                     let errString = String(data: errData, encoding: .utf8) ?? "Unknown error"
                     self.delegate?.transcriptionFailed(error: errString)
                 } else {
@@ -1270,7 +1277,14 @@ class Transcriber {
         var result: [String] = []
 
         for line in lines {
-            var cleaned = line
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Skip blank audio markers (check BEFORE bracket stripping)
+            if trimmed == "[BLANK_AUDIO]" || trimmed.isEmpty {
+                continue
+            }
+
+            var cleaned = trimmed
 
             // Remove timestamp brackets if present: [00:00:00.000 --> 00:00:03.000]
             if let bracketRange = cleaned.range(of: #"\[.*?\]"#, options: .regularExpression) {
@@ -1279,10 +1293,7 @@ class Transcriber {
 
             cleaned = cleaned.trimmingCharacters(in: .whitespaces)
 
-            // Skip blank audio markers
-            if cleaned == "[BLANK_AUDIO]" || cleaned.isEmpty {
-                continue
-            }
+            if cleaned.isEmpty { continue }
 
             result.append(cleaned)
         }
@@ -1318,7 +1329,7 @@ Expected: PASS for all TranscriberTests
 - [ ] **Step 5: Commit**
 
 ```bash
-git add VoiceDictation/Transcriber.swift VoiceDictationTests/TranscriberTests.swift
+git add Sources/VoiceDictationLib/Transcriber.swift Tests/VoiceDictationTests/TranscriberTests.swift
 git commit -m "feat: add Transcriber with whisper-cpp CLI wrapper and queue"
 ```
 
@@ -1327,17 +1338,20 @@ git commit -m "feat: add Transcriber with whisper-cpp CLI wrapper and queue"
 ### Task 8: PasteEngine
 
 **Files:**
-- Create: `VoiceDictation/PasteEngine.swift`
+- Create: `Sources/VoiceDictationLib/PasteEngine.swift`
 
 - [ ] **Step 1: Create PasteEngine**
 
-Create `VoiceDictation/PasteEngine.swift`:
+Create `Sources/VoiceDictationLib/PasteEngine.swift`:
 
 ```swift
 import Cocoa
 import Carbon.HIToolbox
 
 class PasteEngine {
+    /// Delay before restoring clipboard. Increase if paste doesn't work in slow apps (Electron).
+    private let clipboardRestoreDelay: TimeInterval = 0.3
+
     func paste(text: String) {
         let pasteboard = NSPasteboard.general
 
@@ -1352,7 +1366,7 @@ class PasteEngine {
         simulatePaste()
 
         // 4. Restore clipboard after delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
             pasteboard.clearContents()
             if let previous = previousString {
                 pasteboard.setString(previous, forType: .string)
@@ -1386,7 +1400,7 @@ Expected: Compiles without errors.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add VoiceDictation/PasteEngine.swift
+git add Sources/VoiceDictationLib/PasteEngine.swift
 git commit -m "feat: add PasteEngine with clipboard save/paste/restore"
 ```
 
@@ -1395,11 +1409,11 @@ git commit -m "feat: add PasteEngine with clipboard save/paste/restore"
 ### Task 9: Wire Everything Together
 
 **Files:**
-- Modify: `VoiceDictation/AppDelegate.swift`
+- Modify: `Sources/VoiceDictationLib/AppDelegate.swift`
 
 - [ ] **Step 1: Complete AppDelegate with all components wired**
 
-Rewrite `AppDelegate.swift` to connect all components in the full flow:
+Rewrite `Sources/VoiceDictationLib/AppDelegate.swift` to connect all components in the full flow:
 
 ```swift
 import Cocoa
@@ -1619,7 +1633,7 @@ Test error cases:
 - [ ] **Step 4: Commit**
 
 ```bash
-git add VoiceDictation/AppDelegate.swift
+git add Sources/VoiceDictationLib/AppDelegate.swift
 git commit -m "feat: wire all components together for full push-to-talk flow"
 ```
 

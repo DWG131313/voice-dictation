@@ -159,19 +159,24 @@ VoiceDictation is a macOS menu bar app (Swift) that provides system-wide push-to
 
 ```
 VoiceDictation/
-+-- VoiceDictation.xcodeproj
-+-- VoiceDictation/
-|   +-- AppDelegate.swift          # Menu bar setup, component coordination
-|   +-- HotkeyManager.swift        # Globe key / configurable hotkey detection
-|   +-- AudioRecorder.swift        # AVAudioEngine recording to WAV
-|   +-- Transcriber.swift          # whisper-cpp CLI wrapper
-|   +-- PasteEngine.swift          # Clipboard paste with save/restore
-|   +-- ModelManager.swift         # Model download and path management
-|   +-- PermissionManager.swift    # Accessibility + Microphone permission checks
-|   +-- StatusManager.swift        # Menu bar icon state machine + dropdown
-|   +-- Info.plist                 # LSUIElement = true
++-- Package.swift
++-- Sources/
+|   +-- VoiceDictationLib/
+|   |   +-- AppDelegate.swift          # Menu bar setup, component coordination
+|   |   +-- HotkeyManager.swift        # Globe key / configurable hotkey detection
+|   |   +-- AudioRecorder.swift        # AVAudioEngine recording to WAV
+|   |   +-- Transcriber.swift          # whisper-cpp CLI wrapper
+|   |   +-- PasteEngine.swift          # Clipboard paste with save/restore
+|   |   +-- ModelManager.swift         # Model download and path management
+|   |   +-- PermissionManager.swift    # Accessibility + Microphone permission checks
+|   |   +-- StatusManager.swift        # Menu bar icon state machine + dropdown
+|   +-- VoiceDictation/
+|       +-- main.swift                 # Thin entry point
++-- Tests/
+|   +-- VoiceDictationTests/
++-- Resources/
+|   +-- Info.plist                     # LSUIElement = true
 |   +-- VoiceDictation.entitlements
-|   +-- Assets.xcassets/
 +-- README.md
 ```
 
