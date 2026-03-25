@@ -9,28 +9,99 @@ public enum AppStatus {
     case permissionNeeded(String)
 }
 
-public class StatusManager {
+public protocol StatusManagerDelegate: AnyObject {
+    func statusManagerDidRequestPreferences()
+    func statusManagerDidRequestClearHistory()
+}
+
+public class StatusManager: NSObject {
+    public weak var delegate: StatusManagerDelegate?
+
     private let statusItem: NSStatusItem
     private let menu: NSMenu
     private let statusMenuItem: NSMenuItem
     private let modelMenuItem: NSMenuItem
+    private let historyMenuItem: NSMenuItem
+    private let historySubmenu: NSMenu
     private var errorClearTimer: Timer?
 
-    public init() {
+    public override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu = NSMenu()
         statusMenuItem = NSMenuItem(title: "Status: Ready", action: nil, keyEquivalent: "")
-        modelMenuItem = NSMenuItem(title: "Model: base.en", action: nil, keyEquivalent: "")
+        modelMenuItem = NSMenuItem(title: "Model: \(PreferencesManager.shared.selectedModel.id)", action: nil, keyEquivalent: "")
+        historyMenuItem = NSMenuItem(title: "Recent Transcriptions", action: nil, keyEquivalent: "")
+        historySubmenu = NSMenu()
+        historyMenuItem.submenu = historySubmenu
+
+        super.init()
 
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(historyMenuItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(modelMenuItem)
+        menu.addItem(NSMenuItem.separator())
+
+        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(preferencesClicked(_:)), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit VoiceDictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         statusItem.menu = menu
 
         updateStatus(.idle)
+    }
+
+    @objc private func preferencesClicked(_ sender: Any) {
+        delegate?.statusManagerDidRequestPreferences()
+    }
+
+    @objc private func clearHistoryClicked(_ sender: Any) {
+        delegate?.statusManagerDidRequestClearHistory()
+    }
+
+    @objc private func copyHistoryItem(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    public func updateModelDisplay() {
+        modelMenuItem.title = "Model: \(PreferencesManager.shared.selectedModel.id)"
+    }
+
+    public func updateHistory(_ entries: [TranscriptionEntry]) {
+        historySubmenu.removeAllItems()
+
+        if entries.isEmpty {
+            let emptyItem = NSMenuItem(title: "No transcriptions yet", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            historySubmenu.addItem(emptyItem)
+        } else {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .short
+
+            for entry in entries.prefix(10) {
+                let timeAgo = formatter.localizedString(for: entry.timestamp, relativeTo: Date())
+                let preview = entry.text.prefix(60) + (entry.text.count > 60 ? "..." : "")
+                let item = NSMenuItem(title: "\(preview)  (\(timeAgo))", action: #selector(copyHistoryItem(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = entry.text
+                item.toolTip = entry.text
+                historySubmenu.addItem(item)
+            }
+
+            historySubmenu.addItem(NSMenuItem.separator())
+            let clearItem = NSMenuItem(title: "Clear History", action: #selector(clearHistoryClicked(_:)), keyEquivalent: "")
+            clearItem.target = self
+            historySubmenu.addItem(clearItem)
+        }
+
+        historyMenuItem.isHidden = !PreferencesManager.shared.historyEnabled
     }
 
     public func updateStatus(_ status: AppStatus) {
