@@ -9,6 +9,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var transcriber: Transcriber!
     private var pasteEngine: PasteEngine!
     private var modelManager: ModelManager!
+    private var transcriptionHistory: TranscriptionHistory!
+    private var preferencesWindowController: PreferencesWindowController?
     private var isFirstLaunch: Bool {
         !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
     }
@@ -19,6 +21,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         statusManager = StatusManager()
+        statusManager.delegate = self
+
         permissionManager = PermissionManager()
         permissionManager.delegate = self
 
@@ -30,11 +34,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         modelManager = ModelManager()
         modelManager.delegate = self
 
+        transcriptionHistory = TranscriptionHistory()
+
         hotkeyManager = HotkeyManager()
         hotkeyManager.delegate = self
 
-        // Register as login item (macOS 13+)
-        try? SMAppService.mainApp.register()
+        // Register as login item (macOS 13+) on first launch only
+        if isFirstLaunch {
+            try? SMAppService.mainApp.register()
+        }
 
         // Check permissions
         permissionManager.checkPermissions()
@@ -48,13 +56,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             showGlobeKeyWarning()
         }
 
-        // Check for whisper-cpp binary at startup
-        if Transcriber.findBinaryPath() == nil {
+        // Check for whisper-cli binary at startup
+        if BundledBinary.findWhisperCLI() == nil {
             statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
         }
 
         // Start permission monitoring
         permissionManager.startMonitoring()
+
+        // Update history display
+        statusManager.updateHistory(transcriptionHistory.entries)
 
         // Ensure model is downloaded
         modelManager.downloadModelIfNeeded()
@@ -75,7 +86,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard Transcriber.findBinaryPath() != nil else {
+        guard BundledBinary.findWhisperCLI() != nil else {
             statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
             return
         }
@@ -88,7 +99,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showReadyAlert() {
-        // Only show on first launch
         guard isFirstLaunch else { return }
         UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
 
@@ -160,6 +170,12 @@ extension AppDelegate: AudioRecorderDelegate {
 extension AppDelegate: TranscriberDelegate {
     public func transcriptionCompleted(text: String) {
         pasteEngine.paste(text: text)
+
+        if PreferencesManager.shared.historyEnabled {
+            transcriptionHistory.add(text: text)
+            statusManager.updateHistory(transcriptionHistory.entries)
+        }
+
         statusManager.updateStatus(.idle)
     }
 
@@ -181,6 +197,7 @@ extension AppDelegate: ModelManagerDelegate {
     }
 
     public func modelDownloadCompleted() {
+        statusManager.updateModelDisplay()
         if permissionManager.allPermissionsGranted {
             startListening()
             showReadyAlert()
@@ -189,5 +206,33 @@ extension AppDelegate: ModelManagerDelegate {
 
     public func modelDownloadFailed(error: String) {
         statusManager.updateStatus(.error(message: error))
+    }
+}
+
+// MARK: - StatusManagerDelegate
+extension AppDelegate: StatusManagerDelegate {
+    public func statusManagerDidRequestPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController(modelManager: modelManager)
+            preferencesWindowController?.preferencesDelegate = self
+        }
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func statusManagerDidRequestClearHistory() {
+        transcriptionHistory.clear()
+        statusManager.updateHistory(transcriptionHistory.entries)
+    }
+}
+
+// MARK: - PreferencesWindowDelegate
+extension AppDelegate: PreferencesWindowDelegate {
+    public func preferencesDidChangeModel(to modelId: String) {
+        hotkeyManager.stop()
+        transcriber = nil
+        modelManager.switchModel(to: modelId)
+        // modelDownloadCompleted will restart listening when ready
     }
 }
