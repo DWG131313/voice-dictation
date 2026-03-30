@@ -7,7 +7,13 @@ let package = Package(
     targets: [
         // Library target with all logic (testable)
         .target(
+            name: "ObjCHelpers",
+            path: "Sources/ObjCHelpers",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "VoiceDictationLib",
+            dependencies: ["ObjCHelpers"],
             path: "Sources/VoiceDictationLib"
         ),
         // Thin executable — just the entry point

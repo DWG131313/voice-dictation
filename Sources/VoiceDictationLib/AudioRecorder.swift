@@ -1,5 +1,6 @@
 import AVFoundation
 import Cocoa
+import ObjCHelpers
 
 public protocol AudioRecorderDelegate: AnyObject {
     func recordingDidStart()
@@ -24,7 +25,36 @@ public class AudioRecorder {
     public init() {}
 
     public func startRecording() {
+        // Check microphone permission before accessing audio hardware
+        print("[AUDIO] startRecording called. AVCaptureDevice status=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.startRecording()
+                    } else {
+                        self?.delegate?.recordingDidFail(error: "Microphone access denied. Enable in System Settings > Privacy & Security > Microphone.")
+                    }
+                }
+            }
+            return
+        default:
+            delegate?.recordingDidFail(error: "Microphone access denied. Enable in System Settings > Privacy & Security > Microphone.")
+            return
+        }
+
         let inputNode = engine.inputNode
+
+        // Validate audio format (0 channels means no mic access)
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        print("[AUDIO] Hardware format: channels=\(hardwareFormat.channelCount) sampleRate=\(hardwareFormat.sampleRate)")
+        guard hardwareFormat.channelCount > 0, hardwareFormat.sampleRate > 0 else {
+            delegate?.recordingDidFail(error: "No microphone available. Check System Settings > Privacy & Security > Microphone.")
+            return
+        }
 
         // Create temp file
         let tempDir = FileManager.default.temporaryDirectory
@@ -51,7 +81,6 @@ public class AudioRecorder {
         }
 
         // Record at hardware's native format, convert each buffer before writing
-        let hardwareFormat = inputNode.outputFormat(forBus: 0)
         let convertFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 16000,
@@ -60,7 +89,11 @@ public class AudioRecorder {
         )!
         converter = AVAudioConverter(from: hardwareFormat, to: convertFormat)
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
+        // Wrap in ObjC exception catcher — installTap throws NSException (not Swift Error)
+        // when mic permission is denied or format is invalid
+        do {
+        try ObjCExceptionCatcher.`try`({
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
             guard let self = self,
                   let audioFile = self.audioFile,
                   let converter = self.converter else { return }
@@ -90,6 +123,12 @@ public class AudioRecorder {
                     print("Error writing audio buffer: \(error)")
                 }
             }
+        }
+        })
+        } catch {
+            cleanup()
+            delegate?.recordingDidFail(error: "Cannot access microphone: \(error.localizedDescription)")
+            return
         }
 
         do {

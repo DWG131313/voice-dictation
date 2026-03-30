@@ -28,6 +28,7 @@ public class GlobeKeyStrategy: HotkeyStrategy {
     public func start() {
         let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
 
+        print("[HOTKEY] Creating event tap... AXIsProcessTrusted=\(AXIsProcessTrusted())")
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -40,14 +41,17 @@ public class GlobeKeyStrategy: HotkeyStrategy {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            print("Failed to create event tap — Accessibility permission may not be granted")
+            print("[HOTKEY] FAILED to create event tap — Accessibility permission may not be granted")
             return
         }
+        print("[HOTKEY] Event tap created successfully")
 
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        // Use main run loop explicitly — CFRunLoopGetCurrent() may not be the main one
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        print("[HOTKEY] Tap enabled on MAIN run loop. tapEnabled=\(CGEvent.tapIsEnabled(tap: tap))")
     }
 
     public func stop() {
@@ -63,9 +67,20 @@ public class GlobeKeyStrategy: HotkeyStrategy {
     }
 
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Log tap disable events (macOS can disable taps)
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            print("[HOTKEY] Event tap was DISABLED by \(type == .tapDisabledByTimeout ? "timeout" : "user input") — re-enabling")
+            if let tap = eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         if type == .flagsChanged {
             let flags = event.flags
+            let rawFlags = event.flags.rawValue
             let fnPressed = flags.contains(.maskSecondaryFn)
+            print("[HOTKEY] flagsChanged: fn=\(fnPressed) rawFlags=\(rawFlags) isPressed=\(isPressed)")
 
             if fnPressed && !isPressed {
                 isPressed = true
@@ -83,6 +98,7 @@ public class GlobeKeyStrategy: HotkeyStrategy {
         // Check for Escape key to cancel during recording
         if type == .keyDown {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            print("[HOTKEY] keyDown: keyCode=\(keyCode)")
             if keyCode == Int64(kVK_Escape) && isPressed {
                 isPressed = false
                 DispatchQueue.main.async { [weak self] in
