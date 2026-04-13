@@ -1,0 +1,28 @@
+VoiceDictation Install Instructions
+====================================
+
+On the target Mac, open Terminal and run:
+
+cd ~/Dropbox/Coding\ Projects/Voice\ Dictation
+tar xzf VoiceDictation-package.tar.gz
+cd VoiceDictation-package
+./install.sh
+
+After the installer finishes, do these manual steps:
+
+1. Grant Accessibility permission:
+   System Settings > Privacy & Security > Accessibility
+   Click '+' and add: ~/.local/bin/voice-dictation/VoiceDictation
+
+2. Microphone permission will be prompted on first launch.
+
+3. Set Globe key to "Do Nothing":
+   System Settings > Keyboard > "Press Globe key to" > "Do Nothing"
+
+4. The app downloads the Whisper model (~150MB) on first launch.
+
+5. The app registers itself as a login item automatically.
+
+To start the app:
+
+  ~/.local/bin/voice-dictation/VoiceDictation &
