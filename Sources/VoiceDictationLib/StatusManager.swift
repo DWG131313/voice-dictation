@@ -23,6 +23,7 @@ public class StatusManager: NSObject {
     private let modelMenuItem: NSMenuItem
     private let historyMenuItem: NSMenuItem
     private let historySubmenu: NSMenu
+    private let launchAtLoginMenuItem: NSMenuItem
     private var errorClearTimer: Timer?
 
     public override init() {
@@ -33,6 +34,7 @@ public class StatusManager: NSObject {
         historyMenuItem = NSMenuItem(title: "Recent Transcriptions", action: nil, keyEquivalent: "")
         historySubmenu = NSMenu()
         historyMenuItem.submenu = historySubmenu
+        launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
 
         super.init()
 
@@ -47,6 +49,19 @@ public class StatusManager: NSObject {
         prefsItem.target = self
         menu.addItem(prefsItem)
 
+        // "Open at login" is only meaningful for an installed .app bundle.
+        // From the dev build, disable the toggle and say why, so it can't
+        // re-introduce the stale-login-item problem.
+        if LoginItemManager.isRunningFromAppBundle() {
+            launchAtLoginMenuItem.target = self
+            launchAtLoginMenuItem.state = PreferencesManager.shared.launchAtLogin ? .on : .off
+        } else {
+            launchAtLoginMenuItem.title = "Launch at Login (install app to enable)"
+            launchAtLoginMenuItem.action = nil
+            launchAtLoginMenuItem.target = nil
+        }
+        menu.addItem(launchAtLoginMenuItem)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit VoiceDictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
@@ -57,6 +72,13 @@ public class StatusManager: NSObject {
 
     @objc private func preferencesClicked(_ sender: Any) {
         delegate?.statusManagerDidRequestPreferences()
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+        let newValue = !PreferencesManager.shared.launchAtLogin
+        LoginItemManager.shared.setEnabled(newValue)
+        PreferencesManager.shared.launchAtLogin = newValue
+        sender.state = newValue ? .on : .off
     }
 
     @objc private func clearHistoryClicked(_ sender: Any) {

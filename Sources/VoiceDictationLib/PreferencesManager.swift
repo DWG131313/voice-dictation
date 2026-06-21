@@ -10,6 +10,7 @@ public class PreferencesManager {
         static let selectedModel = "selectedModel"
         static let historyEnabled = "historyEnabled"
         static let maxHistoryItems = "maxHistoryItems"
+        static let launchAtLogin = "launchAtLogin"
     }
 
     // MARK: - Available Models
@@ -69,6 +70,14 @@ public class PreferencesManager {
             return val > 0 ? val : 20
         }
         set { defaults.set(newValue, forKey: Keys.maxHistoryItems) }
+    }
+
+    /// Whether the user wants the app to open at login. Defaults to off; the
+    /// user opts in from the menu bar. Only takes effect for an installed
+    /// `.app` bundle (see `LoginItemManager`).
+    public var launchAtLogin: Bool {
+        get { defaults.bool(forKey: Keys.launchAtLogin) }
+        set { defaults.set(newValue, forKey: Keys.launchAtLogin) }
     }
 
     private init() {}

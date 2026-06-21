@@ -1,5 +1,4 @@
 import Cocoa
-import ServiceManagement
 
 public class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusManager: StatusManager!
@@ -41,10 +40,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager = HotkeyManager()
         hotkeyManager.delegate = self
 
-        // Register as login item (macOS 13+) on first launch only
-        if isFirstLaunch {
-            try? SMAppService.mainApp.register()
-        }
+        // Reconcile "open at login" with the user's preference. This is a
+        // deliberate no-op for the dev build (.build) — registering a login
+        // item from there accumulates a new stale entry on every rebuild,
+        // which is what caused multiple instances to launch at startup.
+        LoginItemManager.shared.syncWithStoredPreference()
 
         // Check permissions
         permissionManager.checkPermissions()
