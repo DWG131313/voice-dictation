@@ -48,6 +48,8 @@ public actor AppleSpeechEngine: TranscriptionEngine {
         do {
             try Task.checkCancellation()
             let setup = try await setUp(model)
+            // Loading does not notice a cancel, so look before analysing.
+            try Task.checkCancellation()
             let text = try await analyze(clip, model: model, setup: setup, vocabulary: vocabulary)
             try Task.checkCancellation()
             return text
@@ -68,7 +70,8 @@ public actor AppleSpeechEngine: TranscriptionEngine {
             // is when no request comes back.
             if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
                 installs[model] = request
-                defer { installs[model] = nil }
+                // A second download of the same model may have replaced it.
+                defer { if installs[model] === request { installs[model] = nil } }
                 let observation = request.progress.observe(\.fractionCompleted, options: [.initial, .new]) { observed, _ in
                     progress(observed.fractionCompleted)
                 }
@@ -109,10 +112,11 @@ public actor AppleSpeechEngine: TranscriptionEngine {
     private func load(_ model: ModelID) async throws -> Prepared {
         let locale = try await Self.locale(for: model)
         let module = Self.module(for: model, locale: locale).speechModule
-        let notInstalled = TranscriptionError.modelNotReady("\(Self.name(of: model)) language files are not installed")
-        guard await AssetInventory.status(forModules: [module]) == .installed,
-              let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
-            throw notInstalled
+        guard await AssetInventory.status(forModules: [module]) == .installed else {
+            throw TranscriptionError.modelNotReady("\(Self.name(of: model)) language files are not installed")
+        }
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
+            throw TranscriptionError.modelNotReady("\(Self.name(of: model)) offered no audio format to analyze")
         }
         do {
             try await SpeechAnalyzer(modules: [module], options: Self.options).prepareToAnalyze(in: format)
@@ -154,9 +158,11 @@ public actor AppleSpeechEngine: TranscriptionEngine {
             context.contextualStrings[.general] = vocabulary
             try await analyzer.setContext(context)
         }
-        // A few milliseconds once the model is loaded, and the analyzer knows
-        // its input format before the audio arrives.
+        // A few milliseconds once the model is loaded (70 ms or more for
+        // Apple Dictation with a vocabulary), and the analyzer knows its input
+        // format before the audio arrives. It does not notice a cancel either.
         try await analyzer.prepareToAnalyze(in: setup.format)
+        try Task.checkCancellation()
         let (input, feed) = AsyncStream.makeStream(of: AnalyzerInput.self)
         feed.yield(AnalyzerInput(buffer: try Self.buffer(from: clip, in: setup.format)))
         feed.finish()
@@ -166,8 +172,11 @@ public actor AppleSpeechEngine: TranscriptionEngine {
             do {
                 _ = try await analyzer.analyzeSequence(input)
                 try await analyzer.finalizeAndFinishThroughEndOfInput()
+                // Only a finish that ran to the end is sure to have ended the
+                // results. A cancel that beat the analysis is not waited on.
+                try Task.checkCancellation()
             } catch {
-                // Ends the module's results too, so `text` does not linger.
+                text.cancel()
                 await analyzer.cancelAndFinishNow()
                 throw error
             }
@@ -276,17 +285,27 @@ public actor AppleSpeechEngine: TranscriptionEngine {
             }
         }
 
-        /// Every phrase in order. Each phrase after the first brings its own
-        /// leading space. Returns once the analyzer finishes.
+        /// Every phrase in order, joined. Returns once the analyzer finishes.
         func text() async throws -> String {
-            var text = ""
+            var phrases: [String] = []
             switch self {
             case .speech(let transcriber):
-                for try await result in transcriber.results { text += String(result.text.characters) }
+                for try await result in transcriber.results { phrases.append(String(result.text.characters)) }
             case .dictation(let transcriber):
-                for try await result in transcriber.results { text += String(result.text.characters) }
+                for try await result in transcriber.results { phrases.append(String(result.text.characters)) }
             }
-            return text
+            return AppleSpeechEngine.joinPhrases(phrases)
+        }
+    }
+
+    /// Joins phrases so that one space separates two that meet without
+    /// whitespace, and none is added next to whitespace a phrase brings.
+    static func joinPhrases(_ phrases: [String]) -> String {
+        phrases.reduce(into: "") { text, phrase in
+            if let end = text.last, let start = phrase.first, !end.isWhitespace, !start.isWhitespace {
+                text += " "
+            }
+            text += phrase
         }
     }
 }
