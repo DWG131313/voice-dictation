@@ -1,9 +1,22 @@
 import Foundation
 
+/// Where `PreferencesManager` keeps its values: `UserDefaults` in the app.
+/// Tests pass one kept in memory, since every `UserDefaults` suite leaves a
+/// file in `~/Library/Preferences`, even after its domain is removed.
+protocol PreferenceStore: AnyObject {
+    func object(forKey defaultName: String) -> Any?
+    func string(forKey defaultName: String) -> String?
+    func bool(forKey defaultName: String) -> Bool
+    func integer(forKey defaultName: String) -> Int
+    func set(_ value: Any?, forKey defaultName: String)
+}
+
+extension UserDefaults: PreferenceStore {}
+
 public class PreferencesManager {
     public static let shared = PreferencesManager()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: PreferenceStore
 
     // MARK: - Keys
     private enum Keys {
@@ -111,5 +124,8 @@ public class PreferencesManager {
         set { defaults.set(newValue, forKey: Keys.keepComparisonRecordings) }
     }
 
-    private init() {}
+    /// The app uses `shared`, on the standard defaults.
+    init(defaults: PreferenceStore = UserDefaults.standard) {
+        self.defaults = defaults
+    }
 }

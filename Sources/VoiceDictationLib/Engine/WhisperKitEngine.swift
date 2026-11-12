@@ -185,7 +185,9 @@ public actor WhisperKitEngine: TranscriptionEngine {
         } else {
             load = try startLoading(model)
         }
-        try await Self.wait(for: load)
+        // A cancelled caller stops waiting at once; the load goes on for
+        // whoever needs it next.
+        try await valueUnlessCancelled(of: load)
         // The load may have ended before this caller was cancelled; a cancelled
         // caller ends in CancellationError, not in "unloaded".
         try Task.checkCancellation()
@@ -222,19 +224,6 @@ public actor WhisperKitEngine: TranscriptionEngine {
         }
         loading[id] = (task, true)
         return task
-    }
-
-    /// Waits for a load to end without being tied to it: a cancelled caller
-    /// stops waiting at once, and the load goes on for whoever needs it next.
-    private static func wait(for load: Task<Void, Error>) async throws {
-        let ended = AsyncThrowingStream<Void, Error> { continuation in
-            Task {
-                continuation.yield(with: await load.result)
-                continuation.finish()
-            }
-        }
-        for try await _ in ended { return }
-        throw CancellationError()
     }
 
     // MARK: - Transcribing

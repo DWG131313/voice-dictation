@@ -4,6 +4,7 @@ import XCTest
 final class TranscriptionServiceTests: XCTestCase {
     private let whisperBase = ModelID(engine: .whisperKit, name: "base.en")
     private let whisperTiny = ModelID(engine: .whisperKit, name: "tiny.en")
+    private let cliBase = ModelID(engine: .whisperCLI, name: "base.en")
     private let clip = AudioClip(samples: [Float](repeating: 0.2, count: 16_000))
 
     // MARK: - Results
@@ -64,21 +65,24 @@ final class TranscriptionServiceTests: XCTestCase {
     /// Review Focus 1: a dictation made while the model loads waits for that
     /// load instead of starting a second one, then succeeds.
     func testWaitsForPrepareInFlight() async throws {
-        let apple = FakeEngine(kind: .appleSpeech)
+        let log = CallLog()
+        let apple = FakeEngine(kind: .appleSpeech, log: log)
+        // Held until the dictation is in line, then it sleeps 200 ms.
+        apple.isPrepareHeld = true
         apple.prepareDelay = 0.2
         let service = TranscriptionService(engines: [apple], selected: .appleSpeech)
         let preparing = Task { await service.prepareSelected() }
         try await waitUntil("Apple Speech is preparing") { apple.calls.contains(.prepare(.appleSpeech)) }
 
-        let start = ContinuousClock.now
-        let result = try await finish(Task { try await service.transcribe(clip, vocabulary: []) },
-                                      within: 2, "the dictation")
-        let waited = start.duration(to: .now)
+        let dictation = Task { try await service.transcribe(clip, vocabulary: []) }
+        try await waitUntil("the dictation is in line") { await service.dictationsInLine == 1 }
+        apple.isPrepareHeld = false
+        let result = try await finish(dictation, within: 2, "the dictation")
 
         XCTAssertEqual(result.text, "hello")
-        XCTAssertGreaterThanOrEqual(waited, .milliseconds(100), "transcribed before the model was ready")
-        XCTAssertEqual(apple.calls, [.prepare(.appleSpeech), .transcribe(.appleSpeech)],
-                       "joined the prepare in flight")
+        XCTAssertEqual(log.entries, [.call(.appleSpeech, .prepare(.appleSpeech)), .prepared(.appleSpeech),
+                                     .call(.appleSpeech, .transcribe(.appleSpeech))],
+                       "transcribed before the model was ready, or did not join the prepare in flight")
         await preparing.value
     }
 
@@ -106,6 +110,17 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(result.text, "hello")
         let cleared = await service.prepareFailure(of: .appleSpeech)
         XCTAssertNil(cleared)
+    }
+
+    /// A saved choice can outlive its engine, as a whisper-cli one will once
+    /// Task 27 retires it: `prepareSelected` keeps that, as for any failure.
+    func testPrepareSelectedKeepsAMissingEngine() async {
+        let service = TranscriptionService(engines: [FakeEngine(kind: .appleSpeech)], selected: cliBase)
+
+        await service.prepareSelected()
+
+        let kept = await service.prepareFailure(of: cliBase)
+        XCTAssertEqual(kept, .engineUnavailable("No engine runs whisperCLI/base.en"))
     }
 
     func testCancelledDictationLeavesTheLine() async throws {
@@ -145,24 +160,51 @@ final class TranscriptionServiceTests: XCTestCase {
 
     // MARK: - Choosing and deleting models
 
+    /// One log shared by both fakes shows the order across the engines.
     func testSelectLoadsNewBeforeUnloadingOld() async throws {
-        let apple = FakeEngine(kind: .appleSpeech)
-        let whisper = FakeEngine(kind: .whisperKit)
-        whisper.prepareDelay = 0.2
+        let log = CallLog()
+        let apple = FakeEngine(kind: .appleSpeech, log: log)
+        let whisper = FakeEngine(kind: .whisperKit, log: log)
+        whisper.isPrepareHeld = true
         let service = TranscriptionService(engines: [apple, whisper], selected: .appleSpeech)
         await service.prepareSelected()
 
         let selecting = Task { try await service.select(whisperBase) }
         try await waitUntil("base.en is preparing") { whisper.calls.contains(.prepare(whisperBase)) }
-        XCTAssertFalse(apple.calls.contains(.unload), "unloaded the old engine before the new model was ready")
         let during = await service.selected
-        XCTAssertEqual(during, .appleSpeech)
+        XCTAssertEqual(during, .appleSpeech, "switched before the new model was ready")
+        whisper.isPrepareHeld = false
         try await finish(selecting, within: 2, "select")
+        // The unload runs in a task of its own.
+        try await waitUntil("Apple Speech is unloaded") { apple.calls.contains(.unload) }
 
-        XCTAssertEqual(apple.calls, [.prepare(.appleSpeech), .unload])
-        XCTAssertEqual(whisper.calls, [.prepare(whisperBase)])
+        XCTAssertEqual(log.entries, [.call(.appleSpeech, .prepare(.appleSpeech)), .prepared(.appleSpeech),
+                                     .call(.whisperKit, .prepare(whisperBase)), .prepared(whisperBase),
+                                     .call(.appleSpeech, .unload)],
+                       "unloaded the old engine before the new model was ready")
         let selected = await service.selected
         XCTAssertEqual(selected, whisperBase)
+    }
+
+    /// `select` calls take effect one at a time, in call order, so the last
+    /// one made wins, even over an earlier one that is slower to prepare.
+    func testConcurrentSelectsEndOnTheLastOne() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        let whisper = FakeEngine(kind: .whisperKit)
+        whisper.isPrepareHeld = true
+        let service = TranscriptionService(engines: [apple, whisper], selected: .appleSpeech)
+
+        var selects = [Task { try await service.select(whisperBase) }]
+        try await waitUntil("base.en is preparing") { whisper.calls.contains(.prepare(whisperBase)) }
+        for (number, id) in [(2, whisperTiny), (3, ModelID.appleDictation)] {
+            selects.append(Task { try await service.select(id) })
+            try await waitUntil("select \(number) is in line") { await service.selectionsInLine == number }
+        }
+        whisper.isPrepareHeld = false
+        for task in selects { try await finish(task, within: 2, "a select") }
+
+        let selected = await service.selected
+        XCTAssertEqual(selected, .appleDictation)
     }
 
     func testFailedSelectKeepsTheOldModel() async throws {
@@ -356,8 +398,10 @@ final class TranscriptionServiceTests: XCTestCase {
         let apple = FakeEngine(kind: .appleSpeech, probe: probe)
         apple.delay = 0.05
         let whisper = FakeEngine(kind: .whisperKit, probe: probe)
-        whisper.prepareDelay = 0.2
-        whisper.delay = 0.3
+        // Held, so each dictation below arrives while base.en loads or
+        // transcribes, however slowly this test runs.
+        whisper.isPrepareHeld = true
+        whisper.isHeld = true
         whisper.result = "Re-transcribed."
         let service = TranscriptionService(engines: [apple, whisper], selected: .appleSpeech)
         await service.prepareSelected()
@@ -367,6 +411,7 @@ final class TranscriptionServiceTests: XCTestCase {
         let first = Task { try await service.transcribe(clip, with: whisperBase, vocabulary: []) }
         try await waitUntil("base.en is loading") { whisper.calls.contains(.prepare(whisperBase)) }
         _ = try await finish(Task { try await service.transcribe(clip, vocabulary: []) }, within: 1, "dictation 1")
+        whisper.isPrepareHeld = false
 
         // Two dictations while it transcribes, and a second re-transcription behind it.
         try await waitUntil("the re-transcription is transcribing") { whisper.calls.contains(.transcribe(whisperBase)) }
@@ -386,6 +431,8 @@ final class TranscriptionServiceTests: XCTestCase {
         // One more dictation once the first re-transcription has started again.
         try await waitUntil("the re-transcription runs again") { self.transcriptions(whisper).count == 2 }
         dictations.append(Task { try await service.transcribe(clip, vocabulary: []) })
+        try await waitUntil("dictation 4 has stopped it again") { whisper.cancelledCount == 2 }
+        whisper.isHeld = false
 
         for task in dictations {
             let result = try await finish(task, within: 3, "a dictation")
@@ -424,32 +471,96 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(next.model, .appleSpeech)
     }
 
-    /// Ruling T8-1: an engine used only for re-transcriptions is unloaded once
-    /// it has gone unused for the delay; the selected model's engine never is,
-    /// even when a re-transcription loaded another model on it.
+    /// Rulings T8-1 and T8-2: a model loaded only for re-transcriptions is
+    /// unloaded `idleUnloadDelay` after the re-transcription lane empties,
+    /// not before. The selected model's engine never is, even when a
+    /// re-transcription loaded another model on it.
+    ///
+    /// The delay is real, so a test that stalls for 0.1 s can rightly see an
+    /// unload sooner than planned. Every check below holds however slowly the
+    /// test runs: times are measured from before the calls, the wait is for
+    /// the unload after the last use, and the calls after it are compared as
+    /// a prefix, which a late `.unload` cannot change.
     func testRetranscriptionOnlyModelUnloadedAfterIdleDelay() async throws {
         let apple = FakeEngine(kind: .appleSpeech)
         let whisper = FakeEngine(kind: .whisperKit)
+        let delay = Duration.milliseconds(100)
         let service = TranscriptionService(engines: [apple, whisper], selected: .appleSpeech, idleUnloadDelay: 0.1)
         await service.prepareSelected()
 
+        let firstUse = ContinuousClock.now
         _ = try await service.transcribe(clip, with: whisperBase, vocabulary: [])
-        XCTAssertFalse(whisper.calls.contains(.unload), "unloaded before the delay")
-        // Back to back, the model is still loaded: no unload or second prepare in between.
         _ = try await service.transcribe(clip, with: whisperBase, vocabulary: [])
-        let lastUse = ContinuousClock.now
-        XCTAssertEqual(whisper.calls, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase)])
+        // Back to back, the model stays loaded: no unload or second prepare
+        // in between. Only a stall of the whole delay could rightly unload
+        // it, so the check needs the two calls to take less than that.
+        let backToBack = whisper.calls
+        if firstUse.duration(to: .now) < delay {
+            XCTAssertEqual(backToBack, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase)])
+        }
         _ = try await service.transcribe(clip, with: .appleDictation, vocabulary: [])
 
-        try await waitUntil("WhisperKit is unloaded") { whisper.calls.contains(.unload) }
-        XCTAssertGreaterThanOrEqual(lastUse.duration(to: .now), .milliseconds(50), "unloaded before the delay")
-        try await Task.sleep(for: .milliseconds(300))
+        try await waitUntil("WhisperKit is unloaded") { whisper.calls.last == .unload }
+        XCTAssertGreaterThanOrEqual(firstUse.duration(to: .now), delay, "unloaded before the delay")
+        let unloads = whisper.calls.filter { $0 == .unload }.count
+        try await Task.sleep(for: delay * 3)
         XCTAssertFalse(apple.calls.contains(.unload), "unloaded the engine of the selected model")
-        XCTAssertEqual(whisper.calls.filter { $0 == .unload }.count, 1)
+        XCTAssertEqual(whisper.calls.filter { $0 == .unload }.count, unloads, "unloaded again with nothing loaded")
 
         // Once unloaded, the model is prepared again before it is used.
+        let before = whisper.calls.count
         _ = try await service.transcribe(clip, with: whisperBase, vocabulary: [])
-        XCTAssertEqual(whisper.calls.suffix(3), [.unload, .prepare(whisperBase), .transcribe(whisperBase)])
+        XCTAssertEqual(Array(whisper.calls.dropFirst(before).prefix(2)), [.prepare(whisperBase), .transcribe(whisperBase)])
+    }
+
+    /// Ruling T8-2: while re-transcriptions keep the lane busy, every engine
+    /// they use stays loaded, even one left unused for longer than the
+    /// delay while another engine works. Both go `idleUnloadDelay` after the
+    /// lane empties. Each re-transcription is held until the next one is in
+    /// line, so the lane never empties in between.
+    func testIdleUnloadWaitsForTheRetranscriptionLaneToEmpty() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        let whisper = FakeEngine(kind: .whisperKit)
+        let cli = FakeEngine(kind: .whisperCLI)
+        whisper.isHeld = true
+        cli.isHeld = true
+        let delay = Duration.milliseconds(100)
+        let service = TranscriptionService(engines: [apple, whisper, cli], selected: .appleSpeech, idleUnloadDelay: 0.1)
+        await service.prepareSelected()
+        var retranscriptions: [Task<TranscriptionResult, Error>] = []
+
+        // WhisperKit, then whisper-cli, which keeps the lane while WhisperKit sits unused.
+        retranscriptions.append(Task { try await service.transcribe(clip, with: whisperBase, vocabulary: []) })
+        try await waitUntil("WhisperKit transcribes") { self.transcriptions(whisper).count == 1 }
+        retranscriptions.append(Task { try await service.transcribe(clip, with: cliBase, vocabulary: []) })
+        try await waitUntil("the whisper-cli re-transcription is in line") { await service.retranscriptionsInLine == 2 }
+        whisper.isHeld = false
+        try await waitUntil("whisper-cli transcribes") { self.transcriptions(cli).count == 1 }
+        try await Task.sleep(for: delay * 3)
+
+        // WhisperKit again, which keeps the lane while whisper-cli sits unused.
+        whisper.isHeld = true
+        retranscriptions.append(Task { try await service.transcribe(clip, with: whisperBase, vocabulary: []) })
+        try await waitUntil("WhisperKit is in line again") { await service.retranscriptionsInLine == 2 }
+        cli.isHeld = false
+        try await waitUntil("WhisperKit transcribes again") { self.transcriptions(whisper).count == 2 }
+        try await Task.sleep(for: delay * 3)
+
+        XCTAssertEqual(whisper.calls, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase)],
+                       "unloaded while the lane was busy")
+        XCTAssertEqual(cli.calls, [.prepare(cliBase), .transcribe(cliBase)], "unloaded while the lane was busy")
+
+        // The lane empties after this release, so the delay runs from later than now.
+        let released = ContinuousClock.now
+        whisper.isHeld = false
+        for task in retranscriptions { try await finish(task, within: 2, "a re-transcription") }
+        try await waitUntil("an engine is unloaded") { whisper.calls.contains(.unload) || cli.calls.contains(.unload) }
+        XCTAssertGreaterThanOrEqual(released.duration(to: .now), delay, "unloaded before the delay")
+        try await waitUntil("both engines are unloaded") { whisper.calls.contains(.unload) && cli.calls.contains(.unload) }
+
+        XCTAssertEqual(whisper.calls, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase), .unload])
+        XCTAssertEqual(cli.calls, [.prepare(cliBase), .transcribe(cliBase), .unload])
+        XCTAssertEqual(apple.calls, [.prepare(.appleSpeech)], "unloaded the engine of the selected model")
     }
 
     // MARK: - Saved selection
@@ -467,6 +578,20 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil, legacy: nil), .appleSpeech)
         XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil, legacy: "medium.en"), .appleSpeech)
         XCTAssertEqual(PreferencesManager.selectedModelID(saved: "garbage", legacy: nil), .appleSpeech)
+    }
+
+    /// The choice is saved as its `storageKey` under `selectedModelID`, and
+    /// from then on it wins over the old app's choice.
+    func testSelectedModelIDIsSavedAsItsStorageKey() {
+        let store = MemoryPreferenceStore()
+        let preferences = PreferencesManager(defaults: store)
+        preferences.selectedModelId = "small.en"
+        XCTAssertEqual(preferences.selectedModelID, ModelID(engine: .whisperCLI, name: "small.en"))
+
+        preferences.selectedModelID = whisperBase
+
+        XCTAssertEqual(store.string(forKey: "selectedModelID"), "whisperKit/base.en")
+        XCTAssertEqual(preferences.selectedModelID, whisperBase, "the old app's choice won over the saved one")
     }
 
     // MARK: - The fake
@@ -493,6 +618,42 @@ final class TranscriptionServiceTests: XCTestCase {
         cancelled.cancel()
         await assertCancelled(cancelled, within: 0.5)
         XCTAssertEqual(fake.cancelledCount, 1)
+    }
+
+    func testFakeEngineHoldsPreparesUntilReleased() async throws {
+        let fake = FakeEngine(kind: .appleSpeech)
+        fake.isPrepareHeld = true
+        let finished = Order<String>()
+        let held = Task {
+            try await fake.prepare(.appleSpeech)
+            finished.append("prepared")
+        }
+        try await waitUntil("the prepare has started") { fake.calls == [.prepare(.appleSpeech)] }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(finished.values, [], "prepared while held")
+
+        fake.isPrepareHeld = false
+        try await finish(held, within: 1, "the held prepare")
+        XCTAssertEqual(finished.values, ["prepared"])
+    }
+
+    /// Fakes that share a log enter each call as it starts, and each prepare
+    /// again once it has returned without an error.
+    func testFakesShareOneCallLog() async throws {
+        let log = CallLog()
+        let apple = FakeEngine(kind: .appleSpeech, log: log)
+        let whisper = FakeEngine(kind: .whisperKit, log: log)
+        whisper.prepareError = TranscriptionError.modelNotReady("WhisperKit base.en is not downloaded")
+
+        try await apple.prepare(.appleSpeech)
+        try? await whisper.prepare(whisperBase)
+        _ = try await whisper.transcribe(clip, model: whisperBase, vocabulary: [])
+        await apple.unload()
+
+        XCTAssertEqual(log.entries, [.call(.appleSpeech, .prepare(.appleSpeech)), .prepared(.appleSpeech),
+                                     .call(.whisperKit, .prepare(whisperBase)),
+                                     .call(.whisperKit, .transcribe(whisperBase)), .call(.appleSpeech, .unload)])
+        XCTAssertEqual(apple.calls, [.prepare(.appleSpeech), .unload], "each fake still keeps its own calls")
     }
 
     // MARK: - Helpers

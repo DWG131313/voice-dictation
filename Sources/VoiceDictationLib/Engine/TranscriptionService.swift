@@ -23,7 +23,11 @@ public struct TranscriptionResult: Sendable, Equatable {
 /// The service unloads engines, not models (Ruling T8-1): an engine is
 /// unloaded only when nothing is using it and the selected model is not one
 /// of its models. That is at once when `select` moves dictation to another
-/// engine, and otherwise `idleUnloadDelay` seconds after its last use.
+/// engine. Otherwise an engine goes once it has been idle for
+/// `idleUnloadDelay` seconds, and an engine is never idle while a
+/// re-transcription is running or waiting (Ruling T8-2). So a run of
+/// re-transcriptions keeps every engine it uses loaded until the
+/// re-transcription lane empties.
 public actor TranscriptionService {
     /// The model dictations use.
     public private(set) var selected: ModelID
@@ -40,7 +44,8 @@ public actor TranscriptionService {
 
     /// Calls and prepares using each engine. An engine is unloaded only at 0.
     private var users: [EngineKind: Int] = [:]
-    /// Unloads waiting out `idleUnloadDelay`, cancelled by the next use.
+    /// Unloads of idle engines waiting out `idleUnloadDelay`. Using the
+    /// engine, or a re-transcription taking the lane, cancels them.
     private var idleUnloads: [EngineKind: Task<Void, Never>] = [:]
     /// Each engine's latest unload. A prepare on that engine waits for it.
     private var unloads: [EngineKind: Task<Void, Never>] = [:]
@@ -71,10 +76,12 @@ public actor TranscriptionService {
     }
 
     /// Prepares `id`, makes it the model dictations use, then unloads the
-    /// previous model's engine if it is a different one. An engine still in
-    /// use is unloaded `idleUnloadDelay` seconds after its last use instead.
-    /// A model that cannot prepare throws `modelNotReady` and changes nothing,
-    /// as does a cancelled call. Calls take effect one at a time, in call order.
+    /// previous model's engine at once if it is a different one and nothing
+    /// is using it. An engine still in use goes once it has been idle for
+    /// `idleUnloadDelay` instead. Calls take effect one at a time, in call
+    /// order. Throws `modelNotReady` when the model cannot prepare,
+    /// `engineUnavailable` when no engine runs it, and `CancellationError`
+    /// when the caller is cancelled; in each case the selection is unchanged.
     public func select(_ id: ModelID) async throws {
         try await take(.selection)
         defer { pass(.selection) }
@@ -91,12 +98,20 @@ public actor TranscriptionService {
     }
 
     /// Prepares the selected model; called at launch. A failure is kept
-    /// (`prepareFailure(of:)`) and logged, not thrown. The next dictation
-    /// prepares the model again and throws if it still cannot load.
+    /// (`prepareFailure(of:)`) and logged, not thrown: `modelNotReady`, or
+    /// `engineUnavailable` when no engine runs the model, as happens to a
+    /// saved choice that outlives its engine. The next dictation prepares
+    /// the model again and throws if it still cannot load.
     public func prepareSelected() async {
         let id = selected
-        guard let engine = try? engine(for: id) else { return }
-        try? await prepare(id, on: engine)
+        do {
+            try await prepare(id, on: engine(for: id))
+        } catch TranscriptionError.engineUnavailable(let reason) {
+            Log.info("[SERVICE] Could not prepare \(id.storageKey): \(reason)")
+            prepareFailures[id] = .engineUnavailable(reason)
+        } catch {
+            // `prepare` keeps and logs its own failures; a cancelled call just stops.
+        }
     }
 
     /// Transcribes a dictation with the selected model. Dictations run one at
@@ -178,8 +193,8 @@ public actor TranscriptionService {
         ready.remove(id)
     }
 
-    /// Why `id` last failed to prepare, as `modelNotReady`; nil once a
-    /// prepare succeeds.
+    /// Why `id` last failed to prepare, as `modelNotReady` or (from
+    /// `prepareSelected`) `engineUnavailable`; nil once a prepare succeeds.
     func prepareFailure(of id: ModelID) -> TranscriptionError? {
         prepareFailures[id]
     }
@@ -191,7 +206,7 @@ public actor TranscriptionService {
     /// at once; the prepare carries on for whoever needs the model next.
     private func prepare(_ id: ModelID, on engine: TranscriptionEngine) async throws {
         guard !ready.contains(id) else { return }
-        try await Self.join(preparing[id] ?? startPreparing(id, on: engine))
+        try await valueUnlessCancelled(of: preparing[id] ?? startPreparing(id, on: engine))
     }
 
     /// Prepares `id` in a task of its own, after any unload of its engine.
@@ -220,19 +235,6 @@ public actor TranscriptionService {
         return task
     }
 
-    /// Waits for a prepare without being tied to it: a cancelled caller stops
-    /// waiting at once, and the prepare goes on.
-    private static func join(_ prepare: Task<Void, Error>) async throws {
-        let ended = AsyncThrowingStream<Void, Error> { continuation in
-            Task {
-                continuation.yield(with: await prepare.result)
-                continuation.finish()
-            }
-        }
-        for try await _ in ended { return }
-        throw CancellationError()
-    }
-
     /// The engine's own words for a failed prepare, when it gave any.
     private static func reason(_ error: Error, preparing id: ModelID) -> String {
         switch error {
@@ -252,19 +254,32 @@ public actor TranscriptionService {
         idleUnloads.removeValue(forKey: kind)?.cancel()
     }
 
-    /// Once nothing uses an engine that does not hold the selected model, it
-    /// is unloaded after `idleUnloadDelay`, unless something uses it first.
+    /// Something has stopped using the engine, which may leave it idle.
     private func endUse(_ kind: EngineKind) {
         users[kind, default: 0] -= 1
-        guard users[kind] == 0, kind != selected.engine else { return }
+        unloadLaterIfIdle(kind)
+    }
+
+    /// An engine is idle when it holds a loaded model that nothing needs:
+    /// nothing uses it, the selected model is not one of its models, and no
+    /// re-transcription is running or waiting (Ruling T8-2).
+    private func isIdle(_ kind: EngineKind) -> Bool {
+        users[kind, default: 0] == 0 && kind != selected.engine
+            && !turnsTaken.contains(.retranscriptions) && ready.contains { $0.engine == kind }
+    }
+
+    /// Unloads the engine once it has been idle for `idleUnloadDelay`, from
+    /// now. Using it, or a re-transcription taking the lane, cancels this.
+    private func unloadLaterIfIdle(_ kind: EngineKind) {
+        guard isIdle(kind) else { return }
         let delay = idleUnloadDelay
         idleUnloads[kind]?.cancel()
         idleUnloads[kind] = Task {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             self.idleUnloads[kind] = nil
-            guard self.users[kind, default: 0] == 0, kind != self.selected.engine else { return }
-            self.unload(kind, because: "unused for \(String(format: "%g", delay)) s")
+            guard self.isIdle(kind) else { return }
+            self.unload(kind, because: "idle for \(String(format: "%g", delay)) s")
         }
     }
 
@@ -324,13 +339,25 @@ public actor TranscriptionService {
 
     /// Takes the turn at once if no one has it, and otherwise waits in line.
     private func take(_ turn: Turn) async throws {
-        if turnsTaken.insert(turn).inserted { return }
+        if turnsTaken.insert(turn).inserted {
+            // The re-transcription lane is busy again, so no engine is idle.
+            if turn == .retranscriptions {
+                idleUnloads.values.forEach { $0.cancel() }
+                idleUnloads.removeAll()
+            }
+            return
+        }
         try await waitInLine(for: .turn(turn))
     }
 
     /// Hands the turn to the first in line, or frees it.
     private func pass(_ turn: Turn) {
-        if !resumeFirst(.turn(turn)) { turnsTaken.remove(turn) }
+        guard !resumeFirst(.turn(turn)) else { return }
+        turnsTaken.remove(turn)
+        // The re-transcription lane has emptied, so the engines it kept may go.
+        if turn == .retranscriptions {
+            for kind in Set(ready.map(\.engine)) { unloadLaterIfIdle(kind) }
+        }
     }
 
     /// Returns when `resumeFirst` hands this caller what it waits for. A
@@ -395,5 +422,10 @@ public actor TranscriptionService {
     /// Re-transcriptions in line: the one whose turn it is and those waiting.
     var retranscriptionsInLine: Int {
         (turnsTaken.contains(.retranscriptions) ? 1 : 0) + waiting.filter { $0.purpose == .turn(.retranscriptions) }.count
+    }
+
+    /// `select` calls in line: the one whose turn it is and those waiting.
+    var selectionsInLine: Int {
+        (turnsTaken.contains(.selection) ? 1 : 0) + waiting.filter { $0.purpose == .turn(.selection) }.count
     }
 }

@@ -6,7 +6,7 @@ import Foundation
 /// place for per-user app logs (visible in Console.app, survives reboots —
 /// unlike the temp directory, which macOS periodically wipes). The file is
 /// capped so it can never grow without bound: once it passes `maxBytes` it is
-/// rotated to `VoiceDictation.log.old`.
+/// rotated to `VoiceDictation.log.old`. Under XCTest it only prints.
 public enum Log {
     public static let fileURL: URL = {
         let logs = FileManager.default.homeDirectoryForCurrentUser
@@ -23,10 +23,20 @@ public enum Log {
         return f
     }()
 
+    /// False under XCTest (Ruling T8-3), so test runs stay out of the log
+    /// Danny reads for his hands-on checks.
+    private static let writesFile = NSClassFromString("XCTestCase") == nil
+
     public static func info(_ message: String) {
         let line = "\(formatter.string(from: Date())) \(message)"
         print(line)
+        guard writesFile else { return }
         queue.async { append(line + "\n") }
+    }
+
+    /// Returns once every line handed to the file so far is written.
+    static func flush() {
+        queue.sync {}
     }
 
     private static func append(_ text: String) {
