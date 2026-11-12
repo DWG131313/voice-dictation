@@ -32,9 +32,9 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-if ! security find-identity -v -p codesigning | grep -q "\"$IDENTITY:"; then
+if ! security find-identity -v -p codesigning | grep -q "\"$IDENTITY: .*($TEAM_ID)\""; then
     cat >&2 <<MSG
-No "$IDENTITY" certificate in your keychain, so there is nothing to sign
+No "$IDENTITY" certificate for team $TEAM_ID in your keychain, so there is nothing to sign
 the release with. This is setup step D4 (see docs/release.md): create the
 certificate, and the notarytool profile "$NOTARY_PROFILE", once. Nothing was
 built and nothing was sent to Apple.
@@ -50,7 +50,8 @@ fi
 # --- 1. Archive ---------------------------------------------------------------
 
 mkdir -p dist
-mv "$BUILD_DIR" "dist/build-old-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+# A fresh build folder each run. The finished zip lives outside it, so it survives.
+rm -rf "${BUILD_DIR:?}"
 mkdir -p "$BUILD_DIR"
 
 xcodegen
@@ -91,7 +92,20 @@ xcodebuild -exportArchive \
 
 # ditto keeps the bundle's resource forks and symlinks; plain zip does not.
 ditto -c -k --keepParent "$APP" "$BUILD_DIR/notarise.zip"
-xcrun notarytool submit "$BUILD_DIR/notarise.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+# Some notarytool versions exit 0 even when Apple rejects the build, so read
+# the final status from the JSON result and stop unless it is Accepted.
+if ! RESULT="$(xcrun notarytool submit "$BUILD_DIR/notarise.zip" \
+        --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)"; then
+    echo "$RESULT" >&2
+    echo "Notarisation failed; see the message above. Nothing was released." >&2
+    exit 1
+fi
+STATUS="$(echo "$RESULT" | plutil -extract status raw -o - - 2>/dev/null || echo unknown)"
+if [ "$STATUS" != "Accepted" ]; then
+    echo "$RESULT" >&2
+    echo "Notarisation status is \"$STATUS\", not Accepted. Nothing was released." >&2
+    exit 1
+fi
 
 # --- 4. Staple and verify ------------------------------------------------------
 
