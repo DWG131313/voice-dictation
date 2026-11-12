@@ -31,7 +31,8 @@ let package = Package(
         .target(
             name: "VoiceDictationUI",
             dependencies: ["VoiceDictationLib"],
-            path: "Sources/VoiceDictationUI"
+            path: "Sources/VoiceDictationUI",
+            resources: [.copy("Resources/Fonts")]
         ),
         // Command-line engine comparison (`swift run vd-bench`)
         .executableTarget(
