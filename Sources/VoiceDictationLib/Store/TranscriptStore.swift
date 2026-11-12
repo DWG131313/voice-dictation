@@ -8,14 +8,22 @@ import SwiftData
 ///
 /// A store that cannot be opened (a damaged file, a schema it cannot
 /// migrate) is moved aside with its `-wal` and `-shm` files, never deleted
-/// (Review Focus 5). `health` then says so, `container` is nil, `add` keeps
-/// nothing and `search` finds nothing: dictation goes on without history,
-/// and the next launch starts a new store. Use from the main thread.
+/// (Review Focus 5), and a new, empty store starts in its place at once, so
+/// every dictation is still kept (Ruling T11-3). `health` then says the old
+/// history is unavailable and where its files are. Only when the files
+/// cannot be moved aside, or no store can be started, is the store
+/// unavailable: `container` is nil, `add` keeps nothing and `search` finds
+/// nothing, and dictation goes on without history. Use from the main thread.
 @MainActor @Observable
 public final class TranscriptStore {
     public enum Health: Equatable {
         case ok
-        /// The words to show where the transcripts would be.
+        /// The store could not be opened, so its files were moved aside and a
+        /// new, empty store started, which works as usual. The words to show:
+        /// the old history could not be opened, and where its files are.
+        case recovered(String)
+        /// There is no store: nothing is kept or found. The words to show
+        /// where the transcripts would be.
         case unavailable(String)
     }
 
@@ -35,16 +43,16 @@ public final class TranscriptStore {
 
     /// Opens, or starts, `transcripts.store` in `directory`, creating the
     /// directory if needed. In memory, nothing is read or written there.
-    public init(directory: URL, inMemory: Bool = false) {
-        let url = directory.appendingPathComponent(Self.fileName)
-        do {
-            container = try Self.openContainer(at: url, inMemory: inMemory)
-            health = .ok
-        } catch {
-            Log.info("[STORE] Could not open \(inMemory ? "the in-memory store" : url.path): \(error)")
-            container = nil
-            health = .unavailable(inMemory ? Self.unavailableMessage(error) : Self.setAside(url, after: error))
-        }
+    public convenience init(directory: URL, inMemory: Bool = false) {
+        self.init(directory: directory, inMemory: inMemory, now: Date())
+    }
+
+    /// `now` names the files of a store that is moved aside; tests pass
+    /// their own.
+    init(directory: URL, inMemory: Bool = false, now: Date) {
+        let opened = Self.open(directory.appendingPathComponent(Self.fileName), inMemory: inMemory, now: now)
+        container = opened.container
+        health = opened.health
     }
 
     // MARK: - Adding and finding
@@ -124,12 +132,22 @@ public final class TranscriptStore {
         save("an edit")
     }
 
-    /// Makes the raw text the main text again, undoing cleanup and any hand
-    /// edit. A failed dictation has no raw text, so this never empties a
-    /// text it got later from a re-transcription.
+    /// Makes the raw text the main text again, with the dictation's own model
+    /// and time, undoing cleanup and any hand edit of the dictation's text. A
+    /// main text from another model (a promoted re-transcription, or Danny's
+    /// edit of one) is set aside as an alternate first, so it is not lost. A
+    /// failed dictation has no raw text, so this never empties a text it got
+    /// later from a re-transcription.
     public func revertToRaw(_ t: Transcript) {
-        guard !Self.isBlank(t.rawText) else { return }
+        guard let context, !Self.isBlank(t.rawText) else { return }
+        if t.modelKey != t.rawModelKey, !Self.isBlank(t.text) {
+            let former = AlternateResult(formerMainOf: t)
+            context.insert(former)
+            t.alternates.append(former)
+        }
         t.text = t.rawText
+        t.modelKey = t.rawModelKey
+        t.transcribeSeconds = t.rawTranscribeSeconds
         t.isEdited = false
         save("a revert to raw")
     }
@@ -137,11 +155,13 @@ public final class TranscriptStore {
     // MARK: - Alternates
 
     /// Keeps a re-transcription of the transcript's recording beside it. A
-    /// newer result from the same model replaces the earlier one.
+    /// newer result from the same model replaces that model's earlier
+    /// re-transcription, never a main text set aside here
+    /// (`AlternateResult.wasMain`), such as the pasted text.
     public func addAlternate(to t: Transcript, _ r: TranscriptionResult) {
         guard let context else { return }
         let key = r.model.storageKey
-        if let earlier = t.alternates.first(where: { $0.modelKey == key }) {
+        if let earlier = t.alternates.first(where: { !$0.wasMain && $0.modelKey == key }) {
             earlier.text = r.text
             earlier.seconds = r.elapsed
             earlier.date = Date()
@@ -154,30 +174,41 @@ public final class TranscriptStore {
     }
 
     /// "Use this one": makes the alternate the main text, with its model and
-    /// time. The old main text becomes an alternate in its place, so nothing
-    /// is lost; a hand-edited one is kept as `AlternateResult.editedModelKey`,
-    /// and a failed dictation's empty one is dropped. The transcript is no
-    /// longer edited; `rawText` and `cleanedText` stay the dictation's own.
+    /// time. The old main text is set aside as an alternate in its place, so
+    /// nothing is lost (a hand-edited one under
+    /// `AlternateResult.editedModelKey`); a failed dictation's empty one is
+    /// dropped. A hand edit set aside earlier comes back as an edit:
+    /// `isEdited`, labelled with the model whose text Danny edited, or, should
+    /// that not be known, the dictation's own model and time. Any other
+    /// result leaves the transcript not edited. `rawText`, `cleanedText` and
+    /// the dictation's own model and time never change.
     public func promote(_ alt: AlternateResult, in t: Transcript) {
         guard let context else { return }
         guard let index = t.alternates.firstIndex(where: { $0.persistentModelID == alt.persistentModelID }) else {
             Log.info("[STORE] Not promoted: the result is not one of this transcript's alternates")
             return
         }
-        let replaced = (modelKey: t.isEdited ? AlternateResult.editedModelKey : t.modelKey,
-                        text: t.text, seconds: t.transcribeSeconds)
+        let former = Self.isBlank(t.text) ? nil : AlternateResult(formerMainOf: t)
         t.text = alt.text
-        t.modelKey = alt.modelKey
-        t.transcribeSeconds = alt.seconds
-        t.isEdited = false
-        if Self.isBlank(replaced.text) {
-            t.alternates.remove(at: index)
-            context.delete(alt)
+        if alt.modelKey == AlternateResult.editedModelKey {
+            t.isEdited = true
+            if let edited = alt.editedFromModelKey {
+                t.modelKey = edited
+                t.transcribeSeconds = alt.seconds
+            } else {
+                t.modelKey = t.rawModelKey
+                t.transcribeSeconds = t.rawTranscribeSeconds
+            }
         } else {
-            alt.modelKey = replaced.modelKey
-            alt.text = replaced.text
-            alt.seconds = replaced.seconds
-            alt.date = Date()
+            t.isEdited = false
+            t.modelKey = alt.modelKey
+            t.transcribeSeconds = alt.seconds
+        }
+        t.alternates.remove(at: index)
+        context.delete(alt)
+        if let former {
+            context.insert(former)
+            t.alternates.append(former)
         }
         save("a promoted alternate")
     }
@@ -197,33 +228,69 @@ public final class TranscriptStore {
         return try ModelContainer(for: Transcript.self, AlternateResult.self, configurations: configuration)
     }
 
-    /// Renames the store's files (the database and its `-wal` and `-shm`)
-    /// with one `.broken-<date-time>` suffix, so the next store made at `url`
-    /// starts afresh and never meets a leftover journal. Returns the words
-    /// `health` shows.
-    private static func setAside(_ url: URL, after error: Error) -> String {
-        let suffix = ".broken-" + brokenStamp.string(from: Date())
-        let files = ["", "-wal", "-shm"]
-            .map { URL(fileURLWithPath: url.path + $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-        guard !files.isEmpty else { return unavailableMessage(error) }
+    /// Opens the store at `url`. A store that cannot be opened is moved
+    /// aside, its files renamed with the suffix for `now`, and a new, empty
+    /// store starts in its place at once (Ruling T11-3).
+    private static func open(_ url: URL, inMemory: Bool, now: Date) -> (container: ModelContainer?, health: Health) {
+        let failure: Error
         do {
-            for file in files {
-                let target = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + suffix)
-                try FileManager.default.moveItem(at: file, to: target)
-            }
-        } catch let moveError {
-            Log.info("[STORE] Could not move \(url.lastPathComponent) aside: \(moveError)")
-            return "History is unavailable: the transcript store could not be opened or moved aside "
-                + "(\(moveError.localizedDescription))."
+            return (try openContainer(at: url, inMemory: inMemory), .ok)
+        } catch {
+            Log.info("[STORE] Could not open \(inMemory ? "the in-memory store" : url.path): \(error)")
+            failure = error
         }
-        Log.info("[STORE] Moved \(files.map(\.lastPathComponent).joined(separator: ", ")) aside with the suffix \(suffix)")
-        return "History is unavailable: the transcript store could not be opened. It was moved aside as "
-            + "\(url.lastPathComponent)\(suffix), and a new one starts at the next launch."
+        guard !inMemory else { return (nil, .unavailable(unavailableMessage(failure))) }
+
+        let moved: [URL]
+        do {
+            moved = try moveAside(url, suffix: brokenSuffix(at: now))
+        } catch {
+            Log.info("[STORE] Could not move \(url.lastPathComponent) aside: \(error)")
+            return (nil, .unavailable("History is unavailable: the transcript store could not be opened or moved "
+                                      + "aside (\(error.localizedDescription))."))
+        }
+        // Nothing was there to move aside, so a new store would fail the same way.
+        guard !moved.isEmpty else { return (nil, .unavailable(unavailableMessage(failure))) }
+        let folder = (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+        let names = ListFormatter.localizedString(byJoining: moved.map(\.lastPathComponent))
+        let whereItIs = "Its files are in \(folder) as \(names)."
+        do {
+            let container = try openContainer(at: url, inMemory: false)
+            Log.info("[STORE] Started a new \(url.lastPathComponent)")
+            return (container, .recovered("Your earlier history could not be opened, so it was moved aside and a "
+                                          + "new one started. " + whereItIs))
+        } catch {
+            Log.info("[STORE] Could not start a new \(url.lastPathComponent) either: \(error)")
+            return (nil, .unavailable("History is unavailable: the transcript store could not be opened, and a new "
+                                      + "one could not be started (\(error.localizedDescription)). " + whereItIs))
+        }
+    }
+
+    /// Renames whichever of the store's files exist with `suffix`, the
+    /// `-wal` and `-shm` journals first and the database last, and returns
+    /// their new URLs. A failed rename stops the move and is thrown. The
+    /// database then still has its name, so no new store is started beside a
+    /// journal, and the next open fails again and moves the rest.
+    private static func moveAside(_ url: URL, suffix: String) throws -> [URL] {
+        var moved: [URL] = []
+        for file in ["-wal", "-shm", ""].map({ URL(fileURLWithPath: url.path + $0) })
+        where FileManager.default.fileExists(atPath: file.path) {
+            let target = URL(fileURLWithPath: file.path + suffix)
+            try FileManager.default.moveItem(at: file, to: target)
+            Log.info("[STORE] Moved \(file.lastPathComponent) aside as \(target.lastPathComponent)")
+            moved.append(target)
+        }
+        return moved
     }
 
     private static func unavailableMessage(_ error: Error) -> String {
         "History is unavailable: the transcript store could not be opened (\(error.localizedDescription))."
+    }
+
+    /// What the names of a store's files moved aside at `date` end with,
+    /// e.g. `.broken-20261112-153012`.
+    static func brokenSuffix(at date: Date) -> String {
+        ".broken-" + brokenStamp.string(from: date)
     }
 
     /// Local date and time, e.g. `20261112-153012`.

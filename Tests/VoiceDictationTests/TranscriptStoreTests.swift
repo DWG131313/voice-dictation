@@ -45,8 +45,10 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(transcript.cleanedText, "Hello there.")
         XCTAssertEqual(transcript.appName, "Notes")
         XCTAssertEqual(transcript.modelKey, "whisperKit/base.en")
+        XCTAssertEqual(transcript.rawModelKey, "whisperKit/base.en", "the dictation's own model")
         XCTAssertEqual(transcript.recordingSeconds, 1.5, "from the clip")
         XCTAssertEqual(transcript.transcribeSeconds, 0.42)
+        XCTAssertEqual(transcript.rawTranscribeSeconds, 0.42, "the dictation's own time")
         XCTAssertEqual(transcript.cleanupSeconds, 0.3)
         XCTAssertEqual(transcript.statusRaw, "copied")
         XCTAssertEqual(transcript.status, .copied)
@@ -187,6 +189,7 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(transcript.isEdited)
         XCTAssertEqual(transcript.rawText, "um hello there")
         XCTAssertEqual(transcript.cleanedText, "Hello there.")
+        XCTAssertEqual(transcript.alternates.count, 0, "an edit of the dictation's own text is undone, not set aside")
     }
 
     /// A failed dictation has no raw text, so reverting cannot empty a text
@@ -205,6 +208,43 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertTrue(transcript.isEdited)
     }
 
+    /// Revert to raw after "Use this one" brings back the dictation's raw
+    /// text with its own model and time, and keeps the text it replaces, from
+    /// another model, as an alternate: an edit of that text as an edit.
+    @MainActor
+    func testRevertAfterPromoteRestoresTheDictationsModelAndKeepsThePromotedText() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", model: .appleSpeech, rawText: "um hello there",
+                                                         cleanedText: "Hello there.", transcribeSeconds: 0.2)))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first), in: transcript)
+
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US", "the raw text's model")
+        XCTAssertEqual(transcript.transcribeSeconds, 0.2, "the raw text's time")
+        XCTAssertFalse(transcript.isEdited)
+        let promoted = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello, there." }, "the promoted text is kept")
+        XCTAssertEqual(promoted.modelKey, "whisperKit/base.en")
+        XCTAssertEqual(promoted.seconds, 0.5)
+        XCTAssertTrue(promoted.wasMain)
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello, there."], "nothing is lost")
+
+        store.promote(promoted, in: transcript)
+        store.updateText(transcript, "Hello, there, Danny.")
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US")
+        XCTAssertEqual(transcript.transcribeSeconds, 0.2)
+        XCTAssertFalse(transcript.isEdited)
+        let edit = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello, there, Danny." }, "the edit is kept")
+        XCTAssertEqual(edit.modelKey, AlternateResult.editedModelKey)
+        XCTAssertEqual(edit.editedFromModelKey, "whisperKit/base.en", "the model whose text Danny edited")
+        XCTAssertEqual(edit.seconds, 0.5)
+    }
+
     // MARK: - Alternates
 
     @MainActor
@@ -220,6 +260,8 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(transcript.modelKey, "whisperKit/base.en")
         XCTAssertEqual(transcript.transcribeSeconds, 0.5)
         XCTAssertEqual(transcript.rawText, "Hello there.", "the dictation's own raw text stays")
+        XCTAssertEqual(transcript.rawModelKey, "appleSpeech/en-US", "and so do its model")
+        XCTAssertEqual(transcript.rawTranscribeSeconds, 0.2, "and its time")
         XCTAssertEqual(transcript.alternates.count, 1)
         let previous = try XCTUnwrap(transcript.alternates.first)
         XCTAssertEqual(previous.text, "Hello there.", "the old main text is kept")
@@ -235,6 +277,35 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(transcript.isEdited)
         XCTAssertEqual(transcript.alternates.map(\.modelKey), ["edited"])
         XCTAssertEqual(transcript.alternates.map(\.text), ["Hello, there, Danny."])
+    }
+
+    /// Danny's hand edit, set aside by a promote, is still his edit when it
+    /// is promoted back: `isEdited`, under the model whose text he edited
+    /// (never "edited", which names no model), with that model's time.
+    @MainActor
+    func testPromotingTheEditBackKeepsItAnEdit() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", model: .appleSpeech, transcribeSeconds: 0.2)))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first), in: transcript)
+        store.updateText(transcript, "Hello, there, Danny.")
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello there!", model: whisperSmall, elapsed: 0.9))
+        store.promote(try XCTUnwrap(transcript.alternates.first { $0.modelKey == "whisperKit/small.en" }), in: transcript)
+        let edit = try XCTUnwrap(transcript.alternates.first { $0.modelKey == AlternateResult.editedModelKey })
+        XCTAssertEqual(edit.text, "Hello, there, Danny.")
+
+        store.promote(edit, in: transcript)
+
+        XCTAssertEqual(transcript.text, "Hello, there, Danny.")
+        XCTAssertTrue(transcript.isEdited, "it is still Danny's edit")
+        XCTAssertEqual(transcript.modelKey, "whisperKit/base.en", "the model whose text he edited")
+        XCTAssertNotNil(ModelID(storageKey: transcript.modelKey))
+        XCTAssertEqual(transcript.transcribeSeconds, 0.5)
+        XCTAssertEqual(transcript.rawModelKey, "appleSpeech/en-US")
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello there!"], "nothing is lost")
+        let replaced = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello there!" })
+        XCTAssertEqual(replaced.modelKey, "whisperKit/small.en")
+        XCTAssertEqual(replaced.seconds, 0.9)
     }
 
     /// A failed dictation's empty text is not worth keeping as an alternate.
@@ -268,6 +339,36 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(byModel["whisperKit/base.en"]?.0, "Second try.")
         XCTAssertEqual(byModel["whisperKit/base.en"]?.1, 0.4)
         XCTAssertEqual(byModel["whisperKit/small.en"]?.0, "Small.")
+        XCTAssertEqual(try alternatesStored(in: store), 2)
+    }
+
+    /// A re-transcription replaces only the same model's earlier
+    /// re-transcription, never a main text that a promote set aside. Here
+    /// that is the pasted text, which no model gives back once replacements
+    /// (Task 22) have changed it.
+    @MainActor
+    func testReTranscribingNeverReplacesASetAsideMainText() throws {
+        let store = memoryStore()
+        // Dictate with Apple Speech, re-transcribe with base.en, choose base.en,
+        // then re-transcribe with Apple Speech.
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", model: .appleSpeech, transcribeSeconds: 0.2)))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first), in: transcript)
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello their.", model: .appleSpeech, elapsed: 0.3))
+
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello their."], "the pasted text is kept")
+        let pasted = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello there." })
+        XCTAssertTrue(pasted.wasMain)
+        XCTAssertEqual(pasted.modelKey, "appleSpeech/en-US")
+        XCTAssertEqual(pasted.seconds, 0.2)
+        let again = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello their." })
+        XCTAssertFalse(again.wasMain)
+        XCTAssertEqual(again.modelKey, "appleSpeech/en-US")
+
+        // Another run with Apple Speech replaces its re-transcription only.
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, their.", model: .appleSpeech, elapsed: 0.25))
+
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello, their."])
         XCTAssertEqual(try alternatesStored(in: store), 2)
     }
 
@@ -334,13 +435,18 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(reverted.isEdited)
         XCTAssertEqual(promoted.text, "Promoted!")
         XCTAssertEqual(promoted.modelKey, "whisperKit/small.en")
+        XCTAssertEqual(promoted.rawModelKey, "appleSpeech/en-US")
+        XCTAssertEqual(promoted.rawTranscribeSeconds, 0.2)
         XCTAssertEqual(promoted.alternates.map(\.text), ["Promoted."])
+        XCTAssertEqual(promoted.alternates.map(\.wasMain), [true])
     }
 
-    /// Review Focus 5: a store that cannot be opened is moved aside with its
-    /// `-wal` and `-shm` files, history is unavailable, and nothing crashes.
+    /// Review Focus 5, with Ruling T11-3: a store that cannot be opened is
+    /// moved aside with its `-wal` and `-shm` files, and a new store starts
+    /// at once, so dictations are still kept. `health` says the old history
+    /// could not be opened and where its files are.
     @MainActor
-    func testCorruptStoreIsMovedAsideAndHealthUnavailable() throws {
+    func testCorruptStoreIsMovedAsideAndHealthRecovered() throws {
         let directory = try makeDirectory()
         let names = ["transcripts.store", "transcripts.store-wal", "transcripts.store-shm"]
         let garbage = Data("This is not a SQLite database.".utf8)
@@ -348,34 +454,109 @@ final class TranscriptStoreTests: XCTestCase {
             try garbage.write(to: directory.appendingPathComponent(name))
         }
 
-        let store = TranscriptStore(directory: directory)
+        do {
+            let store = TranscriptStore(directory: directory)
+
+            guard case .recovered(let message) = store.health else {
+                return XCTFail("health is \(store.health)")
+            }
+            XCTAssertNotNil(store.container)
+            XCTAssertTrue(message.contains((directory.path as NSString).abbreviatingWithTildeInPath),
+                          "the message gives the folder: \(message)")
+            let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            var suffixes: Set<String> = []
+            for name in names {
+                let moved = try XCTUnwrap(left.first { $0.hasPrefix(name + ".broken-") }, "\(name) not moved aside: \(left)")
+                suffixes.insert(String(moved.dropFirst(name.count)))
+                XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(moved)), garbage, "moved, not rewritten")
+                XCTAssertTrue(message.contains(moved), "the message names \(moved): \(message)")
+                // The original names now belong to the new store, if to anything.
+                if let now = try? Data(contentsOf: directory.appendingPathComponent(name)) {
+                    XCTAssertNotEqual(now, garbage, "\(name) still holds the old bytes")
+                }
+            }
+            XCTAssertEqual(suffixes.count, 1, "one suffix for all three: \(left)")
+            XCTAssertTrue(left.allSatisfy { names.contains($0) || $0.contains(".broken-") }, "nothing else: \(left)")
+
+            let kept = try XCTUnwrap(store.add(outcome("Hello there.")), "dictations are kept at once")
+            XCTAssertEqual(store.search("", scope: .all).map(\.id), [kept.id])
+            XCTAssertEqual(store.latest?.id, kept.id)
+        }
+
+        // The new store is on disk: the next launch opens it as it is.
+        let next = TranscriptStore(directory: directory)
+        XCTAssertEqual(next.health, .ok)
+        XCTAssertEqual(next.search("", scope: .all).map(\.text), ["Hello there."])
+    }
+
+    /// Ruling T11-3: history is unavailable only when no store can be made.
+    /// Here a file sits where the store's folder should be: nothing is kept,
+    /// nothing crashes, and the file in the way is left alone.
+    @MainActor
+    func testStoreThatCannotBeMadeIsUnavailable() throws {
+        let parent = try makeDirectory()
+        let inTheWay = parent.appendingPathComponent("VoiceDictation")
+        let bytes = Data("A file, not a folder.".utf8)
+        try bytes.write(to: inTheWay)
+
+        let store = TranscriptStore(directory: inTheWay)
 
         guard case .unavailable(let message) = store.health else {
             return XCTFail("health is \(store.health)")
         }
         XCTAssertFalse(message.isEmpty)
         XCTAssertNil(store.container)
-        let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-        for name in names {
-            XCTAssertFalse(left.contains(name), "\(name) is still there: \(left)")
-        }
-        var suffixes: Set<String> = []
-        for name in names {
-            let moved = try XCTUnwrap(left.first { $0.hasPrefix(name + ".broken-") }, "\(name) not moved aside: \(left)")
-            suffixes.insert(String(moved.dropFirst(name.count)))
-            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(moved)), garbage, "moved, not rewritten")
-        }
-        XCTAssertEqual(suffixes.count, 1, "one suffix for all three: \(left)")
-        XCTAssertEqual(left.count, 3, "nothing else left behind: \(left)")
         XCTAssertNil(store.add(outcome("Hello there.")))
         XCTAssertEqual(store.search("", scope: .all), [])
         XCTAssertNil(store.latest)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: parent.path), ["VoiceDictation"])
+        XCTAssertEqual(try Data(contentsOf: inTheWay), bytes)
+    }
 
-        // The next launch starts a new store, which never meets the old journal.
-        let next = TranscriptStore(directory: directory)
-        XCTAssertEqual(next.health, .ok)
-        XCTAssertNotNil(next.add(outcome("Hello again.")))
-        XCTAssertEqual(next.search("", scope: .all).map(\.text), ["Hello again."])
+    /// The journals are moved aside before the database, so a move that
+    /// stops half-way leaves the database under its own name: no new store
+    /// starts beside a journal. The next launch moves the rest and starts
+    /// afresh.
+    @MainActor
+    func testMoveAsideThatStopsHalfWayStartsNoNewStore() throws {
+        let directory = try makeDirectory()
+        let garbage = Data("This is not a SQLite database.".utf8)
+        for name in ["transcripts.store", "transcripts.store-wal", "transcripts.store-shm"] {
+            try garbage.write(to: directory.appendingPathComponent(name))
+        }
+        func contents(_ name: String) -> Data? {
+            try? Data(contentsOf: directory.appendingPathComponent(name))
+        }
+        let firstTry = base
+        let suffix = TranscriptStore.brokenSuffix(at: firstTry)
+        // The -shm file's new name is taken, so its rename fails.
+        let taken = Data("Already here.".utf8)
+        try taken.write(to: directory.appendingPathComponent("transcripts.store-shm" + suffix))
+
+        let store = TranscriptStore(directory: directory, now: firstTry)
+
+        guard case .unavailable(let message) = store.health else {
+            return XCTFail("health is \(store.health)")
+        }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertEqual(contents("transcripts.store"), garbage, "the database keeps its name")
+        XCTAssertNil(store.container, "no new store beside a journal")
+        XCTAssertNil(store.add(outcome("Hello there.")))
+        XCTAssertEqual(contents("transcripts.store-shm"), garbage)
+        XCTAssertEqual(contents("transcripts.store-shm" + suffix), taken)
+
+        let nextTry = firstTry.addingTimeInterval(60)
+        do {
+            let next = TranscriptStore(directory: directory, now: nextTry)
+            guard case .recovered = next.health else {
+                return XCTFail("health is \(next.health)")
+            }
+            XCTAssertNotNil(next.add(outcome("Hello again.")))
+        }
+        let nextSuffix = TranscriptStore.brokenSuffix(at: nextTry)
+        XCTAssertEqual(contents("transcripts.store" + nextSuffix), garbage)
+        XCTAssertEqual(contents("transcripts.store-shm" + nextSuffix), garbage)
+        XCTAssertEqual(contents("transcripts.store-wal" + suffix), garbage, "moved on the first try")
     }
 
     // MARK: - Helpers

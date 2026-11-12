@@ -63,21 +63,39 @@ final class HistoryImporterTests: XCTestCase {
         XCTAssertEqual(store.search("", scope: .all).count, 5)
     }
 
-    /// Nothing is imported into a store that could not be opened, and the
-    /// import is not marked done, so a later launch with a working store
-    /// still imports.
+    /// Nothing is imported into a store that is unavailable, and the import
+    /// is not marked done, so a later launch with a working store still
+    /// imports.
     @MainActor
     func testNothingIsMarkedDoneWhileTheStoreIsUnavailable() throws {
         let file = try writeHistory(makeEntries(3))
-        let brokenDirectory = directory.appendingPathComponent("broken", isDirectory: true)
-        try FileManager.default.createDirectory(at: brokenDirectory, withIntermediateDirectories: true)
-        try Data("not a database".utf8).write(to: brokenDirectory.appendingPathComponent("transcripts.store"))
-        let broken = TranscriptStore(directory: brokenDirectory)
-        guard case .unavailable = broken.health else { return XCTFail("health is \(broken.health)") }
+        // A file where the store's folder should be: no store can be made.
+        let inTheWay = directory.appendingPathComponent("blocked")
+        try Data("not a folder".utf8).write(to: inTheWay)
+        let unavailable = TranscriptStore(directory: inTheWay)
+        guard case .unavailable = unavailable.health else { return XCTFail("health is \(unavailable.health)") }
 
-        XCTAssertEqual(HistoryImporter.importIfNeeded(from: file, into: broken, preferences: preferences), 0)
+        XCTAssertEqual(HistoryImporter.importIfNeeded(from: file, into: unavailable, preferences: preferences), 0)
 
         XCTAssertEqual(HistoryImporter.importIfNeeded(from: file, into: memoryStore(), preferences: preferences), 3)
+    }
+
+    /// A damaged store is moved aside and a new one started at once (Ruling
+    /// T11-3). The new store works, so it takes the import.
+    @MainActor
+    func testImportsIntoAStoreStartedAfresh() throws {
+        let file = try writeHistory(makeEntries(3))
+        let damaged = directory.appendingPathComponent("damaged", isDirectory: true)
+        try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
+        try Data("not a database".utf8).write(to: damaged.appendingPathComponent("transcripts.store"))
+        let store = TranscriptStore(directory: damaged)
+        guard case .recovered = store.health else { return XCTFail("health is \(store.health)") }
+
+        XCTAssertEqual(HistoryImporter.importIfNeeded(from: file, into: store, preferences: preferences), 3)
+
+        XCTAssertEqual(store.search("", scope: .all).count, 3)
+        XCTAssertEqual(HistoryImporter.importIfNeeded(from: file, into: memoryStore(), preferences: preferences), 0,
+                       "marked done")
     }
 
     /// A missing or unreadable file imports nothing and is not an import

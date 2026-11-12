@@ -15,14 +15,16 @@ public enum HistoryImporter {
 
     /// Each entry becomes a pasted transcript of its old whisper-cli model.
     /// The import is marked done only when every entry is in the store, so a
-    /// missing or unreadable file, or a store that could not be opened, is
-    /// tried again at the next launch. Entries already in the store, the same
-    /// time and raw text, are skipped: the done flag lives in the defaults of
-    /// the binary that imported, and the bare dev binary and the app bundle
-    /// (Task 13) keep different ones. Tests pass preferences kept in memory
-    /// (Ruling T11-1).
+    /// missing or unreadable file, or an unavailable store (no `container`),
+    /// is tried again at the next launch. A store started afresh after a
+    /// damaged one was moved aside (`.recovered`) works, so it takes the
+    /// import at once. Entries already in the store, the same time and raw
+    /// text, are skipped: the done flag lives in the defaults of the binary
+    /// that imported, and the bare dev binary and the app bundle (Task 13)
+    /// keep different ones. Tests pass preferences kept in memory (Ruling
+    /// T11-1).
     static func importIfNeeded(from jsonURL: URL, into store: TranscriptStore, preferences: PreferenceStore) -> Int {
-        guard !preferences.bool(forKey: doneKey), store.health == .ok,
+        guard !preferences.bool(forKey: doneKey), store.container != nil,
               FileManager.default.fileExists(atPath: jsonURL.path) else { return 0 }
         let entries: [TranscriptionEntry]
         do {
