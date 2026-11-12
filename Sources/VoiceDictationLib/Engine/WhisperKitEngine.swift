@@ -16,9 +16,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
     /// Every model loaded since the last `unload()`. Preparing one model never
     /// evicts another (Ruling T7-3).
     private var loaded: [ModelID: WhisperKit] = [:]
-    /// Loads in flight, shared by everyone waiting for the same model. The
-    /// token lets a load that `unload()` or `delete` dropped end unseen.
-    private var loading: [ModelID: (token: UUID, task: Task<Void, Error>)] = [:]
+    /// Loads in flight, shared by everyone waiting for the same model. A load
+    /// always runs to its end, and `delete` is refused until then; once
+    /// `unload()` has given up on it, its pipeline is thrown away unless the
+    /// model is asked for again first.
+    private var loading: [ModelID: (task: Task<Void, Error>, wanted: Bool)] = [:]
     /// Downloads in flight and how far each has got.
     private var downloads: [ModelID: DownloadProgress] = [:]
 
@@ -60,19 +62,17 @@ public actor WhisperKitEngine: TranscriptionEngine {
     public func transcribe(_ clip: AudioClip, model id: ModelID, vocabulary: [String]) async throws -> String {
         try Task.checkCancellation()
         let model = try Self.model(id)
-        let pipeline = try await pipeline(for: model)
         guard !clip.samples.isEmpty else { return "" }
+        let pipeline = try await pipeline(for: model)
         do {
             let options = Self.decodingOptions(vocabulary: vocabulary, tokenizer: pipeline.tokenizer)
             // Clips over one 30 s window are split at a silence, as WhisperKit's
             // `.vad` strategy does, but a chunk that fails is reported here
             // instead of being left out of the text.
             let window = pipeline.featureExtractor.windowSamples ?? Constants.defaultWindowSamples
-            let chunks = try await VADAudioChunker().chunkAll(
-                audioArray: clip.samples, maxChunkLength: window, decodeOptions: options
-            )
+            let chunks = try await Self.chunks(of: clip.samples, window: window)
             let results = await pipeline.transcribeWithOptions(
-                audioArrays: chunks.map(\.audioSamples),
+                audioArrays: chunks,
                 decodeOptionsArray: Array(repeating: options, count: chunks.count)
             )
             // A cancelled chunk comes back as a failed result, not a throw.
@@ -108,7 +108,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
                 progress(fraction)
             }
         } catch {
-            try? Self.removeFiles(of: model, root: root)
+            do {
+                try Self.removeFiles(of: model, root: root)
+            } catch let cleanup {
+                Log.info("[WHISPERKIT] Could not remove the partial download of \(model.displayName): \(cleanup.localizedDescription)")
+            }
             if Task.isCancelled { throw CancellationError() }
             throw TranscriptionError.failed("\(model.displayName) could not be downloaded: \(error.localizedDescription)")
         }
@@ -116,13 +120,17 @@ public actor WhisperKitEngine: TranscriptionEngine {
     }
 
     /// Unloads the model and removes everything `download` wrote for it.
+    /// Refused while the model downloads or loads: a load that finds its
+    /// tokenizer gone fetches it from the network.
     public func delete(_ id: ModelID) async throws {
         let model = try Self.model(id)
         guard downloads[id] == nil else {
             throw TranscriptionError.failed("\(model.displayName) is still downloading")
         }
+        guard loading[id] == nil else {
+            throw TranscriptionError.failed("\(model.displayName) is still preparing")
+        }
         loaded[id] = nil
-        loading[id] = nil
         do {
             try Self.removeFiles(of: model, root: root)
         } catch {
@@ -130,10 +138,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
         }
     }
 
-    /// Releases every loaded model. A load still in flight is dropped when it ends.
+    /// Releases every loaded model. A load still in flight runs to its end,
+    /// but its model is not kept unless it is asked for again first.
     public func unload() async {
         loaded.removeAll()
-        loading.removeAll()
+        loading = loading.mapValues { (task: $0.task, wanted: false) }
     }
 
     /// How `prepare` loads a model: from its folder under `root`, with its
@@ -157,16 +166,22 @@ public actor WhisperKitEngine: TranscriptionEngine {
     // MARK: - Loading
 
     /// The model's pipeline, loading it first if need be. A load in flight
-    /// is joined, not repeated.
+    /// is joined, not repeated, even one that `unload()` gave up on.
     private func pipeline(for model: Model) async throws -> WhisperKit {
-        while true {
-            if let pipeline = loaded[model.id] { return pipeline }
-            try Task.checkCancellation()
-            let load = try loading[model.id]?.task ?? startLoading(model)
-            // A load that `unload()` or `delete` dropped ends without storing
-            // its pipeline; the next turn loads again or finds the files gone.
-            try await Self.wait(for: load)
+        if let pipeline = loaded[model.id] { return pipeline }
+        try Task.checkCancellation()
+        let load: Task<Void, Error>
+        if let running = loading[model.id] {
+            loading[model.id]?.wanted = true
+            load = running.task
+        } else {
+            load = try startLoading(model)
         }
+        try await Self.wait(for: load)
+        guard let pipeline = loaded[model.id] else {
+            throw TranscriptionError.modelNotReady("\(model.displayName) was unloaded before it finished loading")
+        }
+        return pipeline
     }
 
     /// Starts loading a downloaded model in a task of its own, so a caller
@@ -175,19 +190,21 @@ public actor WhisperKitEngine: TranscriptionEngine {
         guard isDownloaded(model) else {
             throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")
         }
-        let id = model.id, token = UUID()
+        let id = model.id
         let config = Self.loadConfig(for: id, root: root)
+        // The entry stays this load's until it ends: `unload()` only marks it
+        // unwanted, and `delete` is refused while it is there.
         let task = Task {
-            defer { if self.loading[id]?.token == token { self.loading[id] = nil } }
+            defer { self.loading[id] = nil }
             let pipeline: WhisperKit
             do {
                 pipeline = try await self.loader(config)
             } catch {
                 throw TranscriptionError.modelNotReady("\(model.displayName) could not load: \(error.localizedDescription)")
             }
-            if self.loading[id]?.token == token { self.loaded[id] = pipeline }
+            if self.loading[id]?.wanted == true { self.loaded[id] = pipeline }
         }
-        loading[id] = (token, task)
+        loading[id] = (task, true)
         return task
     }
 
@@ -205,6 +222,28 @@ public actor WhisperKitEngine: TranscriptionEngine {
     }
 
     // MARK: - Transcribing
+
+    /// The clip in windows of at most `window` samples, split at silences as
+    /// WhisperKit's `.vad` strategy splits it. With its default padding the
+    /// chunker drops whatever follows the last split when that is 1 s or
+    /// less, so the engine keeps such a tail unless it holds no voice: a
+    /// silent one would decode to "you".
+    static func chunks(of samples: [Float], window: Int) async throws -> [[Float]] {
+        var chunks = try await VADAudioChunker(windowPadding: 0)
+            .chunkAll(audioArray: samples, maxChunkLength: window, decodeOptions: nil)
+            .map(\.audioSamples)
+        if chunks.count > 1, let tail = chunks.last, tail.count <= Int(AudioClip.sampleRate), !holdsVoice(tail) {
+            chunks.removeLast()
+        }
+        return chunks
+    }
+
+    /// Whether the audio reaches the app's silence floor and EnergyVAD finds
+    /// voice in it.
+    private static func holdsVoice(_ samples: [Float]) -> Bool {
+        AudioClip(samples: samples).peak >= AudioRecorder.silenceThreshold
+            && EnergyVAD().voiceActivity(in: samples).contains(true)
+    }
 
     /// English, no timestamps, and the vocabulary as the decoding prompt,
     /// joined as whisper-cli's `--prompt` joins it. `windowClipTime` is 0

@@ -112,12 +112,8 @@ final class WhisperKitEngineTests: XCTestCase {
         try await engine.prepare(tiny)
 
         let second = Task { try await engine.prepare(base) }
+        try await waitUntil(engine, shows: base, as: .preparing)
         var seen = await states(of: engine)
-        let deadline = Date().addingTimeInterval(2)
-        while seen[base] != .preparing, Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
-            seen = await states(of: engine)
-        }
         XCTAssertEqual(seen[tiny], .ready)
         XCTAssertEqual(seen[base], .preparing)
 
@@ -132,6 +128,129 @@ final class WhisperKitEngineTests: XCTestCase {
         await engine.unload()
         let afterUnload = await engine.loadedModels
         XCTAssertEqual(afterUnload, [])
+    }
+
+    /// Removing a model's files under a running load makes WhisperKit fetch
+    /// the missing tokenizer from the network, so `delete` waits for the load.
+    func testDeleteWhilePreparingIsRefused() async throws {
+        try fakeDownload(tiny)
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        defer { open.finish() }
+        let engine = WhisperKitEngine(root: root) { _ in
+            for await _ in gate {}
+            return try await Self.emptyPipeline()
+        }
+        let preparing = Task { try await engine.prepare(tiny) }
+        try await waitUntil(engine, shows: tiny, as: .preparing)
+
+        do {
+            try await engine.delete(tiny)
+            XCTFail("delete should be refused while tiny.en prepares")
+        } catch {
+            XCTAssertEqual(error as? TranscriptionError, .failed("WhisperKit tiny.en is still preparing"))
+        }
+
+        for folder in try folders(of: tiny) {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path), "\(folder.path) was removed")
+        }
+        open.finish()
+        try await preparing.value
+        let loaded = await engine.loadedModels
+        XCTAssertEqual(loaded, [tiny])
+    }
+
+    /// A load that `unload()` overtakes still runs to its end, and shows as
+    /// preparing until then, but its model is not kept.
+    func testUnloadDuringALoadDropsIt() async throws {
+        try fakeDownload(tiny)
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        defer { open.finish() }
+        let engine = WhisperKitEngine(root: root) { _ in
+            for await _ in gate {}
+            return try await Self.emptyPipeline()
+        }
+        let preparing = Task { try await engine.prepare(tiny) }
+        try await waitUntil(engine, shows: tiny, as: .preparing)
+
+        await engine.unload()
+        let during = await states(of: engine)[tiny]
+        XCTAssertEqual(during, .preparing)
+        open.finish()
+
+        do {
+            try await preparing.value
+            XCTFail("prepare should fail once unload() has dropped its load")
+        } catch {
+            XCTAssertEqual(error as? TranscriptionError,
+                           .modelNotReady("WhisperKit tiny.en was unloaded before it finished loading"))
+        }
+        let loaded = await engine.loadedModels
+        XCTAssertEqual(loaded, [])
+        let after = await states(of: engine)[tiny]
+        XCTAssertEqual(after, .ready)
+    }
+
+    /// A prepare that comes after `unload()` takes over the load still in
+    /// flight instead of starting a second one.
+    func testPrepareAfterUnloadJoinsTheLoadInFlight() async throws {
+        try fakeDownload(tiny)
+        let calls = Calls()
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        defer { open.finish() }
+        let engine = WhisperKitEngine(root: root) { _ in
+            calls.add()
+            for await _ in gate {}
+            return try await Self.emptyPipeline()
+        }
+        let first = Task { try await engine.prepare(tiny) }
+        try await waitUntil(engine, shows: tiny, as: .preparing)
+        await engine.unload()
+
+        Task {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            open.finish()
+        }
+        try await engine.prepare(tiny)
+
+        try await first.value
+        XCTAssertEqual(calls.value, 1)
+        let loaded = await engine.loadedModels
+        XCTAssertEqual(loaded, [tiny])
+    }
+
+    func testEmptyClipGivesNoTextWithoutLoading() async throws {
+        // Nothing is downloaded, so trying to load would throw.
+        let text = try await WhisperKitEngine(root: root).transcribe(AudioClip(samples: []), model: tiny, vocabulary: [])
+
+        XCTAssertEqual(text, "")
+    }
+
+    /// WhisperKit's chunker drops whatever follows the last split when that
+    /// is 1 s or less, by default.
+    func testChunksKeepTheLastSecond() async throws {
+        // 29.5 s of voice, a 0.4 s pause, then a 0.7 s word: the split falls in the pause.
+        let paused = Self.audio([(29.5, true), (0.4, false), (0.7, true)])
+        // 60.5 s without a pause: split at 30 s and 60 s.
+        let continuous = Self.audio([(60.5, true)])
+
+        for samples in [paused, continuous] {
+            let chunks = try await WhisperKitEngine.chunks(of: samples, window: Constants.defaultWindowSamples)
+            XCTAssertEqual(chunks.map(\.count).reduce(0, +), samples.count, "chunk sizes: \(chunks.map(\.count))")
+        }
+    }
+
+    /// A short tail with no voice is left out, so it cannot decode to "you".
+    func testChunksDropASilentShortTail() async throws {
+        // 29.5 s of voice, then 1.1 s of silence: the split falls 0.2 s into
+        // the silence, leaving 0.9 s of it.
+        let samples = Self.audio([(29.5, true), (1.1, false)])
+
+        let chunks = try await WhisperKitEngine.chunks(of: samples, window: Constants.defaultWindowSamples)
+
+        XCTAssertEqual(chunks.count, 1, "chunk sizes: \(chunks.map(\.count))")
+        let kept = chunks.first?.count ?? 0
+        XCTAssertGreaterThanOrEqual(kept, 472_000, "all 29.5 s of voice")
+        XCTAssertTrue(samples[kept...].allSatisfy { $0 == 0 }, "dropped audio that was not silent")
     }
 
     /// A cancelled transcription stops waiting for its model at once; the
@@ -168,10 +287,7 @@ final class WhisperKitEngineTests: XCTestCase {
         let after = await engine.models().first { $0.id == tiny }
         XCTAssertEqual(after?.state, .notDownloaded)
         XCTAssertNil(after?.bytesOnDisk)
-        let model = try WhisperKitEngine.model(tiny)
-        for folder in [WhisperKitEngine.modelFolder(of: model, root: root),
-                       WhisperKitEngine.downloadRecords(of: model, root: root),
-                       WhisperKitEngine.tokenizerFolder(of: model, root: root)] {
+        for folder in try folders(of: tiny) {
             XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "\(folder.path) is still there")
         }
     }
@@ -220,8 +336,42 @@ final class WhisperKitEngineTests: XCTestCase {
         try Data().write(to: records.appending(path: "config.json.metadata"))
     }
 
+    /// The model's folder, the Hub client's records for it, and its tokenizer.
+    private func folders(of id: ModelID) throws -> [URL] {
+        let model = try WhisperKitEngine.model(id)
+        return [WhisperKitEngine.modelFolder(of: model, root: root),
+                WhisperKitEngine.downloadRecords(of: model, root: root),
+                WhisperKitEngine.tokenizerFolder(of: model, root: root)]
+    }
+
     private func states(of engine: WhisperKitEngine) async -> [ModelID: ModelDescriptor.State] {
         Dictionary(uniqueKeysWithValues: await engine.models().map { ($0.id, $0.state) })
+    }
+
+    /// Waits at most 2 s for `models()` to show `id` in `state`.
+    private func waitUntil(_ engine: WhisperKitEngine, shows id: ModelID, as state: ModelDescriptor.State) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while await states(of: engine)[id] != state, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    /// `parts` in order: a 440 Hz tone at 0.3 for voice, zeros for silence.
+    private static func audio(_ parts: [(seconds: Double, voiced: Bool)]) -> [Float] {
+        parts.flatMap { part in
+            (0..<Int(part.seconds * AudioClip.sampleRate)).map { index in
+                part.voiced ? Float(0.3 * sin(2 * Double.pi * 440 * Double(index) / AudioClip.sampleRate)) : 0
+            }
+        }
+    }
+
+    /// Counts calls made from any thread.
+    private final class Calls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        var value: Int { lock.withLock { count } }
+        func add() { lock.withLock { count += 1 } }
     }
 
     private func isInsideRoot(_ path: String?) -> Bool {
