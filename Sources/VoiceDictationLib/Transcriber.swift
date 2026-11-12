@@ -61,78 +61,38 @@ public class Transcriber {
         let started = Date()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: binaryPath)
-            process.arguments = Self.arguments(modelPath: modelPath, audioPath: fileURL.path)
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-
-            do {
-                try process.run()
-            } catch {
-                try? FileManager.default.removeItem(at: fileURL)
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    self.isTranscribing = false
-                    self.delegate?.transcriptionFailed(error: "Failed to run whisper-cli: \(error.localizedDescription)")
-                    self.processQueue()
-                }
-                return
-            }
-
-            // Timeout handling
-            var timedOut = false
-            let timer = DispatchSource.makeTimerSource(queue: .global())
-            timer.schedule(deadline: .now() + timeout)
-            timer.setEventHandler {
-                if process.isRunning {
-                    timedOut = true
-                    process.terminate()
-                }
-            }
-            timer.resume()
-
-            // Drain both pipes concurrently. Reading them one after the other
-            // can deadlock: whisper blocks writing to a full stderr pipe while
-            // we block waiting for stdout to close.
-            var errData = Data()
-            let errGroup = DispatchGroup()
-            errGroup.enter()
-            DispatchQueue.global(qos: .utility).async {
-                errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                errGroup.leave()
-            }
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            errGroup.wait()
-
-            process.waitUntilExit()
-            timer.cancel()
+            let outcome = WhisperRun(
+                binaryPath: binaryPath,
+                arguments: Self.arguments(modelPath: modelPath, audioPath: fileURL.path),
+                timeout: timeout
+            ).run()
 
             // Clean up WAV file
             try? FileManager.default.removeItem(at: fileURL)
-
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            let stderr = String(data: errData, encoding: .utf8) ?? ""
             let elapsed = Date().timeIntervalSince(started)
 
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isTranscribing = false
 
-                if timedOut {
+                switch outcome {
+                case .launchFailed(let error):
+                    self.delegate?.transcriptionFailed(error: "Failed to run whisper-cli: \(error.localizedDescription)")
+                case .timedOut:
                     Log.info("[WHISPER] Timed out after \(Int(timeout))s")
                     self.delegate?.transcriptionFailed(error: "Transcription timed out — try a shorter recording or a smaller model")
-                } else if process.terminationStatus != 0 {
-                    let message = Self.friendlyError(stderr: stderr, status: process.terminationStatus)
-                    Log.info("[WHISPER] Failed (status \(process.terminationStatus)): \(stderr.suffix(500))")
-                    self.delegate?.transcriptionFailed(error: message)
-                } else {
-                    let text = Self.parseOutput(output)
-                    Log.info("[WHISPER] Done in \(String(format: "%.1f", elapsed))s for \(String(format: "%.1f", recordingDuration))s audio, \(text.count) chars")
-                    self.delegate?.transcriptionCompleted(text: text)
+                case .cancelled:
+                    break  // Transcriber never cancels a run
+                case .finished(let output, let stderr, let status):
+                    if status != 0 {
+                        let message = Self.friendlyError(stderr: stderr, status: status)
+                        Log.info("[WHISPER] Failed (status \(status)): \(stderr.suffix(500))")
+                        self.delegate?.transcriptionFailed(error: message)
+                    } else {
+                        let text = Self.parseOutput(output)
+                        Log.info("[WHISPER] Done in \(String(format: "%.1f", elapsed))s for \(String(format: "%.1f", recordingDuration))s audio, \(text.count) chars")
+                        self.delegate?.transcriptionCompleted(text: text)
+                    }
                 }
 
                 self.processQueue()
@@ -154,8 +114,8 @@ public class Transcriber {
 
     // MARK: - Static helpers (testable)
 
-    public static func arguments(modelPath: String, audioPath: String) -> [String] {
-        [
+    public static func arguments(modelPath: String, audioPath: String, vocabulary: [String] = []) -> [String] {
+        var args = [
             "-m", modelPath,
             "-f", audioPath,
             "--no-timestamps",
@@ -163,60 +123,14 @@ public class Transcriber {
             "--suppress-nst",   // suppress non-speech tokens like [MUSIC]
             "--language", "en",
         ]
+        if !vocabulary.isEmpty {
+            args += ["--prompt", vocabulary.joined(separator: ", ")]
+        }
+        return args
     }
-
-    /// Tokens whisper emits for non-speech audio. A line that is nothing but
-    /// one of these is dropped so silence never pastes "[BLANK_AUDIO]".
-    private static let nonSpeechLine = try! NSRegularExpression(
-        pattern: #"^\s*(\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)\s*$"#
-    )
-
-    /// A leading whisper timestamp: `[00:00:00.000 --> 00:00:03.000]`
-    private static let leadingTimestamp = try! NSRegularExpression(
-        pattern: #"^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]"#
-    )
-
-    /// Whole-transcript outputs whisper produces from silence or breath noise.
-    /// Compared after lowercasing and stripping punctuation, and only against
-    /// the entire transcript, so real sentences are never touched.
-    private static let silenceHallucinations: Set<String> = [
-        "you", "thank you", "thanks for watching", "thank you for watching",
-        "thanks for listening", "bye", "the end",
-    ]
 
     public static func parseOutput(_ output: String) -> String {
-        let text = joinLines(output)
-        let normalized = text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        if silenceHallucinations.contains(normalized) { return "" }
-        return text
-    }
-
-    private static func joinLines(_ output: String) -> String {
-        var result: [String] = []
-
-        for line in output.components(separatedBy: .newlines) {
-            var cleaned = line
-
-            // Strip a leading timestamp only — never brackets inside the text.
-            let full = NSRange(cleaned.startIndex..., in: cleaned)
-            if let match = leadingTimestamp.firstMatch(in: cleaned, range: full),
-               let range = Range(match.range, in: cleaned) {
-                cleaned.removeSubrange(range)
-            }
-
-            cleaned = cleaned.trimmingCharacters(in: .whitespaces)
-            if cleaned.isEmpty { continue }
-
-            let range = NSRange(cleaned.startIndex..., in: cleaned)
-            if nonSpeechLine.firstMatch(in: cleaned, range: range) != nil { continue }
-
-            result.append(cleaned)
-        }
-
-        return result.joined(separator: " ")
+        OutputFilter.clean(output)
     }
 
     /// Turn whisper's stderr dump into a one-line message fit for the menu bar.
