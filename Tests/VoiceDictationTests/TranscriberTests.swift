@@ -2,20 +2,6 @@ import XCTest
 @testable import VoiceDictationLib
 
 final class TranscriberTests: XCTestCase {
-    func testOverflowDropsOldestQueuedRecording() {
-        let urls = (1...5).map { URL(fileURLWithPath: "/tmp/\($0).wav") }
-        var queue: [(URL, TimeInterval)] = []
-        var dropped: [URL] = []
-        for url in urls.prefix(3) {
-            XCTAssertNil(Transcriber.enqueue((url, 1), into: &queue, maxDepth: 3))
-        }
-        for url in urls.suffix(2) {
-            if let d = Transcriber.enqueue((url, 1), into: &queue, maxDepth: 3) { dropped.append(d) }
-        }
-        XCTAssertEqual(dropped, [urls[0], urls[1]])
-        XCTAssertEqual(queue.map { $0.0 }, [urls[2], urls[3], urls[4]])
-    }
-
     func testFriendlyErrorForMissingModel() {
         let stderr = "whisper_init_from_file_with_params_no_state: loading model from '/x/ggml-base.en.bin'\nwhisper_model_load: failed to open '/x/ggml-base.en.bin'\nerror: failed to load model\n"
         let message = Transcriber.friendlyError(stderr: stderr, status: 3)

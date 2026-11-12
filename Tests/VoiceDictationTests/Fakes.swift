@@ -61,6 +61,8 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     private var _calls: [Call] = []
     private var _cancelledCount = 0
     private var _models: [ModelDescriptor] = []
+    private var _textForClip: (@Sendable (AudioClip) -> String)?
+    private var _clips: [AudioClip] = []
 
     init(kind: EngineKind = .appleSpeech, probe: ConcurrencyProbe? = nil, log: CallLog? = nil) {
         self.kind = kind
@@ -100,6 +102,13 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         get { lock.withLock { _models } }
         set { lock.withLock { _models = newValue } }
     }
+    /// When set, `transcribe` returns this clip's text instead of `result`.
+    var textForClip: (@Sendable (AudioClip) -> String)? {
+        get { lock.withLock { _textForClip } }
+        set { lock.withLock { _textForClip = newValue } }
+    }
+    /// The clips `transcribe` was given, in the order the calls started.
+    var transcribedClips: [AudioClip] { lock.withLock { _clips } }
     /// Every call in the order it started.
     var calls: [Call] { lock.withLock { _calls } }
     /// `transcribe` calls cancelled while held or during their `delay`.
@@ -122,6 +131,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     func transcribe(_ clip: AudioClip, model: ModelID, vocabulary: [String]) async throws -> String {
+        lock.withLock { _clips.append(clip) }
         record(.transcribe(model))
         probe?.enter()
         defer { probe?.leave() }
@@ -133,7 +143,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
             lock.withLock { _cancelledCount += 1 }
             throw error
         }
-        return result
+        return textForClip?(clip) ?? result
     }
 
     func download(_ model: ModelID, progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -144,4 +154,72 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     func delete(_ model: ModelID) async throws { record(.delete(model)) }
 
     func unload() async { record(.unload) }
+}
+
+/// A recorder that calls its delegate the way `AudioRecorder` does, without
+/// a microphone. Use from the main thread, as the real one.
+final class FakeRecorder: Recording {
+    weak var delegate: AudioRecorderDelegate?
+    var onLevel: ((Float) -> Void)?
+    var onFirstAudio: ((Date) -> Void)?
+
+    /// What the next stop hands over; nil makes the recording too short to keep.
+    var nextClip: AudioClip?
+    /// When set, starting fails with this message, as without microphone access.
+    var startFailure: String?
+    /// When true, starting waits, as for the microphone permission prompt,
+    /// until `startNow()`.
+    var startsLater = false
+
+    private(set) var isRecording = false
+    private(set) var prepareCount = 0
+    private(set) var startCount = 0
+    private(set) var cancelCount = 0
+
+    func prepare() { prepareCount += 1 }
+
+    func startRecording() {
+        startCount += 1
+        if let startFailure {
+            delegate?.recordingDidFail(error: startFailure)
+        } else if !startsLater {
+            startNow()
+        }
+    }
+
+    /// Starts a recording, as after the microphone permission prompt.
+    func startNow() {
+        isRecording = true
+        delegate?.recordingDidStart()
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        if let clip = nextClip {
+            delegate?.recordingDidFinish(clip: clip)
+        } else {
+            delegate?.recordingDiscarded()
+        }
+    }
+
+    func cancelRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        cancelCount += 1
+        delegate?.recordingDiscarded()
+    }
+}
+
+/// A paster that records what it was asked to paste instead of pasting it.
+final class FakePaster: Pasting {
+    /// False pastes nothing, as without Accessibility access.
+    var succeeds = true
+    var frontmostAppName: String? = "TextEdit"
+    private(set) var pasted: [String] = []
+
+    func paste(text: String) -> Bool {
+        pasted.append(text)
+        return succeeds
+    }
 }

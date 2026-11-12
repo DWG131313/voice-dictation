@@ -1,19 +1,16 @@
 import Cocoa
 
-public enum AppStatus {
-    case idle
-    case recording
-    case transcribing(queued: Int)
-    case error(message: String)
-    case downloading(progress: Double)
-    case permissionNeeded(String)
-}
-
 public protocol StatusManagerDelegate: AnyObject {
     func statusManagerDidRequestPreferences()
     func statusManagerDidRequestClearHistory()
+    /// A model was chosen in the Model submenu.
+    func statusManagerDidChooseModel(_ model: ModelDescriptor)
+    /// The menu is opening; the models may have changed since they were listed.
+    func statusManagerWillOpenMenu()
 }
 
+/// The menu bar item: an icon and a status line showing the pipeline's
+/// `DictationState`, the Model submenu, recent transcriptions and settings.
 public class StatusManager: NSObject {
     public weak var delegate: StatusManagerDelegate?
 
@@ -21,17 +18,20 @@ public class StatusManager: NSObject {
     private let menu: NSMenu
     private let statusMenuItem: NSMenuItem
     private let modelMenuItem: NSMenuItem
+    private let modelSubmenu: NSMenu
     private let historyMenuItem: NSMenuItem
     private let historySubmenu: NSMenu
     private let launchAtLoginMenuItem: NSMenuItem
     private let keepRecordingsMenuItem: NSMenuItem
-    private var errorClearTimer: Timer?
 
     public override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         menu = NSMenu()
         statusMenuItem = NSMenuItem(title: "Status: Ready", action: nil, keyEquivalent: "")
-        modelMenuItem = NSMenuItem(title: "Model: \(PreferencesManager.shared.selectedModel.id)", action: nil, keyEquivalent: "")
+        modelMenuItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
+        modelSubmenu = NSMenu()
+        modelSubmenu.addItem(NSMenuItem(title: "Loading models…", action: nil, keyEquivalent: ""))
+        modelMenuItem.submenu = modelSubmenu
         historyMenuItem = NSMenuItem(title: "Recent Transcriptions", action: nil, keyEquivalent: "")
         historySubmenu = NSMenu()
         historyMenuItem.submenu = historySubmenu
@@ -41,6 +41,7 @@ public class StatusManager: NSObject {
 
         super.init()
 
+        menu.delegate = self
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(historyMenuItem)
@@ -105,9 +106,56 @@ public class StatusManager: NSObject {
         pasteboard.setString(text, forType: .string)
     }
 
-    public func updateModelDisplay() {
-        modelMenuItem.title = "Model: \(PreferencesManager.shared.selectedModel.id)"
+    @objc private func modelChosen(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? ModelDescriptor else { return }
+        delegate?.statusManagerDidChooseModel(model)
     }
+
+    // MARK: - Models
+
+    /// Lists every model in the Model submenu, grouped by engine, with the
+    /// one dictation uses checked. The old whisper-cli models sit under a
+    /// "Previous engine" header.
+    public func updateModels(_ models: [ModelDescriptor], selected: ModelID) {
+        let selectedName = models.first { $0.id == selected }?.displayName ?? selected.storageKey
+        modelMenuItem.title = "Model: \(selectedName)"
+        modelSubmenu.removeAllItems()
+        var engine: EngineKind?
+        for model in models {
+            if model.id.engine != engine {
+                if engine != nil { modelSubmenu.addItem(NSMenuItem.separator()) }
+                if model.id.engine == .whisperCLI { modelSubmenu.addItem(NSMenuItem.sectionHeader(title: "Previous engine")) }
+                engine = model.id.engine
+            }
+            let entry = Self.menuEntry(for: model)
+            let item = NSMenuItem(title: entry.title, action: entry.isEnabled ? #selector(modelChosen(_:)) : nil, keyEquivalent: "")
+            item.target = self
+            item.representedObject = model
+            item.state = model.id == selected ? .on : .off
+            item.toolTip = model.detail
+            modelSubmenu.addItem(item)
+        }
+    }
+
+    /// How a model reads in the Model submenu, and whether choosing it does
+    /// anything. A model that is not on the Mac offers its download, which
+    /// then selects it.
+    static func menuEntry(for model: ModelDescriptor) -> (title: String, isEnabled: Bool) {
+        switch model.state {
+        case .ready:
+            return (model.displayName, true)
+        case .notDownloaded:
+            return ("Download \(model.displayName)", true)
+        case .preparing:
+            return ("\(model.displayName) — preparing", true)
+        case .downloading(let progress):
+            return ("\(model.displayName) — downloading \(Int(progress * 100))%", false)
+        case .unavailable(let reason):
+            return ("\(model.displayName) — \(reason)", false)
+        }
+    }
+
+    // MARK: - History
 
     public func updateHistory(_ entries: [TranscriptionEntry]) {
         historySubmenu.removeAllItems()
@@ -139,6 +187,8 @@ public class StatusManager: NSObject {
         historyMenuItem.isHidden = !PreferencesManager.shared.historyEnabled
     }
 
+    // MARK: - Status
+
     /// An SF Symbol that doesn't exist on this macOS version yields nil, and
     /// a nil button image makes the menu bar icon vanish. Never let that
     /// happen: fall back to the plain mic.
@@ -150,13 +200,14 @@ public class StatusManager: NSObject {
         return NSImage(systemSymbolName: "mic.fill", accessibilityDescription: description)
     }
 
-    public func updateStatus(_ status: AppStatus) {
+    /// Shows the pipeline's state. The pipeline itself returns from an error
+    /// to the true state, so nothing here times out.
+    public func updateStatus(_ state: DictationState) {
         dispatchPrecondition(condition: .onQueue(.main))
-        errorClearTimer?.invalidate()
 
         guard let button = statusItem.button else { return }
 
-        switch status {
+        switch state {
         case .idle:
             button.image = symbol("mic.fill", "VoiceDictation — Ready")
             button.contentTintColor = nil
@@ -167,33 +218,36 @@ public class StatusManager: NSObject {
             button.contentTintColor = .systemRed
             statusMenuItem.title = "Status: Recording..."
 
-        case .transcribing(let queued):
+        case .transcribing:
             button.image = symbol("waveform", "VoiceDictation — Transcribing")
             button.contentTintColor = nil
-            if queued > 0 {
-                statusMenuItem.title = "Status: Transcribing... (\(queued) queued)"
-            } else {
-                statusMenuItem.title = "Status: Transcribing..."
-            }
+            statusMenuItem.title = "Status: Transcribing..."
+
+        case .cleaning:
+            button.image = symbol("waveform", "VoiceDictation — Cleaning up")
+            button.contentTintColor = nil
+            statusMenuItem.title = "Status: Cleaning up..."
+
+        case .preparingModel(let name):
+            button.image = symbol("arrow.down.circle", "VoiceDictation — Preparing a model")
+            button.contentTintColor = nil
+            statusMenuItem.title = "Status: Preparing \(name)..."
 
         case .error(let message):
             button.image = symbol("mic.slash.fill", "VoiceDictation — Error")
             button.contentTintColor = .systemOrange
             statusMenuItem.title = "Error: \(message)"
-            errorClearTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
-                self?.updateStatus(.idle)
-            }
 
-        case .downloading(let progress):
-            button.image = symbol("arrow.down.circle", "VoiceDictation — Downloading")
-            button.contentTintColor = nil
-            let percent = Int(progress * 100)
-            statusMenuItem.title = "Downloading model... \(percent)%"
-
-        case .permissionNeeded(let permission):
+        case .needsPermission(let permission):
             button.image = symbol("exclamationmark.triangle.fill", "VoiceDictation — Permission Needed")
             button.contentTintColor = .systemYellow
             statusMenuItem.title = "Permission needed: \(permission)"
         }
+    }
+}
+
+extension StatusManager: NSMenuDelegate {
+    public func menuWillOpen(_ menu: NSMenu) {
+        delegate?.statusManagerWillOpenMenu()
     }
 }

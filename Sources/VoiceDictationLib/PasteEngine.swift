@@ -1,16 +1,36 @@
 import Cocoa
 import Carbon.HIToolbox
 
-public class PasteEngine {
+public class PasteEngine: Pasting {
+    private let pasteboard: NSPasteboard
+    private let isTrusted: () -> Bool
     /// Delay before restoring clipboard. Slow apps (Electron) read the
     /// pasteboard a beat after receiving Cmd+V; restore too early and they
     /// paste the old contents.
-    private let clipboardRestoreDelay: TimeInterval = 0.5
+    private let clipboardRestoreDelay: TimeInterval
 
-    public init() {}
+    public convenience init() {
+        self.init(pasteboard: .general, isTrusted: { AXIsProcessTrusted() }, restoreDelay: 0.5)
+    }
 
-    public func paste(text: String) {
-        let pasteboard = NSPasteboard.general
+    /// Tests pass a pasteboard of their own and say whether Accessibility
+    /// access is granted.
+    init(pasteboard: NSPasteboard, isTrusted: @escaping () -> Bool, restoreDelay: TimeInterval) {
+        self.pasteboard = pasteboard
+        self.isTrusted = isTrusted
+        self.clipboardRestoreDelay = restoreDelay
+    }
+
+    public var frontmostAppName: String? {
+        NSWorkspace.shared.frontmostApplication?.localizedName
+    }
+
+    /// Pastes `text` into the frontmost app with Cmd+V, then puts back what
+    /// was on the clipboard. Without Accessibility access macOS ignores the
+    /// Cmd+V, so the text is left on the clipboard for the user to paste, and
+    /// this returns false.
+    public func paste(text: String) -> Bool {
+        let pasteboard = self.pasteboard
 
         // 1. Snapshot everything on the clipboard — images, files, rich text —
         //    not just the plain string, so nothing the user copied is lost.
@@ -21,8 +41,13 @@ public class PasteEngine {
         pasteboard.setString(text, forType: .string)
         let ourChangeCount = pasteboard.changeCount
 
-        // 3. Simulate Cmd+V
-        simulatePaste()
+        // 3. Simulate Cmd+V. If it cannot be sent, the text stays where the
+        //    user can paste it.
+        guard isTrusted() else {
+            Log.info("[PASTE] Accessibility not granted — text left on the clipboard")
+            return false
+        }
+        guard simulatePaste() else { return false }
 
         // 4. Restore clipboard after delay — unless the user has already
         //    copied something new in the meantime, which must win.
@@ -30,6 +55,7 @@ public class PasteEngine {
             guard pasteboard.changeCount == ourChangeCount else { return }
             Self.restore(snapshot, to: pasteboard)
         }
+        return true
     }
 
     // MARK: - Clipboard snapshot
@@ -66,14 +92,15 @@ public class PasteEngine {
         }
     }
 
-    private func simulatePaste() {
+    /// Sends Cmd+V; false if the events could not be made.
+    private func simulatePaste() -> Bool {
         let source = CGEventSource(stateID: .hidSystemState)
 
         // Key down: Cmd + V
         guard let cmdVDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_ANSI_V), keyDown: true),
               let cmdVUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_ANSI_V), keyDown: false) else {
-            Log.info("[PASTE] Failed to create Cmd+V events")
-            return
+            Log.info("[PASTE] Failed to create Cmd+V events — text left on the clipboard")
+            return false
         }
 
         cmdVDown.flags = .maskCommand
@@ -81,5 +108,6 @@ public class PasteEngine {
 
         cmdVDown.post(tap: .cghidEventTap)
         cmdVUp.post(tap: .cghidEventTap)
+        return true
     }
 }

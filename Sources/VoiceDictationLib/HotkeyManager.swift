@@ -16,11 +16,71 @@ public protocol HotkeyStrategy: AnyObject {
     func ensureHealthy()
 }
 
+/// What a key pressed while Globe is held does to the dictation.
+public enum KeyAction: Equatable, Sendable {
+    /// Globe is not held for a dictation: the key goes through untouched.
+    case none
+    /// Escape: the dictation is cancelled and the key is swallowed.
+    case cancelAndConsume
+    /// Any other key, as when Globe is a modifier (Globe+Right Arrow is
+    /// End): the dictation is cancelled and the key goes through.
+    case cancelAndPass
+}
+
+/// The Globe key's presses, one event at a time, kept apart from the event
+/// tap so the rules can be tested.
+struct GlobeKeyPresses {
+    enum Press: Equatable { case none, start, end }
+
+    /// Whether Globe is held for a dictation.
+    private(set) var isPressed = false
+    /// A key cancelled this hold's dictation. Globe then starts nothing more
+    /// until it is released: any modifier change while it is still down
+    /// (Shift let go after Globe+Shift+Right Arrow) reports it down again.
+    private var cancelledThisHold = false
+
+    /// The Globe key's flag in a modifier change.
+    mutating func globeChanged(isDown: Bool) -> Press {
+        defer { if !isDown { cancelledThisHold = false } }
+        if isDown, !isPressed, !cancelledThisHold {
+            isPressed = true
+            return .start
+        }
+        if !isDown, isPressed {
+            isPressed = false
+            return .end
+        }
+        return .none
+    }
+
+    mutating func keyDown(_ keyCode: Int64) -> KeyAction {
+        let action = GlobeKeyStrategy.action(forKeyDown: keyCode, whilePressed: isPressed)
+        if action != .none {
+            isPressed = false
+            cancelledThisHold = true
+        }
+        return action
+    }
+
+    mutating func reset() {
+        isPressed = false
+        cancelledThisHold = false
+    }
+}
+
 public class GlobeKeyStrategy: HotkeyStrategy {
     public weak var delegate: HotkeyDelegate?
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var isPressed = false
+    private var presses = GlobeKeyPresses()
+
+    /// A key pressed while Globe is held for a dictation cancels it, so
+    /// using Globe as a modifier never dictates. Escape is swallowed; any
+    /// other key goes through to the app.
+    public static func action(forKeyDown keyCode: Int64, whilePressed: Bool) -> KeyAction {
+        guard whilePressed else { return .none }
+        return keyCode == Int64(kVK_Escape) ? .cancelAndConsume : .cancelAndPass
+    }
 
     public init() {}
 
@@ -68,7 +128,7 @@ public class GlobeKeyStrategy: HotkeyStrategy {
         }
         eventTap = nil
         runLoopSource = nil
-        isPressed = false
+        presses.reset()
     }
 
     /// macOS can disable an event tap (a slow callback, sleep/wake, a change
@@ -103,31 +163,31 @@ public class GlobeKeyStrategy: HotkeyStrategy {
         // Keep this callback fast and quiet: it runs for every modifier change
         // and keystroke on the system, so no logging of routine events here.
         if type == .flagsChanged {
-            let fnPressed = event.flags.contains(.maskSecondaryFn)
-
-            if fnPressed && !isPressed {
-                isPressed = true
+            switch presses.globeChanged(isDown: event.flags.contains(.maskSecondaryFn)) {
+            case .start:
                 DispatchQueue.main.async { [weak self] in
                     self?.delegate?.hotkeyDidStartPress()
                 }
-            } else if !fnPressed && isPressed {
-                isPressed = false
+            case .end:
                 DispatchQueue.main.async { [weak self] in
                     self?.delegate?.hotkeyDidEndPress()
                 }
+            case .none:
+                break
             }
             return Unmanaged.passUnretained(event)
         }
 
-        // Escape while holding the Globe key cancels the recording.
-        if type == .keyDown && isPressed {
-            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            if keyCode == Int64(kVK_Escape) {
-                isPressed = false
+        // Any key pressed while holding the Globe key cancels the recording.
+        if type == .keyDown {
+            let action = presses.keyDown(event.getIntegerValueField(.keyboardEventKeycode))
+            if action != .none {
                 DispatchQueue.main.async { [weak self] in
                     self?.delegate?.hotkeyCancelled()
                 }
-                return nil // Consume the Escape event
+            }
+            if action == .cancelAndConsume {
+                return nil
             }
         }
 

@@ -1,29 +1,36 @@
 import Cocoa
+import Observation
 
+/// Builds the app's parts at launch and connects them. Dictation itself, from
+/// key press to paste, is `DictationPipeline`'s.
+@MainActor
 public class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusManager: StatusManager!
-    private var permissionManager: PermissionManager!
-    private var hotkeyManager: HotkeyManager!
-    private var audioRecorder: AudioRecorder!
-    private var transcriber: Transcriber!
-    private var pasteEngine: PasteEngine!
-    private var modelManager: ModelManager!
-    private var transcriptionHistory: TranscriptionHistory!
+    private lazy var service = TranscriptionService(
+        engines: Self.engines(), selected: PreferencesManager.shared.selectedModelID
+    )
+    private lazy var pipeline = DictationPipeline(
+        recorder: AudioRecorder(), service: service, paster: PasteEngine(),
+        cleaner: nil, replacements: { [] }, vocabulary: { [] }
+    )
+    private lazy var statusManager = StatusManager()
+    private lazy var transcriptionHistory = TranscriptionHistory()
+    private let permissionManager = PermissionManager()
+    private let hotkeyManager = HotkeyManager()
+    private let comparisonRecordings = ComparisonRecordings()
     private var preferencesWindowController: PreferencesWindowController?
-    /// True while the hotkey tap is armed and a transcriber is ready.
-    /// Tracked explicitly so that losing and re-gaining a permission can
-    /// restart listening cleanly.
+    /// Every model, as last listed in the Model submenu.
+    private var models: [ModelDescriptor] = []
+    /// True while the hotkey tap is armed. Tracked explicitly so that losing
+    /// and re-gaining Accessibility restarts it cleanly.
     private var isListening = false
 
-    /// Timing for the dictation being recorded, then a FIFO of dictations
-    /// waiting on the transcriber (it finishes them in order).
-    private var currentTimer = StageTimer()
-    private var pending = PendingDictations()
     private var isFirstLaunch: Bool {
         !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
     }
 
-    public override init() {
+    /// `main.swift` creates the delegate outside the main actor. Everything
+    /// with side effects is lazy, so it is built in `applicationDidFinishLaunching`.
+    public nonisolated override init() {
         super.init()
     }
 
@@ -40,30 +47,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         cleanupStaleRecordings()
 
-        statusManager = StatusManager()
         statusManager.delegate = self
-
-        permissionManager = PermissionManager()
         permissionManager.delegate = self
-
-        audioRecorder = AudioRecorder()
-        audioRecorder.delegate = self
-        audioRecorder.onFirstAudio = { [weak self] time in
-            self?.currentTimer.mark(.firstAudio, at: time)
-        }
-        // Ready the microphone now so the first syllable is not lost. This
-        // does not start it.
-        audioRecorder.prepare()
-
-        pasteEngine = PasteEngine()
-
-        modelManager = ModelManager()
-        modelManager.delegate = self
-
-        transcriptionHistory = TranscriptionHistory()
-
-        hotkeyManager = HotkeyManager()
         hotkeyManager.delegate = self
+        pipeline.onOutcome = { [weak self] outcome in self?.finished(outcome) }
+        showStateInMenuBar()
+        statusManager.updateHistory(transcriptionHistory.entries)
 
         // Reconcile "open at login" with the user's preference. This is a
         // deliberate no-op for the dev build (.build) — registering a login
@@ -74,6 +63,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // Check permissions
         permissionManager.checkPermissions()
         Log.info("[INIT] Accessibility=\(permissionManager.isAccessibilityGranted) Microphone=\(permissionManager.isMicrophoneGranted)")
+        showMissingPermission()
 
         if !permissionManager.allPermissionsGranted {
             Log.info("[INIT] Requesting permissions...")
@@ -86,24 +76,33 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             showGlobeKeyWarning()
         }
 
-        // Check for whisper-cli binary at startup
-        let whisperPath = BundledBinary.findWhisperCLI()
-        Log.info("[INIT] whisper-cli path: \(whisperPath ?? "NOT FOUND")")
-        if whisperPath == nil {
-            statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
-        }
-
         // Start permission monitoring
         permissionManager.startMonitoring()
 
-        // Update history display
-        statusManager.updateHistory(transcriptionHistory.entries)
+        // A dictation needs no model ready to start (Review Focus 1): it
+        // waits for the model, or fails and is kept with its audio.
+        startListening()
 
-        // Ensure model is downloaded
-        Log.info("[INIT] Model present=\(modelManager.isModelPresent) path=\(modelManager.modelFileURL.path)")
-        modelManager.downloadModelIfNeeded()
+        Task {
+            await refreshModels()
+            // A failure is kept, and the next dictation tries again.
+            await service.prepareSelected()
+            await refreshModels()
+        }
 
         Log.info("[INIT] Done. listening=\(isListening)")
+    }
+
+    /// The three engines dictation can use. WhisperKit keeps its models
+    /// under Application Support; whisper-cli stays until Danny picks a
+    /// default (Task 27).
+    private static func engines() -> [TranscriptionEngine] {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return [
+            AppleSpeechEngine(),
+            WhisperKitEngine(root: support.appendingPathComponent("VoiceDictation/whisperkit", isDirectory: true)),
+            WhisperCLIEngine(),
+        ]
     }
 
     /// Recordings left behind by a crash mid-transcription. They live in the
@@ -121,36 +120,56 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Comparison recordings
+    // MARK: - Wiring
 
-    private static var comparisonDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("VoiceDictation/comparison", isDirectory: true)
-    }
-
-    /// Saves the clip as a WAV for the engine comparison. Returns the shared
-    /// file name stem, or nil when the preference is off or the write failed.
-    private func keepComparisonRecording(of clip: AudioClip) -> String? {
-        guard PreferencesManager.shared.keepComparisonRecordings else { return nil }
-        let dir = Self.comparisonDirectory
-        let stem = String(Int(Date().timeIntervalSince1970 * 1000))
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try clip.writeWAV(to: dir.appendingPathComponent("\(stem).wav"))
-            return stem
-        } catch {
-            Log.info("[COMPARE] Could not keep recording: \(error.localizedDescription)")
-            return nil
+    /// Shows the pipeline's state in the menu bar, now and after every change.
+    private func showStateInMenuBar() {
+        let pipeline = self.pipeline
+        let statusManager = self.statusManager
+        Task {
+            for await state in Observations({ pipeline.state }) {
+                statusManager.updateStatus(state)
+            }
         }
     }
 
-    private func saveComparisonTranscript(_ text: String, stem: String) {
-        let url = Self.comparisonDirectory.appendingPathComponent("\(stem).txt")
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            Log.info("[COMPARE] Could not save transcript: \(error.localizedDescription)")
+    /// After each dictation: keep its recording for the engine comparison
+    /// when that is on, and add its text to the history.
+    private func finished(_ outcome: DictationOutcome) {
+        comparisonRecordings.keep(outcome)
+        guard outcome.status != .failed, PreferencesManager.shared.historyEnabled else { return }
+        transcriptionHistory.add(text: outcome.text)
+        statusManager.updateHistory(transcriptionHistory.entries)
+    }
+
+    /// Lists the models again in the Model submenu.
+    private func refreshModels() async {
+        let models = await service.allModels()
+        let selected = await service.selected
+        self.models = models
+        statusManager.updateModels(models, selected: selected)
+    }
+
+    /// Makes `model` the one dictation uses, downloading it first if it is
+    /// not on the Mac, and remembers the choice. The pipeline shows the
+    /// progress, and a failure, which leaves the selection as it was.
+    private func choose(_ model: ModelDescriptor) {
+        Task {
+            do {
+                try await pipeline.selectModel(model.id, named: model.displayName,
+                                               downloadingFirst: model.state == .notDownloaded)
+                PreferencesManager.shared.selectedModelID = model.id
+            } catch {
+                // Already shown and logged by the pipeline.
+            }
+            await refreshModels()
         }
+    }
+
+    /// The first permission dictation lacks, shown when nothing else is.
+    private func showMissingPermission() {
+        pipeline.missingPermission = !permissionManager.isAccessibilityGranted ? "Accessibility"
+            : !permissionManager.isMicrophoneGranted ? "Microphone" : nil
     }
 
     private func showGlobeKeyWarning() {
@@ -168,39 +187,23 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startListening() {
-        Log.info("[START] startListening called")
-        guard !isListening else {
-            Log.info("[START] Already listening, skipping")
-            return
-        }
+        guard !isListening else { return }
         guard permissionManager.isAccessibilityGranted else {
-            Log.info("[START] BLOCKED — Accessibility not granted")
-            statusManager.updateStatus(.permissionNeeded("Accessibility"))
+            Log.info("[START] Waiting for Accessibility")
             return
         }
-
-        guard BundledBinary.findWhisperCLI() != nil else {
-            Log.info("[START] BLOCKED — whisper-cli not found")
-            statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
-            return
-        }
-
-        // A replaced transcriber never calls back for its old work.
-        pending.reset()
-        transcriber = Transcriber(modelPath: modelManager.modelFileURL.path)
-        transcriber.delegate = self
-
         hotkeyManager.start()
         isListening = true
         Log.info("[START] Listening for Globe key")
-        statusManager.updateStatus(.idle)
+        showReadyAlert()
     }
 
     private func stopListening() {
         guard isListening else { return }
         Log.info("[STOP] Stopping listening")
         hotkeyManager.stop()
-        audioRecorder.cancelRecording()
+        // No key-up can arrive now, so end a recording under way here.
+        pipeline.hotkeyUp()
         isListening = false
     }
 
@@ -218,153 +221,42 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// The managers below call their delegates on the main thread, which is what
+// lets this main-actor class be their delegate.
+
 // MARK: - PermissionManagerDelegate
-extension AppDelegate: PermissionManagerDelegate {
+extension AppDelegate: @preconcurrency PermissionManagerDelegate {
     public func permissionStatusChanged(accessibility: Bool, microphone: Bool) {
         Log.info("[PERM] permissionStatusChanged accessibility=\(accessibility) microphone=\(microphone)")
-        if !accessibility {
-            stopListening()
-            statusManager.updateStatus(.permissionNeeded("Accessibility"))
-        } else if !microphone {
-            statusManager.updateStatus(.permissionNeeded("Microphone"))
+        showMissingPermission()
+        if accessibility {
+            startListening()
         } else {
-            Log.info("[PERM] All granted. listening=\(isListening) modelPresent=\(modelManager.isModelPresent)")
-            if !isListening && modelManager.isModelPresent {
-                startListening()
-            }
+            stopListening()
         }
     }
 }
 
 // MARK: - HotkeyDelegate
-extension AppDelegate: HotkeyDelegate {
+extension AppDelegate: @preconcurrency HotkeyDelegate {
     public func hotkeyDidStartPress() {
-        guard permissionManager.isMicrophoneGranted else {
-            Log.info("[KEY] BLOCKED — Microphone not granted")
-            statusManager.updateStatus(.permissionNeeded("Microphone"))
-            return
-        }
-        currentTimer = StageTimer()
-        currentTimer.mark(.keyDown)
-        statusManager.updateStatus(.recording)
-        audioRecorder.startRecording()
+        pipeline.hotkeyDown()
     }
 
     public func hotkeyDidEndPress() {
-        currentTimer.mark(.keyUp)
-        audioRecorder.stopRecording()
+        pipeline.hotkeyUp()
     }
 
     public func hotkeyCancelled() {
-        audioRecorder.cancelRecording()
-        statusManager.updateStatus(.idle)
-    }
-}
-
-// MARK: - AudioRecorderDelegate
-extension AppDelegate: AudioRecorderDelegate {
-    public func recordingDidStart() {}
-
-    public func recordingDidFinish(clip: AudioClip) {
-        // whisper-cli reads files, so the clip goes to a temporary WAV, which
-        // the transcriber deletes when done. A unique name keeps two quick
-        // dictations from sharing a file.
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-dictation-\(UUID().uuidString).wav")
-        do {
-            try clip.writeWAV(to: fileURL)
-        } catch {
-            Log.info("[AUDIO] Could not write the recording: \(error.localizedDescription)")
-            statusManager.updateStatus(.error(message: "Could not save the recording"))
-            return
-        }
-        pending.append(PendingDictation(timer: currentTimer, fileURL: fileURL))
-        statusManager.updateStatus(.transcribing(queued: 0))
-        transcriber.transcribe(fileURL: fileURL, recordingDuration: clip.duration)
-        // Write the comparison copy after handing off, so keeping a recording
-        // never delays the transcription. The transcriber's callbacks arrive
-        // on this queue later, so the stem is set before they can.
-        if let stem = keepComparisonRecording(of: clip) {
-            pending.setStem(stem, for: fileURL)
-        }
-    }
-
-    public func recordingDidFail(error: String) {
-        Log.info("[AUDIO] Recording failed: \(error)")
-        statusManager.updateStatus(.error(message: error))
-    }
-
-    public func recordingDiscarded() {
-        statusManager.updateStatus(.idle)
-    }
-}
-
-// MARK: - TranscriberDelegate
-extension AppDelegate: TranscriberDelegate {
-    public func transcriptionCompleted(text: String) {
-        var dictation = pending.popFirst() ?? PendingDictation(timer: StageTimer(), fileURL: URL(fileURLWithPath: "/"))
-        dictation.timer.mark(.textReady)
-        if let stem = dictation.comparisonStem {
-            saveComparisonTranscript(text, stem: stem)
-        }
-        if !text.isEmpty {
-            pasteEngine.paste(text: text)
-            dictation.timer.mark(.pasted)
-            Log.info("[TIMING] \(dictation.timer.summary)")
-
-            if PreferencesManager.shared.historyEnabled {
-                transcriptionHistory.add(text: text)
-                statusManager.updateHistory(transcriptionHistory.entries)
-            }
-        }
-
-        statusManager.updateStatus(.idle)
-    }
-
-    public func transcriptionFailed(error: String) {
-        _ = pending.popFirst()
-        statusManager.updateStatus(.error(message: error))
-    }
-
-    public func transcriptionDropped(fileURL: URL) {
-        pending.remove(fileURL: fileURL)
-    }
-
-    public func transcriptionQueueUpdated(count: Int) {
-        if count > 0 {
-            statusManager.updateStatus(.transcribing(queued: count))
-        }
-    }
-}
-
-// MARK: - ModelManagerDelegate
-extension AppDelegate: ModelManagerDelegate {
-    public func modelDownloadProgress(_ progress: Double) {
-        statusManager.updateStatus(.downloading(progress: progress))
-    }
-
-    public func modelDownloadCompleted() {
-        Log.info("[MODEL] Ready. allPermissionsGranted=\(permissionManager.allPermissionsGranted)")
-        statusManager.updateModelDisplay()
-        if permissionManager.allPermissionsGranted {
-            startListening()
-            showReadyAlert()
-        } else {
-            Log.info("[MODEL] NOT starting — permissions not granted yet")
-        }
-    }
-
-    public func modelDownloadFailed(error: String) {
-        Log.info("[MODEL] Download failed: \(error)")
-        statusManager.updateStatus(.error(message: error))
+        pipeline.cancel()
     }
 }
 
 // MARK: - StatusManagerDelegate
-extension AppDelegate: StatusManagerDelegate {
+extension AppDelegate: @preconcurrency StatusManagerDelegate {
     public func statusManagerDidRequestPreferences() {
         if preferencesWindowController == nil {
-            preferencesWindowController = PreferencesWindowController(modelManager: modelManager)
+            preferencesWindowController = PreferencesWindowController(modelManager: ModelManager())
             preferencesWindowController?.preferencesDelegate = self
         }
         preferencesWindowController?.showWindow(nil)
@@ -376,16 +268,26 @@ extension AppDelegate: StatusManagerDelegate {
         transcriptionHistory.clear()
         statusManager.updateHistory(transcriptionHistory.entries)
     }
+
+    public func statusManagerDidChooseModel(_ model: ModelDescriptor) {
+        choose(model)
+    }
+
+    public func statusManagerWillOpenMenu() {
+        Task { await refreshModels() }
+    }
 }
 
 // MARK: - PreferencesWindowDelegate
-extension AppDelegate: PreferencesWindowDelegate {
+extension AppDelegate: @preconcurrency PreferencesWindowDelegate {
+    /// The Preferences window still lists the whisper-cli models; choosing
+    /// one there goes the same way as choosing it in the Model submenu.
     public func preferencesDidChangeModel(to modelId: String) {
-        Log.info("[MODEL] Switching to \(modelId)")
-        stopListening()
-        transcriber = nil
-        pending.reset()  // the dropped transcriber's callbacks never arrive
-        modelManager.switchModel(to: modelId)
-        // modelDownloadCompleted will restart listening when ready
+        let id = ModelID(engine: .whisperCLI, name: modelId)
+        guard let model = models.first(where: { $0.id == id }) else {
+            Log.info("[MODEL] \(id.storageKey) is not among the listed models")
+            return
+        }
+        choose(model)
     }
 }

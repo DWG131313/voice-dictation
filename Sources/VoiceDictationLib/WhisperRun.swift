@@ -1,8 +1,8 @@
 import Foundation
 
-/// One whisper-cli process, run to completion on the calling thread. Shared by
-/// `Transcriber` and `WhisperCLIEngine`. `cancel()` may be called from any
-/// thread, before or during `run()`.
+/// One whisper-cli process, run to completion on the calling thread, for
+/// `WhisperCLIEngine`. `cancel()` may be called from any thread, before or
+/// during `run()`.
 final class WhisperRun: @unchecked Sendable {
     enum Outcome {
         case finished(stdout: String, stderr: String, status: Int32)
