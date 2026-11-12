@@ -46,6 +46,12 @@ public final class AppModel {
     @ObservationIgnored private var isListening = false
     /// Lists the models again whenever a menu opens; kept as long as the app runs.
     @ObservationIgnored private var menuObserver: NSObjectProtocol?
+    /// The floating indicator; none in tests that do not ask for one.
+    @ObservationIgnored private let indicator: IndicatorPresenting?
+    /// The indicator's volume line, fed from `pipeline.level` while recording.
+    @ObservationIgnored private var indicatorLine = LevelLine()
+    /// When the recording `indicatorLine` belongs to started.
+    @ObservationIgnored private var indicatorRecordingStart: Date?
 
     /// The app's parts: the three engines with the model saved for dictation,
     /// the microphone, the paste, and the store with its kept recordings in
@@ -64,7 +70,8 @@ public final class AppModel {
             ),
             preferences: preferences,
             comparison: ComparisonRecordings(),
-            dataDirectory: directory
+            dataDirectory: directory,
+            indicator: IndicatorPanel()
         )
     }
 
@@ -73,7 +80,7 @@ public final class AppModel {
     /// and preferences kept in memory.
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
          preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
-         onboardingSystem: OnboardingSystem? = nil) {
+         onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil) {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
         Fonts.registerAll()
         self.service = service
@@ -88,6 +95,7 @@ public final class AppModel {
         self.preferences = preferences
         self.comparisonRecordings = comparison
         self.dataDirectory = dataDirectory
+        self.indicator = indicator
 
         permissions.delegate = self
         hotkeys.delegate = self
@@ -97,6 +105,8 @@ public final class AppModel {
             self?.comparisonRecordings.keep(clip, rawText: "", date: endedAt)
         }
         listModelsWhenAMenuOpens()
+        observeStateForIndicator()
+        observeLevelForIndicator()
     }
 
     /// Starts the app; called once, when launching has finished. Imports the
@@ -198,6 +208,60 @@ public final class AppModel {
         ) { [weak self] _ in
             Task { await self?.refreshModels() }
         }
+    }
+
+    // MARK: - The indicator
+
+    // `withObservationTracking` reports a change once, as the value is about
+    // to be set. So each handler reads the new value a turn later on the main
+    // actor, and watches again.
+
+    private func observeStateForIndicator() {
+        withObservationTracking {
+            _ = pipeline.state
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.observeStateForIndicator()
+                self?.updateIndicator()
+            }
+        }
+    }
+
+    private func observeLevelForIndicator() {
+        withObservationTracking {
+            _ = pipeline.level
+        } onChange: { [weak self] in
+            // When the level arrived, on the line's monotonic clock: the line
+            // places each peak by its arrival, not by when it is drawn.
+            let arrived = ProcessInfo.processInfo.systemUptime
+            Task { @MainActor [weak self] in
+                self?.observeLevelForIndicator()
+                self?.updateIndicator(levelArrivedAt: arrived)
+            }
+        }
+    }
+
+    /// Shows the floating indicator while a dictation is recorded, transcribed
+    /// or cleaned up, and hides it otherwise. A new recording starts a new
+    /// line; a level that arrived at `time` while recording goes into it.
+    /// Showing the indicator never activates the app or changes its
+    /// activation policy (`IndicatorPanel`), so it stays out of `WindowPolicy`.
+    private func updateIndicator(levelArrivedAt time: TimeInterval? = nil) {
+        let state = pipeline.state
+        guard IndicatorView.words(for: state) != nil else {
+            indicator?.hide()
+            return
+        }
+        if case .recording(let since) = state {
+            if since != indicatorRecordingStart {
+                indicatorLine.reset()
+                indicatorRecordingStart = since
+            }
+            if let time {
+                indicatorLine.add(peak: pipeline.level, at: time)
+            }
+        }
+        indicator?.show(state, line: indicatorLine)
     }
 
     // MARK: - Wiring

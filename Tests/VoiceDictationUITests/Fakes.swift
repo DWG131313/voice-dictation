@@ -120,6 +120,32 @@ final class FakePaster: Pasting {
     }
 }
 
+/// An indicator that keeps what it was asked to show instead of showing it.
+@MainActor
+final class FakeIndicator: IndicatorPresenting {
+    /// The state shown last; nil before the first.
+    private(set) var state: DictationState?
+    /// The line shown last.
+    private(set) var line = LevelLine()
+    private(set) var isShowing = false
+
+    func show(_ state: DictationState, line: LevelLine) {
+        self.state = state
+        self.line = line
+        isShowing = true
+    }
+
+    func hide() {
+        isShowing = false
+    }
+
+    /// On screen, saying "Listening".
+    var showsListening: Bool {
+        guard isShowing, case .recording? = state else { return false }
+        return true
+    }
+}
+
 extension OnboardingSystem {
     /// A system that asks for nothing, opens nothing and reads no real
     /// setting, so a test never touches `com.apple.HIToolbox`.

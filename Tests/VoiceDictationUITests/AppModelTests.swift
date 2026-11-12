@@ -202,6 +202,45 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.store.search("", scope: .all).count, 1)
     }
 
+    // MARK: - The indicator
+
+    /// "Listening" while the key is held, "Transcribing" after, then gone
+    /// once the text is pasted.
+    @MainActor
+    func testTheIndicatorShowsWhileADictationRunsThenHides() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let indicator = FakeIndicator()
+        let model = makeModel([apple], indicator: indicator)
+
+        model.hotkeyDidStartPress()
+        try await waitUntil("it shows Listening") { indicator.showsListening }
+        model.hotkeyDidEndPress()
+        try await waitUntil("it shows Transcribing") { indicator.isShowing && indicator.state == .transcribing }
+        apple.isHeld = false
+        try await waitUntil("it hides once the text is pasted") { !indicator.isShowing }
+        XCTAssertEqual(paster.pasted, ["Hello there."])
+    }
+
+    /// Each level heard while recording goes into the line, and each
+    /// recording starts a new, flat line (Ruling T17-1).
+    @MainActor
+    func testLevelsFeedTheLineAndEachRecordingStartsAFreshOne() async throws {
+        let indicator = FakeIndicator()
+        let model = makeModel([appleEngine()], indicator: indicator)
+
+        model.hotkeyDidStartPress()
+        recorder.onLevel?(0.5)
+        try await waitUntil("the line rises") { self.isRaised(indicator.line) }
+        let first = indicator.state
+        model.hotkeyDidEndPress()
+        try await waitUntil("the first dictation is pasted") { self.paster.pasted.count == 1 }
+
+        model.hotkeyDidStartPress()
+        try await waitUntil("the second recording shows") { indicator.showsListening && indicator.state != first }
+        XCTAssertFalse(isRaised(indicator.line))
+    }
+
     // MARK: - The app
 
     /// Closing the window leaves the app running in the menu bar.
@@ -222,13 +261,18 @@ final class AppModelTests: XCTestCase {
 
     @MainActor
     private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
-                           system: OnboardingSystem = .fake()) -> AppModel {
+                           system: OnboardingSystem = .fake(), indicator: FakeIndicator? = nil) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences,
                  comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
-                 dataDirectory: directory, onboardingSystem: system)
+                 dataDirectory: directory, onboardingSystem: system, indicator: indicator)
+    }
+
+    /// Whether `line` strays from the centre anywhere a moment from now.
+    private func isRaised(_ line: LevelLine) -> Bool {
+        line.points(at: ProcessInfo.processInfo.systemUptime + LevelLine.interval).contains { $0.y != LevelLine.height / 2 }
     }
 
     private func appleEngine() -> FakeEngine {
