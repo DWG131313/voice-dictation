@@ -28,6 +28,12 @@ let package = Package(
             dependencies: ["VoiceDictationLib"],
             path: "Sources/VoiceDictation"
         ),
+        // Command-line engine comparison (`swift run vd-bench`)
+        .executableTarget(
+            name: "vd-bench",
+            dependencies: ["VoiceDictationLib"],
+            path: "Sources/VDBench"
+        ),
         .testTarget(
             name: "VoiceDictationTests",
             dependencies: [
