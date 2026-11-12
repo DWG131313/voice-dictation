@@ -44,6 +44,20 @@ final class LevelLineTests: XCTestCase {
         XCTAssertTrue(zip(below, below.dropFirst()).allSatisfy { $0 != $1 }, "\(below)")
     }
 
+    /// Each vertex keeps its side as it scrolls: one interval later every
+    /// vertex is the one that was a step to its right, so the line does not flip.
+    func testVerticesKeepTheirSideWhileScrolling() {
+        let line = fed(0.1, through: 0..<60)
+
+        let before = line.points(at: time(60)).map(\.y)
+        let after = line.points(at: time(61)).map(\.y)
+        XCTAssertEqual(before.count, after.count)
+        for (b, a) in zip(before.dropFirst(), after.dropLast()) {
+            XCTAssertEqual(b, a, accuracy: 1e-9)
+        }
+        XCTAssertNotEqual(before[1], before[2], "the neighbours are on opposite sides")
+    }
+
     /// One loud interval between quiet ones travels left `step` points per
     /// interval, and smoothly in between.
     func testScrollsLeft() {
@@ -59,15 +73,22 @@ final class LevelLineTests: XCTestCase {
     }
 
     /// One interval of sound lifts the line further than one interval of
-    /// silence lowers it, so it does not flicker.
+    /// silence lowers it, so it does not flicker. The amplitudes are pinned:
+    /// from the prototype's maths, a peak of 0.1 is loud = 0.1 x gain - floor
+    /// = 0.47, and the half-height is mid - 1 = 12.
     func testRisesFasterThanFalls() {
         let steady = fed(0.1, through: 0..<40)
         let rising = fed(0.1, through: 10..<11, onto: fed(0, through: 0..<10))
         let falling = fed(0, through: 40..<41, onto: steady)
 
+        // Attack: env = 0.47 x 0.75 from silence.
         let rise = entering(rising, at: time(11))
-        let fall = entering(steady, at: time(40)) - entering(falling, at: time(41))
-        XCTAssertGreaterThan(fall, 0)
+        XCTAssertEqual(rise, 12 * CGFloat(pow(0.75 * 0.47, 0.7)), accuracy: 1e-3)   // 5.784
+        // Steady 0.1 settles on env = 0.47; release: env = 0.47 x (1 - 0.35).
+        XCTAssertEqual(entering(steady, at: time(40)), 12 * CGFloat(pow(0.47, 0.7)), accuracy: 1e-3)
+        let fall = entering(falling, at: time(41))
+        XCTAssertEqual(fall, 12 * CGFloat(pow(0.65 * 0.47, 0.7)), accuracy: 1e-3)   // 5.23
+        XCTAssertGreaterThan(entering(steady, at: time(40)) - fall, 0)
         XCTAssertGreaterThan(rise, fall)
     }
 
