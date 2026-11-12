@@ -19,6 +19,15 @@ final class SingleInstanceGuardTests: XCTestCase {
         _ = primary // keep alive
     }
 
+    func testAskingTwiceInTheSameProcessSucceedsBothTimes() {
+        let primary = SingleInstanceGuard(lockURL: lockURL)
+        XCTAssertTrue(primary.tryAcquire())
+        XCTAssertTrue(
+            primary.tryAcquire(),
+            "A guard that already holds the lock must not lock itself out"
+        )
+    }
+
     func testSecondInstanceIsRejectedWhileFirstHolds() {
         let primary = SingleInstanceGuard(lockURL: lockURL)
         XCTAssertTrue(primary.tryAcquire())

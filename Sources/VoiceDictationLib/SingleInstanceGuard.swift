@@ -32,6 +32,9 @@ public final class SingleInstanceGuard {
     /// - Returns: `true` if the lock was acquired (this is the only instance),
     ///   `false` if another instance already holds it.
     public func tryAcquire() -> Bool {
+        // Already ours: a second flock on a fresh descriptor would fail even
+        // in this same process, and lock the app out of itself.
+        if fileDescriptor >= 0 { return true }
         let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o644)
         guard fd >= 0 else {
             // Can't open the lock file for some reason — fail open so the app

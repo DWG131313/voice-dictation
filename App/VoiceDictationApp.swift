@@ -50,10 +50,25 @@ struct VoiceDictationApp: App {
 
         Settings {
             // Task 24 puts the settings here.
-            Text("Settings will appear here.")
-                .padding(40)
+            SettingsPlaceholder()
         }
         // Like the window, never brought back at the next launch.
         .restorationBehavior(.disabled)
+    }
+}
+
+/// Stands in until Task 24. D1 needs the one switch to record comparison clips.
+private struct SettingsPlaceholder: View {
+    @State private var keepComparison = PreferencesManager.shared.keepComparisonRecordings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Settings will appear here.")
+            Toggle("Keep recordings for comparison", isOn: $keepComparison)
+                .onChange(of: keepComparison) { _, newValue in
+                    PreferencesManager.shared.keepComparisonRecordings = newValue
+                }
+        }
+        .padding(40)
     }
 }

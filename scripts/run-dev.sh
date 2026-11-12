@@ -13,7 +13,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 APP=".build/xcode/Build/Products/Debug/VoiceDictation.app"
 
 xcodegen
-xcodebuild -scheme VoiceDictation -configuration Debug -derivedDataPath .build/xcode build
+xcodebuild -scheme VoiceDictation -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath .build/xcode build
 
 # One copy at a time. Quit the running one (an older bare binary too) and wait
 # for it to go: a new copy will not start while the old one holds the

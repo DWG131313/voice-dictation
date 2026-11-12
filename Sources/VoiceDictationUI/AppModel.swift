@@ -344,5 +344,12 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
     /// The main window has closed: back to the menu bar only.
     public func mainWindowDidClose() {
         NSApp.setActivationPolicy(.accessory)
+        // Going back to accessory can leave this app active with no window,
+        // and a dictation made then would paste nowhere. Hiding hands focus
+        // back to the app that was in front, unless Settings is still open.
+        let otherWindowOpen = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
+        if !otherWindowOpen {
+            NSApp.hide(nil)
+        }
     }
 }
