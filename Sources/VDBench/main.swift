@@ -13,7 +13,11 @@ let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomai
     .appendingPathComponent("VoiceDictation", isDirectory: true)
 
 var outputPath = "docs/engine-comparison.md"
-if let flag = arguments.firstIndex(of: "--output"), flag + 1 < arguments.count {
+if let flag = arguments.firstIndex(of: "--output") {
+    guard flag + 1 < arguments.count else {
+        print("Usage: vd-bench [dir] [--output file]\n--output needs a file path.")
+        exit(2)
+    }
     outputPath = arguments[flag + 1]
     arguments.removeSubrange(flag...flag + 1)
 }
@@ -32,6 +36,11 @@ for url in wavs {
     do { clips.append((url.lastPathComponent, try AudioClip(contentsOf: url))) } catch {
         print("Skipping \(url.lastPathComponent): \(error.localizedDescription)")
     }
+}
+
+guard !clips.isEmpty else {
+    print("No readable WAV file in \(directory.path). Nothing to compare.")
+    exit(1)
 }
 
 let engines: [any TranscriptionEngine] = [
