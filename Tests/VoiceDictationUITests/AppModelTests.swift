@@ -1,0 +1,207 @@
+import AppKit
+import XCTest
+@testable import VoiceDictationLib
+@testable import VoiceDictationUI
+
+/// The wiring `AppModel` took over from `AppDelegate`, built from fakes: no
+/// microphone, no event tap, an in-memory store, preferences in memory and
+/// comparison recordings in a temporary folder. `start()` is never called
+/// here: it asks for permissions and arms the Globe key.
+final class AppModelTests: XCTestCase {
+    private let recorder = FakeRecorder()
+    private let paster = FakePaster()
+    private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
+    private let queue = DispatchQueue(label: "AppModelTests.comparison")
+    private let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vd-appmodel-\(UUID().uuidString)", isDirectory: true)
+    private var comparisonDirectory: URL { directory.appendingPathComponent("comparison", isDirectory: true) }
+    private let tiny = ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en")
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: directory)
+        super.tearDown()
+    }
+
+    // MARK: - Models
+
+    @MainActor
+    func testRefreshListsEveryModelAndTheOneInUse() async {
+        let apple = FakeEngine(kind: .appleSpeech, models: [descriptor(.appleSpeech, .ready),
+                                                            descriptor(.appleDictation, .notDownloaded)])
+        let whisperKit = FakeEngine(kind: .whisperKit, models: [descriptor(tiny, .ready)])
+        let model = makeModel([apple, whisperKit], selected: .appleDictation)
+        XCTAssertTrue(model.models.isEmpty)
+        XCTAssertNil(model.selectedModel)
+
+        await model.refreshModels()
+
+        XCTAssertEqual(model.models.map(\.id), [.appleSpeech, .appleDictation, tiny])
+        XCTAssertEqual(model.selectedModel, .appleDictation)
+    }
+
+    /// Ruling T9-3: the Model submenu is listed again whenever a menu opens,
+    /// so its states and checkmark are current.
+    @MainActor
+    func testOpeningAMenuListsTheModelsAgain() async throws {
+        let apple = FakeEngine(kind: .appleSpeech, models: [descriptor(.appleSpeech, .notDownloaded)])
+        let model = makeModel([apple])
+        await model.refreshModels()
+
+        apple.modelList = [descriptor(.appleSpeech, .ready)]
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: NSMenu())
+
+        try await waitUntil("the model shows as ready") { model.models.first?.state == .ready }
+    }
+
+    @MainActor
+    func testChoosingAModelUsesAndSavesIt() async {
+        let model = makeModel([appleEngine(), FakeEngine(kind: .whisperKit, models: [descriptor(tiny, .ready)])])
+
+        await model.choose(descriptor(tiny, .ready))
+
+        XCTAssertEqual(preferences.selectedModelID, tiny)
+        XCTAssertEqual(model.selectedModel, tiny)
+        let inUse = await model.service.selected
+        XCTAssertEqual(inUse, tiny)
+    }
+
+    /// The pipeline shows the failure; the saved choice stays as it was.
+    @MainActor
+    func testAChoiceThatCannotLoadIsNotSaved() async {
+        let whisperKit = FakeEngine(kind: .whisperKit, models: [descriptor(tiny, .ready)])
+        whisperKit.unloadable = [tiny]
+        preferences.selectedModelID = .appleSpeech
+        let model = makeModel([appleEngine(), whisperKit])
+
+        await model.choose(descriptor(tiny, .ready))
+
+        XCTAssertEqual(preferences.selectedModelID, .appleSpeech)
+        XCTAssertEqual(model.selectedModel, .appleSpeech)
+    }
+
+    /// "Download Apple Dictation" downloads it, then makes it the model in use.
+    @MainActor
+    func testChoosingANotDownloadedModelDownloadsItFirst() async {
+        let apple = appleEngine()
+        let model = makeModel([apple])
+
+        await model.choose(descriptor(.appleDictation, .notDownloaded))
+
+        XCTAssertEqual(apple.calls.filter { $0 != .prepare(.appleSpeech) },
+                       [.download(.appleDictation), .prepare(.appleDictation)])
+        XCTAssertEqual(preferences.selectedModelID, .appleDictation)
+    }
+
+    // MARK: - Dictations
+
+    /// Every finished dictation reaches the store (Task 11) and, while the
+    /// setting is on, the comparison recordings (Ruling T9-1).
+    @MainActor
+    func testEveryDictationIsKeptAndRecordedForComparison() async throws {
+        preferences.keepComparisonRecordings = true
+        let model = makeModel([appleEngine()])
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the transcript is kept") { !model.store.search("", scope: .all).isEmpty }
+        XCTAssertEqual(paster.pasted, ["Hello there."])
+        let transcript = try XCTUnwrap(model.store.search("", scope: .all).first)
+        XCTAssertEqual(transcript.text, "Hello there.")
+        XCTAssertEqual(transcript.status, .pasted)
+        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
+        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
+        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8),
+                       "Hello there.")
+    }
+
+    /// Ruling T9-2: a dictation whose text came back empty pastes nothing and
+    /// is no transcript, but its clip is kept for comparison, with empty text.
+    @MainActor
+    func testAnEmptyTextIsKeptForComparisonOnly() async throws {
+        preferences.keepComparisonRecordings = true
+        let apple = appleEngine()
+        apple.result = ""
+        let model = makeModel([apple])
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
+        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
+        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8), "")
+        XCTAssertTrue(model.store.search("", scope: .all).isEmpty)
+        XCTAssertTrue(paster.pasted.isEmpty)
+    }
+
+    /// A key pressed with the Globe key cancels only that hold's dictation
+    /// (`cancelHold`), never one made before it, which `cancel()` would.
+    @MainActor
+    func testHotkeyCancelNeverReachesAnEarlierDictation() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let model = makeModel([apple])
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the dictation is being transcribed") { apple.calls.contains(.transcribe(.appleSpeech)) }
+
+        model.hotkeyCancelled()
+        apple.isHeld = false
+
+        try await waitUntil("the earlier dictation still pastes") { self.paster.pasted == ["Hello there."] }
+        XCTAssertEqual(model.store.search("", scope: .all).count, 1)
+    }
+
+    // MARK: - The app
+
+    /// Closing the window leaves the app running in the menu bar.
+    @MainActor
+    func testClosingTheWindowDoesNotQuit() {
+        let lifecycle = AppLifecycle()
+        XCTAssertFalse(lifecycle.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+    }
+
+    // MARK: - Helpers
+
+    @MainActor
+    private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech) -> AppModel {
+        AppModel(service: TranscriptionService(engines: engines, selected: selected),
+                 recorder: recorder, paster: paster,
+                 store: TranscriptStore(directory: directory, inMemory: true),
+                 preferences: preferences,
+                 comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
+                 dataDirectory: directory)
+    }
+
+    private func appleEngine() -> FakeEngine {
+        FakeEngine(kind: .appleSpeech, models: [descriptor(.appleSpeech, .ready), descriptor(.appleDictation, .notDownloaded)])
+    }
+
+    private func descriptor(_ id: ModelID, _ state: ModelDescriptor.State) -> ModelDescriptor {
+        ModelDescriptor(id: id, displayName: id.name, detail: "", state: state)
+    }
+
+    /// The comparison folder's files, once every write handed over so far is done.
+    private func comparisonFiles() -> [String] {
+        queue.sync {}
+        return (try? FileManager.default.contentsOfDirectory(atPath: comparisonDirectory.path)) ?? []
+    }
+
+    private struct Timeout: Error {}
+
+    /// Polls every 10 ms until `condition` holds. Fails the test after
+    /// `limit` seconds instead of hanging.
+    @MainActor
+    private func waitUntil(_ what: String, within limit: TimeInterval = 2,
+                           file: StaticString = #filePath, line: UInt = #line,
+                           _ condition: () async -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(limit)
+        while !(await condition()) {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Waited \(limit) s for: \(what)", file: file, line: line)
+                throw Timeout()
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}

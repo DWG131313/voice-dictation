@@ -4,6 +4,11 @@ import PackageDescription
 let package = Package(
     name: "VoiceDictation",
     platforms: [.macOS(.v26)],
+    products: [
+        // The app target in project.yml links these two.
+        .library(name: "VoiceDictationLib", targets: ["VoiceDictationLib"]),
+        .library(name: "VoiceDictationUI", targets: ["VoiceDictationUI"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.1.1"),
     ],
@@ -22,11 +27,11 @@ let package = Package(
             ],
             path: "Sources/VoiceDictationLib"
         ),
-        // Thin executable — just the entry point
-        .executableTarget(
-            name: "VoiceDictation",
+        // The SwiftUI side: the app model and the views (testable)
+        .target(
+            name: "VoiceDictationUI",
             dependencies: ["VoiceDictationLib"],
-            path: "Sources/VoiceDictation"
+            path: "Sources/VoiceDictationUI"
         ),
         // Command-line engine comparison (`swift run vd-bench`)
         .executableTarget(
@@ -42,6 +47,11 @@ let package = Package(
             ],
             path: "Tests/VoiceDictationTests",
             resources: [.copy("Resources")]
+        ),
+        .testTarget(
+            name: "VoiceDictationUITests",
+            dependencies: ["VoiceDictationUI", "VoiceDictationLib"],
+            path: "Tests/VoiceDictationUITests"
         ),
     ],
     swiftLanguageModes: [.v5]

@@ -6,15 +6,14 @@ Built for dictating prompts to Claude Code, but works anywhere.
 
 ## Requirements
 
-- macOS 13+ (Ventura)
+- macOS 26 or later; building needs Xcode
 - whisper-cpp: `brew install whisper-cpp`
 
 ## Setup
 
 1. Build and run:
    ```bash
-   swift build
-   .build/debug/VoiceDictation
+   ./scripts/run-dev.sh
    ```
 
 2. Grant permissions when prompted:

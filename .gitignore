@@ -1,5 +1,7 @@
 .build/
 .DS_Store
+# Generated from project.yml by XcodeGen (scripts/run-dev.sh)
+*.xcodeproj
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/

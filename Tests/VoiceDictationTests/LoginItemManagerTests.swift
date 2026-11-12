@@ -15,6 +15,13 @@ final class LoginItemManagerTests: XCTestCase {
         )
     }
 
+    /// `scripts/run-dev.sh` builds a real `.app`, but into `.build/xcode`.
+    /// Rebuilt again and again, it must never become a login item either.
+    func testDevAppBundleInsideBuildFolderIsNotInstalled() {
+        let path = "/Volumes/Work/Voice Dictation/.build/xcode/Build/Products/Debug/VoiceDictation.app/Contents/MacOS/VoiceDictation"
+        XCTAssertFalse(LoginItemManager.isRunningFromAppBundle(executablePath: path))
+    }
+
     func testXCTestRunnerPathIsNotABundle() {
         // .xctest bundles share the Contents/MacOS layout but are not .app —
         // registration must not fire while running tests.

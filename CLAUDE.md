@@ -18,13 +18,13 @@ swift build                        # Debug build
 swift build -c release             # Release build
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # Run tests; xcode-select points at Command Line Tools, which has no XCTest
 ./scripts/bundle-whisper.sh        # Bundle whisper-cpp binary + dylibs
-nohup .build/debug/VoiceDictation >/dev/null 2>&1 &   # Run the app (always background it)
+./scripts/run-dev.sh                                  # Builds and launches the app
 tail -f ~/Library/Logs/VoiceDictation.log             # Watch the app log
 ```
 
 ## Architecture
 ```
-main.swift → AppDelegate (orchestrator)
+VoiceDictationApp → AppModel → DictationPipeline
   → HotkeyManager (Globe key event tap)
   → AudioRecorder (AVAudioEngine, 16kHz mono)
   → Transcriber (whisper-cpp CLI subprocess)

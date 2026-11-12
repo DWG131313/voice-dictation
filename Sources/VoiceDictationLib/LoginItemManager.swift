@@ -17,14 +17,16 @@ public final class LoginItemManager {
     public static let shared = LoginItemManager()
     private init() {}
 
-    /// True when running from an installed `.app` bundle rather than the dev
-    /// build (`.build/.../debug/VoiceDictation`) or a test runner. Only an
-    /// installed bundle has a stable signing identity, so only then is it
-    /// safe to register a login item.
+    /// True when running from an installed `.app` bundle rather than a dev
+    /// build or a test runner. A dev build is anything under a `.build`
+    /// folder: the bare SwiftPM binary of old, and the `.app` that
+    /// `scripts/run-dev.sh` builds into `.build/xcode`. Only an installed
+    /// bundle has a stable place and signature, so only then is it safe to
+    /// register a login item.
     public static func isRunningFromAppBundle(
         executablePath: String = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
     ) -> Bool {
-        executablePath.contains(".app/Contents/MacOS/")
+        executablePath.contains(".app/Contents/MacOS/") && !executablePath.contains("/.build/")
     }
 
     /// Whether the OS currently has the app registered to open at login.

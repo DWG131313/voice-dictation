@@ -6,7 +6,7 @@ import Foundation
 /// comparison (D1, Task 10). That includes failed and skipped dictations and
 /// those whose text came back empty (Rulings T9-1, T9-2). Task 24 replaces
 /// this with the audio archive.
-struct ComparisonRecordings {
+public struct ComparisonRecordings {
     let directory: URL
     private let preferences: PreferencesManager
     private let queue: DispatchQueue
@@ -16,9 +16,14 @@ struct ComparisonRecordings {
             .appendingPathComponent("VoiceDictation/comparison", isDirectory: true)
     }
 
+    /// The app's: `defaultDirectory`, with the shared preferences.
+    public init() {
+        self.init(directory: Self.defaultDirectory, preferences: .shared)
+    }
+
     /// Tests pass a directory of their own, preferences kept in memory, and
     /// a queue they can wait on.
-    init(directory: URL = Self.defaultDirectory, preferences: PreferencesManager = .shared,
+    init(directory: URL, preferences: PreferencesManager,
          queue: DispatchQueue = DispatchQueue(label: "VoiceDictation.comparison", qos: .utility)) {
         self.directory = directory
         self.preferences = preferences
@@ -27,7 +32,7 @@ struct ComparisonRecordings {
 
     /// Keeps an outcome's recording and its raw text (empty for a failure).
     /// Writes nothing for an outcome without a clip.
-    func keep(_ outcome: DictationOutcome) {
+    public func keep(_ outcome: DictationOutcome) {
         guard let clip = outcome.clip else { return }
         keep(clip, rawText: outcome.rawText, date: outcome.date)
     }
@@ -36,7 +41,7 @@ struct ComparisonRecordings {
     /// (empty when nothing came back, or for a failure), on a queue of its
     /// own so no dictation waits for it. `date` is when the recording ended;
     /// the stem is made from it. Writes nothing while the setting is off.
-    func keep(_ clip: AudioClip, rawText: String, date: Date) {
+    public func keep(_ clip: AudioClip, rawText: String, date: Date) {
         guard preferences.keepComparisonRecordings else { return }
         let directory = self.directory
         let stem = Self.stem(for: date)

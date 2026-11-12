@@ -1,0 +1,53 @@
+# XcodeGen spec for the app bundle. The project it generates is not committed
+# (`*.xcodeproj` is ignored): `scripts/run-dev.sh` regenerates it each build.
+# All logic is in the Swift package at the root; the app target only hosts
+# the SwiftUI scenes in App/.
+name: VoiceDictation
+options:
+  bundleIdPrefix: com.danny
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  VoiceDictation:
+    path: .
+targets:
+  VoiceDictation:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - App
+    dependencies:
+      - package: VoiceDictation
+        product: VoiceDictationLib
+      - package: VoiceDictation
+        product: VoiceDictationUI
+    scheme: {}
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: VoiceDictation
+        CFBundleDisplayName: VoiceDictation
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        # Menu bar only: no Dock icon until the window opens.
+        LSUIElement: true
+        NSMicrophoneUsageDescription: VoiceDictation needs microphone access to record your voice for transcription.
+        NSSpeechRecognitionUsageDescription: VoiceDictation turns your speech into text on this Mac. Nothing is sent anywhere.
+    entitlements:
+      path: App/VoiceDictation.entitlements
+      properties:
+        # Hardened runtime needs this to record. No sandbox.
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_NAME: VoiceDictation
+        PRODUCT_BUNDLE_IDENTIFIER: com.danny.VoiceDictation
+        DEVELOPMENT_TEAM: F7DL4CTLLL
+        ENABLE_HARDENED_RUNTIME: YES
+        # The package's language mode.
+        SWIFT_VERSION: "5.0"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: Apple Development
