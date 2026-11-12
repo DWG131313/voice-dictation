@@ -11,6 +11,9 @@ public protocol HotkeyStrategy: AnyObject {
     var delegate: HotkeyDelegate? { get set }
     func start()
     func stop()
+    /// Called periodically and after sleep/wake. Implementations should
+    /// verify they are still receiving events and repair themselves if not.
+    func ensureHealthy()
 }
 
 public class GlobeKeyStrategy: HotkeyStrategy {
@@ -26,9 +29,11 @@ public class GlobeKeyStrategy: HotkeyStrategy {
     }
 
     public func start() {
+        stop()
+
         let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
 
-        print("[HOTKEY] Creating event tap... AXIsProcessTrusted=\(AXIsProcessTrusted())")
+        Log.info("[HOTKEY] Creating event tap. AXIsProcessTrusted=\(AXIsProcessTrusted())")
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -41,46 +46,64 @@ public class GlobeKeyStrategy: HotkeyStrategy {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            print("[HOTKEY] FAILED to create event tap — Accessibility permission may not be granted")
+            Log.info("[HOTKEY] FAILED to create event tap — Accessibility permission may not be granted")
             return
         }
-        print("[HOTKEY] Event tap created successfully")
 
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        // Use main run loop explicitly — CFRunLoopGetCurrent() may not be the main one
+        // Always the main run loop: the callback must run where the delegate lives.
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        print("[HOTKEY] Tap enabled on MAIN run loop. tapEnabled=\(CGEvent.tapIsEnabled(tap: tap))")
+        Log.info("[HOTKEY] Event tap created and enabled=\(CGEvent.tapIsEnabled(tap: tap))")
     }
 
     public func stop() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
         }
         if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
         eventTap = nil
         runLoopSource = nil
         isPressed = false
     }
 
+    /// macOS can disable an event tap (a slow callback, sleep/wake, a change
+    /// in Accessibility trust) without telling anyone. Re-enable it, and if
+    /// that doesn't stick, tear it down and build a fresh one.
+    public func ensureHealthy() {
+        guard let tap = eventTap else {
+            Log.info("[HOTKEY] Health check: no tap present, recreating")
+            start()
+            return
+        }
+        if CGEvent.tapIsEnabled(tap: tap) { return }
+
+        Log.info("[HOTKEY] Health check: tap was disabled, re-enabling")
+        CGEvent.tapEnable(tap: tap, enable: true)
+        if !CGEvent.tapIsEnabled(tap: tap) {
+            Log.info("[HOTKEY] Health check: re-enable failed, recreating tap")
+            start()
+        }
+    }
+
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Log tap disable events (macOS can disable taps)
+        // macOS disables a tap whose callback is too slow. Re-enable and move on.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            print("[HOTKEY] Event tap was DISABLED by \(type == .tapDisabledByTimeout ? "timeout" : "user input") — re-enabling")
+            Log.info("[HOTKEY] Event tap was disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input") — re-enabling")
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
             return Unmanaged.passUnretained(event)
         }
 
+        // Keep this callback fast and quiet: it runs for every modifier change
+        // and keystroke on the system, so no logging of routine events here.
         if type == .flagsChanged {
-            let flags = event.flags
-            let rawFlags = event.flags.rawValue
-            let fnPressed = flags.contains(.maskSecondaryFn)
-            print("[HOTKEY] flagsChanged: fn=\(fnPressed) rawFlags=\(rawFlags) isPressed=\(isPressed)")
+            let fnPressed = event.flags.contains(.maskSecondaryFn)
 
             if fnPressed && !isPressed {
                 isPressed = true
@@ -93,13 +116,13 @@ public class GlobeKeyStrategy: HotkeyStrategy {
                     self?.delegate?.hotkeyDidEndPress()
                 }
             }
+            return Unmanaged.passUnretained(event)
         }
 
-        // Check for Escape key to cancel during recording
-        if type == .keyDown {
+        // Escape while holding the Globe key cancels the recording.
+        if type == .keyDown && isPressed {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            print("[HOTKEY] keyDown: keyCode=\(keyCode)")
-            if keyCode == Int64(kVK_Escape) && isPressed {
+            if keyCode == Int64(kVK_Escape) {
                 isPressed = false
                 DispatchQueue.main.async { [weak self] in
                     self?.delegate?.hotkeyCancelled()
@@ -117,16 +140,45 @@ public class HotkeyManager {
         didSet { strategy?.delegate = delegate }
     }
     private var strategy: HotkeyStrategy?
+    private var healthTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
 
     public init() {}
+
+    deinit { stop() }
+
+    public private(set) var isRunning = false
 
     public func start(strategy: HotkeyStrategy? = nil) {
         self.strategy = strategy ?? GlobeKeyStrategy()
         self.strategy?.delegate = delegate
         self.strategy?.start()
+        isRunning = true
+
+        // Periodic self-check plus an explicit check after wake, when taps
+        // most often go quiet.
+        healthTimer?.invalidate()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            self?.strategy?.ensureHealthy()
+        }
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Log.info("[HOTKEY] System woke — checking event tap")
+                self?.strategy?.ensureHealthy()
+            }
+        }
     }
 
     public func stop() {
+        healthTimer?.invalidate()
+        healthTimer = nil
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            wakeObserver = nil
+        }
         strategy?.stop()
+        isRunning = false
     }
 }

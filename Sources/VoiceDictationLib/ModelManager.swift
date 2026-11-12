@@ -92,6 +92,13 @@ public class ModelManager: NSObject {
 
 extension ModelManager: URLSessionDownloadDelegate {
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // A 404 or a rate-limit page still "finishes downloading" — as a tiny
+        // HTML file. Catch it here instead of trusting the size check alone.
+        if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: location)
+            handleDownloadFailure(error: "Server returned HTTP \(http.statusCode)")
+            return
+        }
         do {
             let destURL = modelFileURL
             if FileManager.default.fileExists(atPath: destURL.path) {
@@ -124,6 +131,7 @@ extension ModelManager: URLSessionDownloadDelegate {
     }
 
     private func handleDownloadFailure(error: String) {
+        Log.info("[MODEL] Download attempt \(retryCount) failed: \(error)")
         if retryCount < Self.maxRetries {
             let delay = pow(2.0, Double(retryCount))
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

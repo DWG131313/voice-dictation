@@ -60,3 +60,14 @@ The app will look for a bundled binary first, then fall back to Homebrew.
 ## How It Works
 
 Records audio via AVAudioEngine, transcribes with whisper.cpp (locally, on-device), and pastes via clipboard simulation. No data leaves your machine.
+
+A few things happen quietly to keep it dependable:
+
+- Taps shorter than half a second, and recordings that are effectively silent, are discarded instead of sent to whisper (which otherwise invents words like "you" from silence).
+- A recording stops on its own after five minutes, or if your audio device changes mid-sentence, so a lost key-up can never leave the mic open.
+- Whatever was on your clipboard before a paste (text, images, files) is put back half a second later, unless you copied something new in between.
+- The Globe key listener checks itself every 15 seconds and after the Mac wakes from sleep, and re-arms if macOS has quietly disabled it.
+
+## Troubleshooting
+
+The app writes a log to `~/Library/Logs/VoiceDictation.log` (open it in Console.app or `tail -f` it). Every key event, recording, whisper run, and error lands there.

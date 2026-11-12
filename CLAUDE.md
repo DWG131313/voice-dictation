@@ -16,9 +16,10 @@ Danny (daniel.gross85@gmail.com) — personal use, MacMini.
 ```bash
 swift build                        # Debug build
 swift build -c release             # Release build
-swift test                         # Run tests (4 test files)
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # Run tests; xcode-select points at Command Line Tools, which has no XCTest
 ./scripts/bundle-whisper.sh        # Bundle whisper-cpp binary + dylibs
-.build/debug/VoiceDictation        # Run the app
+nohup .build/debug/VoiceDictation >/dev/null 2>&1 &   # Run the app (always background it)
+tail -f ~/Library/Logs/VoiceDictation.log             # Watch the app log
 ```
 
 ## Architecture
@@ -33,11 +34,12 @@ main.swift → AppDelegate (orchestrator)
   → PermissionManager (Accessibility + Mic checks)
   → PreferencesManager (UserDefaults)
   → TranscriptionHistory (JSON persistence)
+  → Log (stdout + rotating ~/Library/Logs/VoiceDictation.log)
 ```
 
 ## Key Files
-- `Sources/VoiceDictationLib/` — 12 modules (~1,481 LOC)
-- `Tests/VoiceDictationTests/` — 4 test files (~100 LOC)
+- `Sources/VoiceDictationLib/` — 15 modules
+- `Tests/VoiceDictationTests/` — 7 test files
 - `scripts/bundle-whisper.sh` — Binary bundling for distribution
 - `docs/superpowers/specs/` — Design spec + v2 plan + future roadmap
 - `Resources/Info.plist` — Bundle config (LSUIElement=true for menu bar)
@@ -45,8 +47,14 @@ main.swift → AppDelegate (orchestrator)
 ## Known Constraints
 - Globe key requires "Press Globe key to: Do Nothing" in System Settings
 - whisper-cpp must be installed (`brew install whisper-cpp`) or bundled
-- Accidental taps < 0.5s are silently discarded
-- Clipboard only saves/restores string content during paste
+- A bundled `whisper-cli` must be ad-hoc signed (`bundle-whisper.sh` does this). Unsigned arm64 binaries are SIGKILLed (status 9) on launch. `BundledBinary.findWhisperCLI()` test-launches each candidate with `--help` and skips ones that can't run
+- Menu bar SF Symbols must exist on the target macOS; `StatusManager.symbol()` falls back to `mic.fill` so the icon never blanks
+- Accidental taps < 0.5s and near-silent recordings (peak < 0.01) are silently discarded
+- Recordings auto-stop at 5 minutes or on an audio device change
+- Whole-transcript whisper hallucinations ("you", "Thank you.") are dropped; see `Transcriber.silenceHallucinations`
+- Clipboard is fully snapshotted and restored after paste (all pasteboard types), skipped if the user copied something new meanwhile
+- The event tap self-heals: 15s health timer + wake notification (`HotkeyManager`)
+- Xcode is installed on the laptop, but `xcode-select` points at Command Line Tools, so a plain `swift test` fails with "no such module 'XCTest'". Prefix `swift` and `xcodebuild` with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (34 tests pass that way)
 
 ## Claude Code Knowledge Base
 

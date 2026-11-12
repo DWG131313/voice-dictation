@@ -10,6 +10,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var modelManager: ModelManager!
     private var transcriptionHistory: TranscriptionHistory!
     private var preferencesWindowController: PreferencesWindowController?
+    /// True while the hotkey tap is armed and a transcriber is ready.
+    /// Tracked explicitly so that losing and re-gaining a permission can
+    /// restart listening cleanly.
+    private var isListening = false
     private var isFirstLaunch: Bool {
         !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
     }
@@ -18,8 +22,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
+    public func applicationWillFinishLaunching(_ notification: Notification) {
+        // Menu bar only, whether launched from a .app bundle (where
+        // LSUIElement handles it) or straight from the build directory. A
+        // regular-policy app that activates would take keyboard focus away
+        // from the app we're about to paste into.
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        log("[INIT] applicationDidFinishLaunching")
+        Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
+
+        cleanupStaleRecordings()
 
         statusManager = StatusManager()
         statusManager.delegate = self
@@ -48,22 +62,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check permissions
         permissionManager.checkPermissions()
-        log("[INIT] Accessibility=\(permissionManager.isAccessibilityGranted) Microphone=\(permissionManager.isMicrophoneGranted)")
+        Log.info("[INIT] Accessibility=\(permissionManager.isAccessibilityGranted) Microphone=\(permissionManager.isMicrophoneGranted)")
 
         if !permissionManager.allPermissionsGranted {
-            log("[INIT] Requesting permissions...")
+            Log.info("[INIT] Requesting permissions...")
             permissionManager.requestPermissions()
         }
 
         // Check Globe key setting
         if !permissionManager.checkGlobeKeySetting() {
-            log("[INIT] Globe key not set to Do Nothing")
+            Log.info("[INIT] Globe key not set to Do Nothing")
             showGlobeKeyWarning()
         }
 
         // Check for whisper-cli binary at startup
         let whisperPath = BundledBinary.findWhisperCLI()
-        log("[INIT] whisper-cli path: \(whisperPath ?? "NOT FOUND")")
+        Log.info("[INIT] whisper-cli path: \(whisperPath ?? "NOT FOUND")")
         if whisperPath == nil {
             statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
         }
@@ -75,65 +89,74 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         statusManager.updateHistory(transcriptionHistory.entries)
 
         // Ensure model is downloaded
-        log("[INIT] Model present=\(modelManager.isModelPresent) path=\(modelManager.modelFileURL.path)")
+        Log.info("[INIT] Model present=\(modelManager.isModelPresent) path=\(modelManager.modelFileURL.path)")
         modelManager.downloadModelIfNeeded()
 
-        log("[INIT] Done. transcriber=\(transcriber != nil ? "set" : "nil")")
+        Log.info("[INIT] Done. listening=\(isListening)")
     }
 
-    private func log(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "\(timestamp) \(message)"
-        print(line)
-        // Also append to log file
-        let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("VoiceDictation.log")
-        if let data = (line + "\n").data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logURL.path) {
-                if let handle = try? FileHandle(forWritingTo: logURL) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                }
-            } else {
-                try? data.write(to: logURL)
-            }
+    /// Recordings left behind by a crash mid-transcription. They live in the
+    /// temp directory, but there is no reason to let them pile up.
+    private func cleanupStaleRecordings() {
+        let tempDir = FileManager.default.temporaryDirectory
+        guard let files = try? FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil) else { return }
+        var removed = 0
+        for file in files where file.lastPathComponent.hasPrefix("voice-dictation-") && file.pathExtension == "wav" {
+            try? FileManager.default.removeItem(at: file)
+            removed += 1
+        }
+        if removed > 0 {
+            Log.info("[INIT] Removed \(removed) stale recording(s)")
         }
     }
 
     private func showGlobeKeyWarning() {
         let alert = NSAlert()
         alert.messageText = "Globe Key Configuration Needed"
-        alert.informativeText = "VoiceDictation uses the Globe key for push-to-talk. Please go to System Settings > Keyboard and set \"Press Globe key to\" to \"Do Nothing\"."
+        alert.informativeText = "VoiceDictation uses the Globe key for push-to-talk. In System Settings > Keyboard, set \"Press 🌐 key to\" to \"Do Nothing\"."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.addButton(withTitle: "Open Keyboard Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func startListening() {
-        log("[START] startListening called")
-        guard transcriber == nil else {
-            log("[START] Already listening, skipping")
+        Log.info("[START] startListening called")
+        guard !isListening else {
+            Log.info("[START] Already listening, skipping")
             return
         }
         guard permissionManager.isAccessibilityGranted else {
-            log("[START] BLOCKED — Accessibility not granted")
+            Log.info("[START] BLOCKED — Accessibility not granted")
             statusManager.updateStatus(.permissionNeeded("Accessibility"))
             return
         }
 
         guard BundledBinary.findWhisperCLI() != nil else {
-            log("[START] BLOCKED — whisper-cli not found")
+            Log.info("[START] BLOCKED — whisper-cli not found")
             statusManager.updateStatus(.error(message: "whisper-cli not found. Run: brew install whisper-cpp"))
             return
         }
 
         transcriber = Transcriber(modelPath: modelManager.modelFileURL.path)
         transcriber.delegate = self
-        log("[START] Transcriber created. Calling hotkeyManager.start()")
 
         hotkeyManager.start()
-        log("[START] hotkeyManager.start() returned")
+        isListening = true
+        Log.info("[START] Listening for Globe key")
         statusManager.updateStatus(.idle)
+    }
+
+    private func stopListening() {
+        guard isListening else { return }
+        Log.info("[STOP] Stopping listening")
+        hotkeyManager.stop()
+        audioRecorder.cancelRecording()
+        isListening = false
     }
 
     private func showReadyAlert() {
@@ -145,6 +168,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = "Hold the Globe key to dictate. Release to transcribe and paste."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
 }
@@ -152,15 +176,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - PermissionManagerDelegate
 extension AppDelegate: PermissionManagerDelegate {
     public func permissionStatusChanged(accessibility: Bool, microphone: Bool) {
-        log("[PERM] permissionStatusChanged accessibility=\(accessibility) microphone=\(microphone)")
+        Log.info("[PERM] permissionStatusChanged accessibility=\(accessibility) microphone=\(microphone)")
         if !accessibility {
-            hotkeyManager.stop()
+            stopListening()
             statusManager.updateStatus(.permissionNeeded("Accessibility"))
         } else if !microphone {
             statusManager.updateStatus(.permissionNeeded("Microphone"))
         } else {
-            log("[PERM] All granted. transcriber=\(transcriber != nil ? "set" : "nil") modelPresent=\(modelManager.isModelPresent)")
-            if transcriber == nil && modelManager.isModelPresent {
+            Log.info("[PERM] All granted. listening=\(isListening) modelPresent=\(modelManager.isModelPresent)")
+            if !isListening && modelManager.isModelPresent {
                 startListening()
             }
         }
@@ -170,9 +194,8 @@ extension AppDelegate: PermissionManagerDelegate {
 // MARK: - HotkeyDelegate
 extension AppDelegate: HotkeyDelegate {
     public func hotkeyDidStartPress() {
-        log("[KEY] Globe key PRESSED. micGranted=\(permissionManager.isMicrophoneGranted)")
         guard permissionManager.isMicrophoneGranted else {
-            log("[KEY] BLOCKED — Microphone not granted")
+            Log.info("[KEY] BLOCKED — Microphone not granted")
             statusManager.updateStatus(.permissionNeeded("Microphone"))
             return
         }
@@ -200,6 +223,7 @@ extension AppDelegate: AudioRecorderDelegate {
     }
 
     public func recordingDidFail(error: String) {
+        Log.info("[AUDIO] Recording failed: \(error)")
         statusManager.updateStatus(.error(message: error))
     }
 
@@ -211,11 +235,13 @@ extension AppDelegate: AudioRecorderDelegate {
 // MARK: - TranscriberDelegate
 extension AppDelegate: TranscriberDelegate {
     public func transcriptionCompleted(text: String) {
-        pasteEngine.paste(text: text)
+        if !text.isEmpty {
+            pasteEngine.paste(text: text)
 
-        if PreferencesManager.shared.historyEnabled {
-            transcriptionHistory.add(text: text)
-            statusManager.updateHistory(transcriptionHistory.entries)
+            if PreferencesManager.shared.historyEnabled {
+                transcriptionHistory.add(text: text)
+                statusManager.updateHistory(transcriptionHistory.entries)
+            }
         }
 
         statusManager.updateStatus(.idle)
@@ -239,17 +265,18 @@ extension AppDelegate: ModelManagerDelegate {
     }
 
     public func modelDownloadCompleted() {
-        log("[MODEL] Download completed. allPermissionsGranted=\(permissionManager.allPermissionsGranted)")
+        Log.info("[MODEL] Ready. allPermissionsGranted=\(permissionManager.allPermissionsGranted)")
         statusManager.updateModelDisplay()
         if permissionManager.allPermissionsGranted {
             startListening()
             showReadyAlert()
         } else {
-            log("[MODEL] NOT starting — permissions not granted yet")
+            Log.info("[MODEL] NOT starting — permissions not granted yet")
         }
     }
 
     public func modelDownloadFailed(error: String) {
+        Log.info("[MODEL] Download failed: \(error)")
         statusManager.updateStatus(.error(message: error))
     }
 }
@@ -275,7 +302,8 @@ extension AppDelegate: StatusManagerDelegate {
 // MARK: - PreferencesWindowDelegate
 extension AppDelegate: PreferencesWindowDelegate {
     public func preferencesDidChangeModel(to modelId: String) {
-        hotkeyManager.stop()
+        Log.info("[MODEL] Switching to \(modelId)")
+        stopListening()
         transcriber = nil
         modelManager.switchModel(to: modelId)
         // modelDownloadCompleted will restart listening when ready

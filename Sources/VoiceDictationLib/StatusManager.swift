@@ -126,6 +126,17 @@ public class StatusManager: NSObject {
         historyMenuItem.isHidden = !PreferencesManager.shared.historyEnabled
     }
 
+    /// An SF Symbol that doesn't exist on this macOS version yields nil, and
+    /// a nil button image makes the menu bar icon vanish. Never let that
+    /// happen: fall back to the plain mic.
+    private func symbol(_ name: String, _ description: String) -> NSImage? {
+        if let image = NSImage(systemSymbolName: name, accessibilityDescription: description) {
+            return image
+        }
+        Log.info("[STATUS] SF Symbol '\(name)' unavailable — falling back to mic.fill")
+        return NSImage(systemSymbolName: "mic.fill", accessibilityDescription: description)
+    }
+
     public func updateStatus(_ status: AppStatus) {
         dispatchPrecondition(condition: .onQueue(.main))
         errorClearTimer?.invalidate()
@@ -134,17 +145,17 @@ public class StatusManager: NSObject {
 
         switch status {
         case .idle:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "VoiceDictation — Ready")
+            button.image = symbol("mic.fill", "VoiceDictation — Ready")
             button.contentTintColor = nil
             statusMenuItem.title = "Status: Ready"
 
         case .recording:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "VoiceDictation — Recording")
+            button.image = symbol("mic.fill", "VoiceDictation — Recording")
             button.contentTintColor = .systemRed
             statusMenuItem.title = "Status: Recording..."
 
         case .transcribing(let queued):
-            button.image = NSImage(systemSymbolName: "mic.badge.ellipsis", accessibilityDescription: "VoiceDictation — Transcribing")
+            button.image = symbol("waveform", "VoiceDictation — Transcribing")
             button.contentTintColor = nil
             if queued > 0 {
                 statusMenuItem.title = "Status: Transcribing... (\(queued) queued)"
@@ -153,7 +164,7 @@ public class StatusManager: NSObject {
             }
 
         case .error(let message):
-            button.image = NSImage(systemSymbolName: "mic.slash.fill", accessibilityDescription: "VoiceDictation — Error")
+            button.image = symbol("mic.slash.fill", "VoiceDictation — Error")
             button.contentTintColor = .systemOrange
             statusMenuItem.title = "Error: \(message)"
             errorClearTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
@@ -161,13 +172,13 @@ public class StatusManager: NSObject {
             }
 
         case .downloading(let progress):
-            button.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "VoiceDictation — Downloading")
+            button.image = symbol("arrow.down.circle", "VoiceDictation — Downloading")
             button.contentTintColor = nil
             let percent = Int(progress * 100)
             statusMenuItem.title = "Downloading model... \(percent)%"
 
         case .permissionNeeded(let permission):
-            button.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "VoiceDictation — Permission Needed")
+            button.image = symbol("exclamationmark.triangle.fill", "VoiceDictation — Permission Needed")
             button.contentTintColor = .systemYellow
             statusMenuItem.title = "Permission needed: \(permission)"
         }
