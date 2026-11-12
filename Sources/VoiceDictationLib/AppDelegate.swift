@@ -51,6 +51,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         permissionManager.delegate = self
         hotkeyManager.delegate = self
         pipeline.onOutcome = { [weak self] outcome in self?.finished(outcome) }
+        // No outcome, but the engine did transcribe the clip (Ruling T9-2).
+        pipeline.onNothingHeard = { [weak self] clip, endedAt in
+            self?.comparisonRecordings.keep(clip, rawText: "", date: endedAt)
+        }
         showStateInMenuBar()
         statusManager.updateHistory(transcriptionHistory.entries)
 
@@ -248,7 +252,7 @@ extension AppDelegate: @preconcurrency HotkeyDelegate {
     }
 
     public func hotkeyCancelled() {
-        pipeline.cancel()
+        pipeline.cancelHold()
     }
 }
 

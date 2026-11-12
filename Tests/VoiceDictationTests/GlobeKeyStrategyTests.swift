@@ -51,6 +51,38 @@ final class GlobeKeyStrategyTests: XCTestCase {
         XCTAssertEqual(presses.globeChanged(isDown: true), .start)
     }
 
+    /// The app pastes an earlier dictation with its own Cmd+V as soon as the
+    /// text is ready, which can be while Globe is held for the next one.
+    /// `PasteEngine` tags that keystroke, and the tap lets it through without
+    /// consulting the press. It never cancels, whichever key it is, and the
+    /// hold carries on to its release.
+    func testOwnPasteNeverCancels() {
+        var presses = GlobeKeyPresses()
+        XCTAssertEqual(presses.globeChanged(isDown: true), .start, "Globe down for the next dictation")
+
+        for code in [kVK_ANSI_V, kVK_Escape] + otherKeys {
+            let action = GlobeKeyStrategy.action(forKeyDown: Int64(code), sourceUserData: PasteEngine.eventTag, presses: &presses)
+            XCTAssertEqual(action, .none, "key \(code)")
+        }
+
+        XCTAssertTrue(presses.isPressed, "the next dictation is no longer held")
+        XCTAssertEqual(presses.globeChanged(isDown: false), .end, "its release ends it as usual")
+    }
+
+    /// A key the app did not post still cancels: one the user pressed has no
+    /// source data, and another app's tag is not ours.
+    func testKeysFromOtherSourcesStillCancel() {
+        for sourceUserData in [0, 1, PasteEngine.eventTag + 1] {
+            var presses = GlobeKeyPresses()
+            XCTAssertEqual(presses.globeChanged(isDown: true), .start)
+
+            let action = GlobeKeyStrategy.action(forKeyDown: Int64(kVK_ANSI_V), sourceUserData: sourceUserData, presses: &presses)
+
+            XCTAssertEqual(action, .cancelAndPass, "source \(sourceUserData)")
+            XCTAssertFalse(presses.isPressed, "source \(sourceUserData)")
+        }
+    }
+
     func testResetForgetsAPressUnderWay() {
         var presses = GlobeKeyPresses()
         XCTAssertEqual(presses.globeChanged(isDown: true), .start)

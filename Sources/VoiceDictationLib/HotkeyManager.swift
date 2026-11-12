@@ -4,6 +4,8 @@ import Carbon.HIToolbox
 public protocol HotkeyDelegate: AnyObject {
     func hotkeyDidStartPress()
     func hotkeyDidEndPress()
+    /// A key was pressed while the hotkey was held: cancel this hold's
+    /// dictation, and only that one.
     func hotkeyCancelled()
 }
 
@@ -80,6 +82,18 @@ public class GlobeKeyStrategy: HotkeyStrategy {
     public static func action(forKeyDown keyCode: Int64, whilePressed: Bool) -> KeyAction {
         guard whilePressed else { return .none }
         return keyCode == Int64(kVK_Escape) ? .cancelAndConsume : .cancelAndPass
+    }
+
+    /// How the tap answers a key-down; `sourceUserData` is the event's
+    /// `.eventSourceUserData`. The pipeline pastes an earlier dictation as
+    /// soon as its text is ready, maybe while Globe is held for the next one,
+    /// and the tap sees that Cmd+V too. `PasteEngine` tags it with
+    /// `PasteEngine.eventTag`, so it goes through without consulting
+    /// `presses`: the app's own keystroke never cancels. Any other key is
+    /// the press's to judge.
+    static func action(forKeyDown keyCode: Int64, sourceUserData: Int64, presses: inout GlobeKeyPresses) -> KeyAction {
+        guard sourceUserData != PasteEngine.eventTag else { return .none }
+        return presses.keyDown(keyCode)
     }
 
     public init() {}
@@ -178,9 +192,12 @@ public class GlobeKeyStrategy: HotkeyStrategy {
             return Unmanaged.passUnretained(event)
         }
 
-        // Any key pressed while holding the Globe key cancels the recording.
+        // Any key pressed while holding the Globe key cancels this hold's
+        // dictation; the app's own Cmd+V never does.
         if type == .keyDown {
-            let action = presses.keyDown(event.getIntegerValueField(.keyboardEventKeycode))
+            let action = Self.action(forKeyDown: event.getIntegerValueField(.keyboardEventKeycode),
+                                     sourceUserData: event.getIntegerValueField(.eventSourceUserData),
+                                     presses: &presses)
             if action != .none {
                 DispatchQueue.main.async { [weak self] in
                     self?.delegate?.hotkeyCancelled()

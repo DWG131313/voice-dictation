@@ -55,8 +55,8 @@ final class OutputFilterTests: XCTestCase {
         XCTAssertEqual(OutputFilter.clean(" Thank you. "), "")
     }
 
-    func testTranscriberParseOutputUsesSharedFilter() {
-        XCTAssertEqual(Transcriber.parseOutput("[BLANK_AUDIO]\n Thank you."), "")
+    func testBlankAudioThenAHallucinationCleansToNothing() {
+        XCTAssertEqual(OutputFilter.clean("[BLANK_AUDIO]\n Thank you."), "")
     }
 
     func testCancellationStopsProcess() async throws {

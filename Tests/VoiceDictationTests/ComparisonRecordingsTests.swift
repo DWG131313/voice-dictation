@@ -53,6 +53,40 @@ final class ComparisonRecordingsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("1762900000500.wav").path))
     }
 
+    /// Ruling T9-2: a clip whose text came back empty pastes nothing and has
+    /// no outcome, but the engine did transcribe it, so it is kept too, with
+    /// an empty `.txt`. The pipeline is wired to the writer as the app does it.
+    @MainActor
+    func testKeepsAClipWhoseTextCameBackEmpty() async throws {
+        preferences.keepComparisonRecordings = true
+        let engine = FakeEngine(kind: .appleSpeech)
+        engine.result = ""
+        let recorder = FakeRecorder()
+        let pipeline = DictationPipeline(recorder: recorder, service: TranscriptionService(engines: [engine], selected: .appleSpeech),
+                                         paster: FakePaster(), cleaner: nil, replacements: { [] }, vocabulary: { [] })
+        let recordings = recordings()
+        let reported = expectation(description: "the clip is reported")
+        var endedAt: Date?
+        pipeline.onOutcome = { _ in XCTFail("an empty text is not an outcome") }
+        pipeline.onNothingHeard = { clip, date in
+            recordings.keep(clip, rawText: "", date: date)
+            endedAt = date
+            reported.fulfill()
+        }
+
+        pipeline.hotkeyDown()
+        recorder.nextClip = clip
+        pipeline.hotkeyUp()
+        await fulfillment(of: [reported], timeout: 2)
+        queue.sync {}
+
+        let stem = ComparisonRecordings.stem(for: try XCTUnwrap(endedAt))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(), ["\(stem).txt", "\(stem).wav"])
+        let base = directory.appendingPathComponent(stem)
+        XCTAssertEqual(try String(contentsOf: base.appendingPathExtension("txt"), encoding: .utf8), "")
+        XCTAssertEqual(try AudioClip(contentsOf: base.appendingPathExtension("wav")).samples.count, clip.samples.count)
+    }
+
     func testNothingIsWrittenWhenTheSettingIsOff() {
         recordings().keep(outcome(rawText: "Hello there.", status: .pasted))
         queue.sync {}

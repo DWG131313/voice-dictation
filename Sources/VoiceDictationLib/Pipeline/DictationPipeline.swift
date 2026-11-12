@@ -35,12 +35,14 @@ public protocol Pasting {
 /// Runs each dictation from key press to paste. It records while the hotkey
 /// is held, has the service transcribe each recording with the selected
 /// model, in the order they were made, and pastes the text into the frontmost
-/// app. Every dictation that is not cancelled is reported once, through
-/// `onOutcome`. Use from the main thread.
+/// app. Every dictation that is not cancelled is reported once: through
+/// `onOutcome`, or through `onNothingHeard` when its text came back empty.
+/// Use from the main thread.
 ///
 /// At most `maximumWaiting` recordings wait behind the one being transcribed.
-/// When another arrives, the oldest waiting one is skipped: never
-/// transcribed, and reported as Failed with its audio (Review Focus 4).
+/// When another arrives, the oldest waiting one is skipped: not pasted, and
+/// reported as Failed with its audio (Review Focus 4). It normally never
+/// reaches the engine; `enqueue` describes the one narrow exception.
 @MainActor @Observable
 public final class DictationPipeline {
     public static let maximumWaiting = 3
@@ -54,6 +56,11 @@ public final class DictationPipeline {
     public private(set) var level: Float = 0
     /// Called once for every finished dictation; a cancelled one has none.
     @ObservationIgnored public var onOutcome: ((DictationOutcome) -> Void)?
+    /// Called once for every dictation whose text came back empty, with its
+    /// clip and when its recording ended. It pastes nothing and has no
+    /// outcome, but the engine did transcribe the clip, so the comparison
+    /// recordings keep it (Ruling T9-2).
+    @ObservationIgnored public var onNothingHeard: ((_ clip: AudioClip, _ endedAt: Date) -> Void)?
     /// A permission dictation lacks ("Accessibility", "Microphone"). It shows
     /// as `.needsPermission` whenever there is nothing else to show.
     public var missingPermission: String? {
@@ -76,6 +83,10 @@ public final class DictationPipeline {
 
     /// The dictation being recorded, from key-down until its recording ends.
     @ObservationIgnored private var capture: Capture?
+    /// The dictation this hold's recording became when the recorder ended it
+    /// by itself while the key stayed down. `cancelHold` can still take it
+    /// back until the hold ends.
+    @ObservationIgnored private var dictationOfThisHold: UUID?
     /// Recordings handed to the service, oldest first: the first is being
     /// transcribed, the rest wait.
     @ObservationIgnored private var line: [Dictation] = []
@@ -112,6 +123,7 @@ public final class DictationPipeline {
 
     public func hotkeyDown() {
         guard capture == nil else { return }
+        dictationOfThisHold = nil
         var timer = StageTimer()
         timer.mark(.keyDown)
         capture = Capture(timer: timer)
@@ -124,6 +136,8 @@ public final class DictationPipeline {
     }
 
     public func hotkeyUp() {
+        // The hold is over; whatever it made is no longer the hotkey's to cancel.
+        dictationOfThisHold = nil
         guard var capture else { return }
         guard capture.startedAt != nil else {
             // Still waiting for microphone access: there is nothing to stop.
@@ -136,16 +150,40 @@ public final class DictationPipeline {
         recorder.stopRecording()
     }
 
-    /// Escape. While recording, cancels the recording only, so dictations
-    /// already in line still paste. Otherwise cancels every dictation in
-    /// line. A cancelled dictation pastes nothing, reports no outcome, and
-    /// leaves no audio behind.
+    /// A key pressed while the hotkey is held (Globe used as a modifier, or
+    /// Escape): cancels this hold's dictation and nothing else. That is the
+    /// recording under way or, when the recorder ended it by itself while
+    /// the key stayed down (five minutes, or the input changed), the
+    /// dictation it became, wherever that is in line. When the recorder
+    /// failed to start or threw the recording away, the hold has no
+    /// dictation and nothing is cancelled. Unlike `cancel()`, it never
+    /// touches a dictation made before this hold. The cancelled dictation
+    /// leaves no trace, as with `cancel()`.
+    public func cancelHold() {
+        if capture != nil {
+            Log.info("[PIPELINE] Cancelled the recording: a key was pressed while the hotkey was held")
+            cancelCapture()
+            return
+        }
+        guard let id = dictationOfThisHold else { return }
+        dictationOfThisHold = nil
+        // Gone from the line means it has already finished, or was skipped.
+        guard let index = line.firstIndex(where: { $0.id == id }) else { return }
+        line.remove(at: index).transcription.cancel()
+        Log.info("[PIPELINE] Cancelled the dictation the recorder stopped while the hotkey was held")
+        settle()
+    }
+
+    /// Cancels what the pipeline is doing, not just the current hold's
+    /// dictation (Task 23's Escape while working). While recording, cancels
+    /// the recording only, so dictations already in line still paste.
+    /// Otherwise cancels every dictation in line. The hotkey uses
+    /// `cancelHold()` instead, which never reaches a dictation made before
+    /// the current hold. A cancelled dictation pastes nothing, reports no
+    /// outcome, and leaves no audio behind.
     public func cancel() {
-        if let capture {
-            self.capture = nil
-            if capture.startedAt != nil { recorder.cancelRecording() }
-            level = 0
-            settle()
+        if capture != nil {
+            cancelCapture()
             return
         }
         guard !line.isEmpty else { return }
@@ -153,6 +191,15 @@ public final class DictationPipeline {
         line.removeAll()
         cancelled.forEach { $0.transcription.cancel() }
         Log.info("[PIPELINE] Cancelled \(cancelled.count) dictation(s) in line")
+        settle()
+    }
+
+    /// Ends the recording under way and throws it away.
+    private func cancelCapture() {
+        guard let capture else { return }
+        self.capture = nil
+        if capture.startedAt != nil { recorder.cancelRecording() }
+        level = 0
         settle()
     }
 
@@ -200,8 +247,8 @@ public final class DictationPipeline {
 
     /// Hands a finished recording to the service. It goes in line behind
     /// the dictations already there, and a full line skips its oldest
-    /// waiting dictation.
-    private func enqueue(_ clip: AudioClip, timer: StageTimer) {
+    /// waiting dictation. Returns the new dictation's id.
+    private func enqueue(_ clip: AudioClip, timer: StageTimer) -> UUID {
         let service = self.service
         let words = vocabulary()
         // Each call goes to the service now, so the service sees every
@@ -214,7 +261,17 @@ public final class DictationPipeline {
                 return Transcription(result: .failure(error), model: await service.selected)
             }
         }
-        line.append(Dictation(date: Date(), clip: clip, timer: timer, transcription: transcription))
+        let dictation = Dictation(date: Date(), clip: clip, timer: timer, transcription: transcription)
+        line.append(dictation)
+        // Too many waiting: skip the oldest waiting one, `line[1]`. The
+        // pipeline counts `line[0]` as being transcribed until `finishLine`
+        // takes its result on the main actor. A recording that ends after
+        // the service has returned that result, but before `finishLine` has
+        // taken it, still skips `line[1]`, although only three are then
+        // waiting at the service and `line[1]` is already in the engine. In
+        // that moment the skip need not happen, and it falls on a clip that
+        // has already reached the engine. The window is one main-actor hop,
+        // so the behaviour is kept (controller ruling, Task 9 review).
         if line.count - 1 > Self.maximumWaiting {
             skip(line.remove(at: 1))
         }
@@ -223,6 +280,7 @@ public final class DictationPipeline {
             isFinishingLine = true
             Task { await finishLine() }
         }
+        return dictation.id
     }
 
     /// Finishes the dictations in line one at a time, oldest first, so they
@@ -246,6 +304,7 @@ public final class DictationPipeline {
         case .success(let result):
             guard !result.text.isEmpty else {
                 Log.info("[PIPELINE] \(result.model.storageKey) heard nothing; nothing pasted")
+                onNothingHeard?(dictation.clip, dictation.date)
                 return
             }
             let appName = paster.frontmostAppName
@@ -268,15 +327,16 @@ public final class DictationPipeline {
         }
     }
 
-    /// Takes a waiting dictation out of line before it is transcribed and
-    /// reports it as Failed, keeping its audio.
+    /// Reports a dictation taken out of line as Failed, keeping its audio,
+    /// and cancels its call to the service. That call is normally still
+    /// waiting at the service; `enqueue` describes the moment when it is not.
     private func skip(_ dictation: Dictation) {
         dictation.transcription.cancel()
         Log.info("[PIPELINE] More than \(Self.maximumWaiting) dictations waiting; skipped the oldest")
         show(Self.skippedFailure)
         Task {
-            // Its call to the service leaves the line at once, saying which
-            // model was selected.
+            // The cancelled call ends at once unless its clip is already in
+            // the engine, and says which model ran or was selected.
             let model = await dictation.transcription.value.model
             report(failed: dictation, model: model, reason: Self.skippedFailure)
         }
@@ -402,7 +462,10 @@ extension DictationPipeline: @preconcurrency AudioRecorderDelegate {
         level = 0
         // A recording the recorder ended by itself is timed from its end.
         capture.timer.mark(.keyUp, at: capture.keyUpAt ?? Date())
-        enqueue(clip, timer: capture.timer)
+        let id = enqueue(clip, timer: capture.timer)
+        // Ended by the recorder while the key is still down: until the key
+        // goes up, a key pressed with it cancels this dictation.
+        if capture.keyUpAt == nil { dictationOfThisHold = id }
     }
 
     public func recordingDidFail(error: String) {

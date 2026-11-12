@@ -1,8 +1,10 @@
 import Foundation
 
-/// The whisper-cli helpers `WhisperCLIEngine` runs it with: its arguments,
-/// its output, its errors and its timeout. The queue that ran whisper-cli
-/// for the old app is gone; `DictationPipeline` lines dictations up now.
+/// The whisper-cli helpers `WhisperCLIEngine` runs it with: finding the
+/// binary, its arguments, its timeout, and its errors in words fit for the
+/// menu bar. The engine cleans its output with `OutputFilter`. The queue that
+/// ran whisper-cli for the old app is gone; `DictationPipeline` lines
+/// dictations up now.
 public enum Transcriber {
     public static func arguments(modelPath: String, audioPath: String, vocabulary: [String] = []) -> [String] {
         var args = [
@@ -17,10 +19,6 @@ public enum Transcriber {
             args += ["--prompt", vocabulary.joined(separator: ", ")]
         }
         return args
-    }
-
-    public static func parseOutput(_ output: String) -> String {
-        OutputFilter.clean(output)
     }
 
     /// Turn whisper's stderr dump into a one-line message fit for the menu bar.

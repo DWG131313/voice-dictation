@@ -68,6 +68,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.dictationsInFlight, 0)
     }
 
+    /// Ruling T9-2: a dictation whose text came back empty reports its clip
+    /// and when its recording ended, for the comparison recordings, without
+    /// an outcome. A dictation with text does not; its outcome has the clip.
+    @MainActor
+    func testEmptyTextReportsItsClipWithoutAnOutcome() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        let pipeline = makePipeline([apple])
+        var heard: [(clip: AudioClip, date: Date)] = []
+        pipeline.onNothingHeard = { clip, date in heard.append((clip, date)) }
+
+        apple.result = ""
+        let before = Date()
+        dictate(clip, on: pipeline)
+        try await waitUntil("the clip is reported") { heard.count == 1 }
+        let after = Date()
+        apple.result = "hello"
+        dictate(clip, on: pipeline)
+        try await waitUntil("the second dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(heard.count, 1, "a dictation with text was reported as heard nothing")
+        XCTAssertEqual(heard.first?.clip, clip)
+        let endedAt = try XCTUnwrap(heard.first?.date)
+        XCTAssertTrue((before...after).contains(endedAt), "\(endedAt) is not when the recording ended")
+        XCTAssertEqual(outcomes.map(\.status), [.pasted])
+        XCTAssertEqual(paster.pasted, ["hello"])
+    }
+
     @MainActor
     func testPasteFailureLeavesTextOnClipboardAsCopied() async throws {
         let pipeline = makePipeline([FakeEngine(kind: .appleSpeech)])
@@ -229,6 +256,115 @@ final class DictationPipelineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
 
         XCTAssertEqual(apple.transcribedClips.count, 1, "the waiting dictation reached the engine")
+        XCTAssertEqual(paster.pasted, [])
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertEqual(pipeline.state, .idle)
+    }
+
+    // MARK: - The hotkey's cancel: this hold only
+
+    /// A key pressed while Globe is held (Globe+Right Arrow, or Escape)
+    /// cancels the recording under way, and a dictation made before this
+    /// hold still pastes.
+    @MainActor
+    func testHotkeyCancelWhileRecordingCancelsOnlyTheRecording() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
+        let pipeline = makePipeline([apple])
+        dictate(clip, on: pipeline)
+        try await waitUntil("the earlier dictation reaches the engine") { apple.transcribedClips.count == 1 }
+
+        pipeline.hotkeyDown()
+        recorder.nextClip = clip
+        pipeline.cancelHold()
+        XCTAssertEqual(recorder.cancelCount, 1)
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertEqual(pipeline.state, .transcribing)
+        apple.isHeld = false
+        try await waitUntil("the earlier dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(outcomes.first?.status, .pasted)
+        XCTAssertEqual(paster.pasted, ["hello"])
+        XCTAssertEqual(apple.transcribedClips.count, 1, "the cancelled recording reached the engine")
+        XCTAssertEqual(pipeline.dictationsInFlight, 0)
+    }
+
+    /// When the recorder fails to start, this hold has no dictation, so a key
+    /// pressed before Globe is let go cancels nothing: a dictation made
+    /// before this hold still pastes.
+    @MainActor
+    func testHotkeyCancelAfterAFailedStartCancelsNothing() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
+        let pipeline = makePipeline([apple])
+        dictate(clip, on: pipeline)
+        try await waitUntil("the earlier dictation reaches the engine") { apple.transcribedClips.count == 1 }
+
+        recorder.startFailure = "Microphone in use by another app"
+        pipeline.hotkeyDown()
+        XCTAssertEqual(pipeline.state, .error("Microphone in use by another app"))
+        pipeline.cancelHold()
+        apple.isHeld = false
+        try await waitUntil("the earlier dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(outcomes.first?.status, .pasted)
+        XCTAssertEqual(paster.pasted, ["hello"])
+        XCTAssertEqual(apple.cancelledCount, 0, "the earlier dictation was stopped")
+    }
+
+    /// When the recorder ends a recording by itself while Globe stays down
+    /// (five minutes, or the input changed), a key pressed before Globe is
+    /// let go cancels the dictation that recording became, and only that
+    /// one: a dictation made before this hold still pastes.
+    @MainActor
+    func testHotkeyCancelAfterTheRecorderStopsCancelsOnlyThatDictation() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
+        apple.textForClip = { clip in "clip \(Int(clip.samples[0]))" }
+        let (pipeline, service) = makePipelineAndService([apple])
+        let clips = (1...2).map(numbered)
+        dictate(clips[0], on: pipeline)
+        try await waitUntil("the earlier dictation reaches the engine") { apple.transcribedClips == [clips[0]] }
+
+        pipeline.hotkeyDown()
+        recorder.nextClip = clips[1]
+        recorder.stopRecording()
+        try await waitUntil("the stopped recording is in line") { await service.dictationsInLine == 2 }
+        pipeline.cancelHold()
+        XCTAssertEqual(pipeline.dictationsInFlight, 1, "only the stopped recording leaves the line")
+        apple.isHeld = false
+        try await waitUntil("the earlier dictation finishes") { outcomes.count == 1 }
+        try await waitUntil("the service's line empties") { await service.dictationsInLine == 0 }
+        // Time for a stray paste or outcome to show up.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(paster.pasted, ["clip 1"])
+        XCTAssertEqual(outcomes.map(\.status), [.pasted])
+        XCTAssertEqual(apple.transcribedClips, [clips[0]], "the cancelled dictation reached the engine")
+        XCTAssertEqual(pipeline.dictationsInFlight, 0)
+        XCTAssertEqual(pipeline.state, .idle)
+    }
+
+    /// Escape while Globe is still held, after the recorder ended the
+    /// recording by itself, leaves no trace of that dictation even once the
+    /// engine has started on it.
+    @MainActor
+    func testHotkeyCancelLeavesNoTraceOfARecordingTheRecorderStopped() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
+        let (pipeline, service) = makePipelineAndService([apple])
+
+        pipeline.hotkeyDown()
+        recorder.nextClip = clip
+        recorder.stopRecording()
+        try await waitUntil("the stopped recording reaches the engine") { apple.transcribedClips.count == 1 }
+        pipeline.cancelHold()
+        XCTAssertEqual(pipeline.dictationsInFlight, 0, "the pipeline still holds the clip")
+        XCTAssertEqual(pipeline.state, .idle)
+        try await waitUntil("the engine stops") { apple.cancelledCount == 1 }
+        try await waitUntil("the service's line empties") { await service.dictationsInLine == 0 }
+        try await Task.sleep(for: .milliseconds(100))
+
         XCTAssertEqual(paster.pasted, [])
         XCTAssertTrue(outcomes.isEmpty)
         XCTAssertEqual(pipeline.state, .idle)

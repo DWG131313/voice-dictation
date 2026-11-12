@@ -11,8 +11,10 @@ public enum DictationState: Equatable, Sendable {
     case error(String)
 }
 
-/// One finished dictation. A cancelled dictation produces none; every other
-/// one, including one that failed or was skipped, produces exactly one.
+/// One finished dictation. A cancelled dictation produces none, and so does
+/// one whose text came back empty (the pipeline reports its clip through
+/// `onNothingHeard`). Every other one, including one that failed or was
+/// skipped, produces exactly one.
 public struct DictationOutcome: Sendable {
     public enum Status: String, Codable, Sendable {
         /// Pasted into the frontmost app.

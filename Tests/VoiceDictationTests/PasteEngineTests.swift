@@ -1,4 +1,5 @@
 import XCTest
+import Carbon.HIToolbox
 import Cocoa
 @testable import VoiceDictationLib
 
@@ -43,6 +44,21 @@ final class PasteEngineTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { pastRestoreDelay.fulfill() }
         wait(for: [pastRestoreDelay], timeout: 2)
         XCTAssertEqual(pasteboard.string(forType: .string), "dictated text", "the old clipboard came back over the text")
+    }
+
+    /// The Cmd+V the engine posts carries `PasteEngine.eventTag`, so the
+    /// hotkey's event tap can tell the app's own paste from a key the user
+    /// pressed. The events are only made here, never posted.
+    func testPasteKeystrokesCarryTheAppsTag() throws {
+        let keystrokes = try XCTUnwrap(PasteEngine.pasteKeystrokes())
+
+        XCTAssertEqual(keystrokes.down.type, .keyDown)
+        XCTAssertEqual(keystrokes.up.type, .keyUp)
+        for event in [keystrokes.down, keystrokes.up] {
+            XCTAssertEqual(event.getIntegerValueField(.keyboardEventKeycode), Int64(kVK_ANSI_V))
+            XCTAssertTrue(event.flags.contains(.maskCommand))
+            XCTAssertEqual(event.getIntegerValueField(.eventSourceUserData), PasteEngine.eventTag)
+        }
     }
 
     func testRestoreOfEmptySnapshotLeavesPasteboardEmpty() {

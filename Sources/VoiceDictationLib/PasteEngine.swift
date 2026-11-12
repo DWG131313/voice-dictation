@@ -92,22 +92,36 @@ public class PasteEngine: Pasting {
         }
     }
 
-    /// Sends Cmd+V; false if the events could not be made.
-    private func simulatePaste() -> Bool {
-        let source = CGEventSource(stateID: .hidSystemState)
+    // MARK: - Cmd+V
 
-        // Key down: Cmd + V
+    /// What the app puts in the `.eventSourceUserData` of the Cmd+V it posts
+    /// ("VDPASTE" in ASCII). The hotkey's event tap sees that keystroke too,
+    /// and this is how it tells the app's own paste from a key the user pressed.
+    static let eventTag: Int64 = 0x56_44_50_41_53_54_45
+
+    /// The Cmd+V key-down and key-up `paste` posts, each tagged with
+    /// `eventTag`. Nil if they could not be made.
+    static func pasteKeystrokes() -> (down: CGEvent, up: CGEvent)? {
+        let source = CGEventSource(stateID: .hidSystemState)
         guard let cmdVDown = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_ANSI_V), keyDown: true),
               let cmdVUp = CGEvent(keyboardEventSource: source, virtualKey: UInt16(kVK_ANSI_V), keyDown: false) else {
+            return nil
+        }
+        for event in [cmdVDown, cmdVUp] {
+            event.flags = .maskCommand
+            event.setIntegerValueField(.eventSourceUserData, value: eventTag)
+        }
+        return (cmdVDown, cmdVUp)
+    }
+
+    /// Sends Cmd+V; false if the events could not be made.
+    private func simulatePaste() -> Bool {
+        guard let keystrokes = Self.pasteKeystrokes() else {
             Log.info("[PASTE] Failed to create Cmd+V events — text left on the clipboard")
             return false
         }
-
-        cmdVDown.flags = .maskCommand
-        cmdVUp.flags = .maskCommand
-
-        cmdVDown.post(tap: .cghidEventTap)
-        cmdVUp.post(tap: .cghidEventTap)
+        keystrokes.down.post(tap: .cghidEventTap)
+        keystrokes.up.post(tap: .cghidEventTap)
         return true
     }
 }
