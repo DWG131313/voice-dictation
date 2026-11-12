@@ -25,7 +25,8 @@ let package = Package(
         .testTarget(
             name: "VoiceDictationTests",
             dependencies: ["VoiceDictationLib"],
-            path: "Tests/VoiceDictationTests"
+            path: "Tests/VoiceDictationTests",
+            resources: [.copy("Resources")]
         ),
     ],
     swiftLanguageModes: [.v5]
