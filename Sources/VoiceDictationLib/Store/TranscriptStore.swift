@@ -38,18 +38,28 @@ public final class TranscriptStore {
     static let fileName = "transcripts.store"
 
     public private(set) var health: Health
+    /// Where recordings are kept; nil keeps none.
+    private let audio: AudioArchive?
+    /// How many ordinary transcripts keep their recording (`PreferencesManager.keptRecordings`).
+    private let keptRecordings: () -> Int
     /// Nil when the store is unavailable.
     public let container: ModelContainer?
 
     /// Opens, or starts, `transcripts.store` in `directory`, creating the
     /// directory if needed. In memory, nothing is read or written there.
-    public convenience init(directory: URL, inMemory: Bool = false) {
-        self.init(directory: directory, inMemory: inMemory, now: Date())
+    /// With an `audio` archive, `add` keeps each recording there and prunes
+    /// to `keptRecordings()` newest (see `prune(keeping:)`).
+    public convenience init(directory: URL, inMemory: Bool = false, audio: AudioArchive? = nil,
+                            keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings }) {
+        self.init(directory: directory, inMemory: inMemory, now: Date(), audio: audio, keptRecordings: keptRecordings)
     }
 
     /// `now` names the files of a store that is moved aside; tests pass
     /// their own.
-    init(directory: URL, inMemory: Bool = false, now: Date) {
+    init(directory: URL, inMemory: Bool = false, now: Date, audio: AudioArchive? = nil,
+         keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings }) {
+        self.audio = audio
+        self.keptRecordings = keptRecordings
         let opened = Self.open(directory.appendingPathComponent(Self.fileName), inMemory: inMemory, now: now)
         container = opened.container
         health = opened.health
@@ -57,14 +67,65 @@ public final class TranscriptStore {
 
     // MARK: - Adding and finding
 
-    /// Keeps a finished dictation. Returns its transcript, or nil when the
-    /// store is unavailable or the transcript could not be saved.
+    /// Keeps a finished dictation, and its recording when there is an
+    /// archive, a clip, and either room for it (`keptRecordings` above 0) or
+    /// a failed dictation, which always keeps its recording. Then prunes.
+    /// Returns its transcript, or nil when the store is unavailable or the
+    /// transcript could not be saved.
     @discardableResult
     public func add(_ outcome: DictationOutcome) -> Transcript? {
         guard let context else { return nil }
         let transcript = Transcript(outcome)
+        if let audio, let clip = outcome.clip, outcome.status == .failed || keptRecordings() > 0 {
+            do {
+                transcript.audioFileName = try audio.save(clip, id: outcome.id)
+            } catch {
+                Log.info("[STORE] Could not keep the recording of \(outcome.id): \(error)")
+            }
+        }
         context.insert(transcript)
-        return save("the transcript of \(outcome.id)") ? transcript : nil
+        guard save("the transcript of \(outcome.id)") else {
+            if let name = transcript.audioFileName { audio?.remove(name) }
+            return nil
+        }
+        prune(keeping: keptRecordings())
+        return transcript
+    }
+
+    // MARK: - Kept recordings
+
+    /// Keeps the recordings of the newest `limit` ordinary transcripts and
+    /// removes the others' (their `audioFileName` becomes nil; the
+    /// transcripts stay). Pinned and failed transcripts keep theirs and do
+    /// not count against `limit` (Ruling T12-1). Then deletes `.m4a` files
+    /// that no transcript names, but only while the store is healthy: a
+    /// store started anew after a damaged one was moved aside does not know
+    /// the old recordings, which must not be taken for strays.
+    public func prune(keeping limit: Int) {
+        guard let context, let audio else { return }
+        let descriptor = FetchDescriptor<Transcript>(sortBy: [SortDescriptor(\.date, order: .reverse)])
+        let all: [Transcript]
+        do {
+            all = try context.fetch(descriptor)
+        } catch {
+            Log.info("[STORE] Could not prune the recordings: \(error)")
+            return
+        }
+        var counted = 0
+        var changed = false
+        for t in all {
+            guard let name = t.audioFileName, !t.pinned, t.status != .failed else { continue }
+            counted += 1
+            if counted > max(0, limit) {
+                audio.remove(name)
+                t.audioFileName = nil
+                changed = true
+            }
+        }
+        if changed { save("the pruned recordings") }
+        guard health == .ok else { return }
+        let named = Set(all.compactMap(\.audioFileName))
+        for file in audio.fileNames() where !named.contains(file) { audio.remove(file) }
     }
 
     /// The transcripts in `scope` whose main text contains `query`, ignoring
@@ -118,8 +179,9 @@ public final class TranscriptStore {
     /// Deletes the transcript and its alternates.
     public func delete(_ t: Transcript) {
         guard let context else { return }
+        let recording = t.audioFileName
         context.delete(t)
-        save("a deletion")
+        if save("a deletion"), let recording { audio?.remove(recording) }
     }
 
     /// A hand edit: makes `newText` the main text and marks the transcript

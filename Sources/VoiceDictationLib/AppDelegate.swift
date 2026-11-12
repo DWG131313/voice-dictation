@@ -13,7 +13,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         cleaner: nil, replacements: { [] }, vocabulary: { [] }
     )
     private lazy var statusManager = StatusManager()
-    private lazy var store = TranscriptStore(directory: Self.dataDirectory)
+    private lazy var store = TranscriptStore(
+        directory: Self.dataDirectory,
+        audio: AudioArchive(directory: Self.dataDirectory.appendingPathComponent("audio", isDirectory: true)),
+        keptRecordings: { PreferencesManager.shared.keptRecordings }
+    )
     private let permissionManager = PermissionManager()
     private let hotkeyManager = HotkeyManager()
     private let comparisonRecordings = ComparisonRecordings()

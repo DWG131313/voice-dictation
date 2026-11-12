@@ -26,6 +26,7 @@ public class PreferencesManager {
         static let maxHistoryItems = "maxHistoryItems"
         static let launchAtLogin = "launchAtLogin"
         static let keepComparisonRecordings = "keepComparisonRecordings"
+        static let keptRecordings = "keptRecordings"
     }
 
     // MARK: - Available Models
@@ -122,6 +123,19 @@ public class PreferencesManager {
     public var keepComparisonRecordings: Bool {
         get { defaults.bool(forKey: Keys.keepComparisonRecordings) }
         set { defaults.set(newValue, forKey: Keys.keepComparisonRecordings) }
+    }
+
+    /// How many recent recordings the app keeps for replay and
+    /// re-transcription. 0 keeps none for new dictations; failed and pinned
+    /// ones are always kept and not counted (`TranscriptStore.prune`).
+    public static let defaultKeptRecordings = 50
+
+    public var keptRecordings: Int {
+        get {
+            guard defaults.object(forKey: Keys.keptRecordings) != nil else { return Self.defaultKeptRecordings }
+            return max(0, defaults.integer(forKey: Keys.keptRecordings))
+        }
+        set { defaults.set(max(0, newValue), forKey: Keys.keptRecordings) }
     }
 
     /// The app uses `shared`, on the standard defaults.
