@@ -29,7 +29,6 @@ public final class LoginItemManager {
 
     /// Whether the OS currently has the app registered to open at login.
     public var isRegistered: Bool {
-        guard #available(macOS 13.0, *) else { return false }
         return SMAppService.mainApp.status == .enabled
     }
 
@@ -41,7 +40,6 @@ public final class LoginItemManager {
     ///   in the desired state; `false` if skipped or it failed.
     @discardableResult
     public func setEnabled(_ enabled: Bool) -> Bool {
-        guard #available(macOS 13.0, *) else { return false }
         guard LoginItemManager.isRunningFromAppBundle() else { return false }
         do {
             if enabled {

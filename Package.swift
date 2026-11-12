@@ -1,9 +1,9 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "VoiceDictation",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v26)],
     targets: [
         // Library target with all logic (testable)
         .target(
@@ -27,5 +27,6 @@ let package = Package(
             dependencies: ["VoiceDictationLib"],
             path: "Tests/VoiceDictationTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
