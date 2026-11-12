@@ -189,7 +189,12 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(transcript.isEdited)
         XCTAssertEqual(transcript.rawText, "um hello there")
         XCTAssertEqual(transcript.cleanedText, "Hello there.")
-        XCTAssertEqual(transcript.alternates.count, 0, "an edit of the dictation's own text is undone, not set aside")
+        let edit = try XCTUnwrap(transcript.alternates.first, "the edit is kept")
+        XCTAssertEqual(transcript.alternates.count, 1)
+        XCTAssertEqual(edit.text, "Hello there, Danny.")
+        XCTAssertEqual(edit.modelKey, AlternateResult.editedModelKey)
+        XCTAssertEqual(edit.editedFromModelKey, transcript.rawModelKey)
+        XCTAssertTrue(edit.wasMain)
     }
 
     /// A failed dictation has no raw text, so reverting cannot empty a text
@@ -243,6 +248,94 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(edit.modelKey, AlternateResult.editedModelKey)
         XCTAssertEqual(edit.editedFromModelKey, "whisperKit/base.en", "the model whose text Danny edited")
         XCTAssertEqual(edit.seconds, 0.5)
+    }
+
+    /// Danny's edit of the dictation's own text, promoted back after another
+    /// model's text was chosen, is labelled with the dictation's own model,
+    /// so reverting must still keep it.
+    @MainActor
+    func testRevertKeepsAnEditPromotedBackUnderTheDictationsOwnModel() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", rawText: "um hello there",
+                                                         cleanedText: "Hello there.")))
+        store.updateText(transcript, "Edited by Danny.")
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first { !$0.wasMain }), in: transcript)
+        store.promote(try XCTUnwrap(transcript.alternates.first { $0.text == "Edited by Danny." }), in: transcript)
+        XCTAssertEqual(transcript.modelKey, transcript.rawModelKey)
+        XCTAssertTrue(transcript.isEdited)
+
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertTrue(transcript.alternates.contains { $0.text == "Edited by Danny." }, "the edit is kept")
+    }
+
+    @MainActor
+    func testRevertKeepsAPromotedReTranscriptionByTheDictationsOwnModel() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", rawText: "um hello there",
+                                                         cleanedText: "Hello there.")))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there!", model: .appleSpeech, elapsed: 0.4))
+        store.promote(try XCTUnwrap(transcript.alternates.first), in: transcript)
+        XCTAssertEqual(transcript.modelKey, transcript.rawModelKey)
+
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertTrue(transcript.alternates.contains { $0.text == "Hello, there!" }, "the re-transcription is kept")
+    }
+
+    @MainActor
+    func testRevertKeepsAPastedTextOfOtherWording() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Replaced wording.", rawText: "um hello there")))
+
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertEqual(transcript.alternates.map(\.text), ["Replaced wording."])
+    }
+
+    /// A cleaned, unedited dictation: the raw and cleaned texts are kept on
+    /// the transcript, so flipping between them adds no alternates.
+    @MainActor
+    func testRevertingACleanedDictationAddsNoAlternate() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", rawText: "um hello there",
+                                                         cleanedText: "Hello there.")))
+
+        store.revertToRaw(transcript)
+        store.revertToRaw(transcript)
+
+        XCTAssertEqual(transcript.text, "um hello there")
+        XCTAssertEqual(transcript.alternates.count, 0)
+    }
+
+    /// Each "Use this one" then "Revert to raw" round must not add another
+    /// copy of the raw text or of the promoted text.
+    @MainActor
+    func testPromoteThenRevertRoundsKeepTheAlternateCountSteady() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", rawText: "um hello there",
+                                                         cleanedText: "Hello there.")))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+
+        var counts: [Int] = []
+        for _ in 0..<4 {
+            store.promote(try XCTUnwrap(transcript.alternates.first { $0.text == "Hello, there." }), in: transcript)
+            store.revertToRaw(transcript)
+            counts.append(transcript.alternates.count)
+        }
+
+        // The first rounds set aside each text once (the cleaned text, the raw
+        // text, the promoted text); after that the count stays put.
+        XCTAssertEqual(counts, [2, 3, 3, 3])
+        XCTAssertEqual(try alternatesStored(in: store), 3)
+        for text in ["Hello there.", "um hello there", "Hello, there."] {
+            XCTAssertEqual(transcript.alternates.filter { $0.text == text }.count, 1, text)
+        }
+        XCTAssertEqual(transcript.alternates.filter { $0.text == "Hello, there." }.count, 1)
     }
 
     // MARK: - Alternates
@@ -557,6 +650,33 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(contents("transcripts.store" + nextSuffix), garbage)
         XCTAssertEqual(contents("transcripts.store-shm" + nextSuffix), garbage)
         XCTAssertEqual(contents("transcripts.store-wal" + suffix), garbage, "moved on the first try")
+    }
+
+    /// The move-aside succeeds for the one file that exists (the journal),
+    /// but a new store cannot start either: `transcripts.store` is a dangling
+    /// link into a regular file, so both opens fail.
+    @MainActor
+    func testMoveAsideThatSucceedsButNewStoreFailsIsUnavailable() throws {
+        let directory = try makeDirectory()
+        let afile = directory.appendingPathComponent("afile")
+        try Data("Not a folder.".utf8).write(to: afile)
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("transcripts.store"),
+            withDestinationURL: afile.appendingPathComponent("x.store"))
+        let garbage = Data("This is not a SQLite database.".utf8)
+        try garbage.write(to: directory.appendingPathComponent("transcripts.store-wal"))
+        let when = base
+
+        let store = TranscriptStore(directory: directory, now: when)
+
+        guard case .unavailable(let message) = store.health else {
+            return XCTFail("health is \(store.health)")
+        }
+        XCTAssertTrue(message.contains("a new one could not be started"), message)
+        XCTAssertNil(store.container)
+        XCTAssertNil(store.add(outcome("Hello there.")))
+        let moved = directory.appendingPathComponent("transcripts.store-wal" + TranscriptStore.brokenSuffix(at: when))
+        XCTAssertEqual(try? Data(contentsOf: moved), garbage, "the journal was moved aside, not deleted")
     }
 
     // MARK: - Helpers

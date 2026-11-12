@@ -133,23 +133,38 @@ public final class TranscriptStore {
     }
 
     /// Makes the raw text the main text again, with the dictation's own model
-    /// and time, undoing cleanup and any hand edit of the dictation's text. A
-    /// main text from another model (a promoted re-transcription, or Danny's
-    /// edit of one) is set aside as an alternate first, so it is not lost. A
-    /// failed dictation has no raw text, so this never empties a text it got
+    /// and time, undoing cleanup and any hand edit of the dictation's text.
+    /// The main text it replaces is set aside as an alternate first, so
+    /// nothing is lost, unless it is blank, already held by an earlier set-aside
+    /// alternate, or just the dictation's own `rawText` or `cleanedText`
+    /// (which the transcript keeps). So a promoted re-transcription, a hand
+    /// edit (of any model's text) and a pasted text of other wording are kept.
+    /// A failed dictation has no raw text, so this never empties a text it got
     /// later from a re-transcription.
     public func revertToRaw(_ t: Transcript) {
-        guard let context, !Self.isBlank(t.rawText) else { return }
-        if t.modelKey != t.rawModelKey, !Self.isBlank(t.text) {
-            let former = AlternateResult(formerMainOf: t)
-            context.insert(former)
-            t.alternates.append(former)
+        guard !Self.isBlank(t.rawText) else { return }
+        if t.modelKey != t.rawModelKey || (t.text != t.rawText && t.text != t.cleanedText) {
+            setAsideMainText(of: t, promoting: nil)
         }
         t.text = t.rawText
         t.modelKey = t.rawModelKey
         t.transcribeSeconds = t.rawTranscribeSeconds
         t.isEdited = false
         save("a revert to raw")
+    }
+
+    /// Keeps the main text as a `wasMain` alternate, unless it is blank or
+    /// another `wasMain` alternate (not `promoting`, which is about to be
+    /// deleted) already holds the same text, so repeated rounds of promote and
+    /// revert add no copies.
+    private func setAsideMainText(of t: Transcript, promoting: AlternateResult?) {
+        guard let context, !Self.isBlank(t.text) else { return }
+        let held = t.alternates.contains { $0.wasMain && $0.text == t.text
+            && $0.persistentModelID != promoting?.persistentModelID }
+        guard !held else { return }
+        let former = AlternateResult(formerMainOf: t)
+        context.insert(former)
+        t.alternates.append(former)
     }
 
     // MARK: - Alternates
@@ -188,7 +203,7 @@ public final class TranscriptStore {
             Log.info("[STORE] Not promoted: the result is not one of this transcript's alternates")
             return
         }
-        let former = Self.isBlank(t.text) ? nil : AlternateResult(formerMainOf: t)
+        setAsideMainText(of: t, promoting: alt)
         t.text = alt.text
         if alt.modelKey == AlternateResult.editedModelKey {
             t.isEdited = true
@@ -206,10 +221,6 @@ public final class TranscriptStore {
         }
         t.alternates.remove(at: index)
         context.delete(alt)
-        if let former {
-            context.insert(former)
-            t.alternates.append(former)
-        }
         save("a promoted alternate")
     }
 
