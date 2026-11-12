@@ -2,7 +2,6 @@ import Cocoa
 
 public protocol StatusManagerDelegate: AnyObject {
     func statusManagerDidRequestPreferences()
-    func statusManagerDidRequestClearHistory()
     /// A model was chosen in the Model submenu.
     func statusManagerDidChooseModel(_ model: ModelDescriptor)
     /// The menu is opening; the models may have changed since they were listed.
@@ -95,10 +94,6 @@ public class StatusManager: NSObject {
         sender.state = newValue ? .on : .off
     }
 
-    @objc private func clearHistoryClicked(_ sender: Any) {
-        delegate?.statusManagerDidRequestClearHistory()
-    }
-
     @objc private func copyHistoryItem(_ sender: NSMenuItem) {
         guard let text = sender.representedObject as? String else { return }
         let pasteboard = NSPasteboard.general
@@ -157,10 +152,12 @@ public class StatusManager: NSObject {
 
     // MARK: - History
 
-    public func updateHistory(_ entries: [TranscriptionEntry]) {
+    /// Lists the newest transcripts; choosing one copies its text. A failed
+    /// dictation has no text, so it shows why it failed instead.
+    public func updateHistory(_ transcripts: [Transcript]) {
         historySubmenu.removeAllItems()
 
-        if entries.isEmpty {
+        if transcripts.isEmpty {
             let emptyItem = NSMenuItem(title: "No transcriptions yet", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             historySubmenu.addItem(emptyItem)
@@ -168,20 +165,22 @@ public class StatusManager: NSObject {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .short
 
-            for entry in entries.prefix(10) {
-                let timeAgo = formatter.localizedString(for: entry.timestamp, relativeTo: Date())
-                let preview = entry.text.prefix(60) + (entry.text.count > 60 ? "..." : "")
+            for transcript in transcripts.prefix(10) {
+                let timeAgo = formatter.localizedString(for: transcript.date, relativeTo: Date())
+                guard !transcript.text.isEmpty else {
+                    let reason = transcript.failure ?? "no text"
+                    let item = NSMenuItem(title: "Failed — \(reason)  (\(timeAgo))", action: nil, keyEquivalent: "")
+                    item.isEnabled = false
+                    historySubmenu.addItem(item)
+                    continue
+                }
+                let preview = transcript.text.prefix(60) + (transcript.text.count > 60 ? "..." : "")
                 let item = NSMenuItem(title: "\(preview)  (\(timeAgo))", action: #selector(copyHistoryItem(_:)), keyEquivalent: "")
                 item.target = self
-                item.representedObject = entry.text
-                item.toolTip = entry.text
+                item.representedObject = transcript.text
+                item.toolTip = transcript.text
                 historySubmenu.addItem(item)
             }
-
-            historySubmenu.addItem(NSMenuItem.separator())
-            let clearItem = NSMenuItem(title: "Clear History", action: #selector(clearHistoryClicked(_:)), keyEquivalent: "")
-            clearItem.target = self
-            historySubmenu.addItem(clearItem)
         }
 
         historyMenuItem.isHidden = !PreferencesManager.shared.historyEnabled

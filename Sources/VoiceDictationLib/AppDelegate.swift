@@ -13,7 +13,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         cleaner: nil, replacements: { [] }, vocabulary: { [] }
     )
     private lazy var statusManager = StatusManager()
-    private lazy var transcriptionHistory = TranscriptionHistory()
+    private lazy var store = TranscriptStore(directory: Self.dataDirectory)
     private let permissionManager = PermissionManager()
     private let hotkeyManager = HotkeyManager()
     private let comparisonRecordings = ComparisonRecordings()
@@ -56,7 +56,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             self?.comparisonRecordings.keep(clip, rawText: "", date: endedAt)
         }
         showStateInMenuBar()
-        statusManager.updateHistory(transcriptionHistory.entries)
+        importHistory()
+        showHistoryInMenu()
 
         // Reconcile "open at login" with the user's preference. This is a
         // deliberate no-op for the dev build (.build) — registering a login
@@ -95,6 +96,13 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Log.info("[INIT] Done. listening=\(isListening)")
+    }
+
+    /// `~/Library/Application Support/VoiceDictation/`, where the app keeps
+    /// its transcripts and the old app kept `history.json`.
+    private static var dataDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VoiceDictation", isDirectory: true)
     }
 
     /// The three engines dictation can use. WhisperKit keeps its models
@@ -138,12 +146,24 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// After each dictation: keep its recording for the engine comparison
-    /// when that is on, and add its text to the history.
+    /// when that is on, and keep its transcript, a failed one too (Review
+    /// Focus 4).
     private func finished(_ outcome: DictationOutcome) {
         comparisonRecordings.keep(outcome)
-        guard outcome.status != .failed, PreferencesManager.shared.historyEnabled else { return }
-        transcriptionHistory.add(text: outcome.text)
-        statusManager.updateHistory(transcriptionHistory.entries)
+        store.add(outcome)
+        showHistoryInMenu()
+    }
+
+    /// Brings the old app's `history.json` into the store, once. The file
+    /// itself is left as it was.
+    private func importHistory() {
+        let file = Self.dataDirectory.appendingPathComponent("history.json")
+        _ = HistoryImporter.importIfNeeded(from: file, into: store, defaults: .standard)
+    }
+
+    /// Lists the newest transcripts in the menu's history submenu.
+    private func showHistoryInMenu() {
+        statusManager.updateHistory(Array(store.search("", scope: .all).prefix(10)))
     }
 
     /// Lists the models again in the Model submenu.
@@ -266,11 +286,6 @@ extension AppDelegate: @preconcurrency StatusManagerDelegate {
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    public func statusManagerDidRequestClearHistory() {
-        transcriptionHistory.clear()
-        statusManager.updateHistory(transcriptionHistory.entries)
     }
 
     public func statusManagerDidChooseModel(_ model: ModelDescriptor) {
