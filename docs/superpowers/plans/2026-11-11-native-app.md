@@ -14,7 +14,7 @@
 
 **Revised 2026-11-11 after review.** Danny decided three things: a dictation always goes ahead of a re-transcription (Global Constraints; Tasks 3, 5–8); a dictation skipped because three were already waiting is kept as Failed with its audio (Review Focus 4; Tasks 9, 19); cleanup leaves false starts in, a deliberate departure from the spec (Task 21). Also changed after checking the code and the libraries: the cleanup guard's rule (Task 21), WhisperKit's package, storage and network use (Task 7), and keeping the agent docs true during the build (Tasks 1, 13).
 
-A second pass the same day: Apple Dictation (`DictationTranscriber`) joins the comparison as a second Apple model (Tasks 3, 6, 20); the four WhisperKit models are named by folder, and `.preparing` can come back after macOS updates (Task 7); D1 still works after Task 24 removes the comparison switch (D1, Task 24); a cleanup result that arrives after the paste now reaches the store (Task 21); a corrupt store is moved aside together with its `-wal` and `-shm` files (Task 11); the README is kept current from Task 13; and the plan is committed on branch `native-app` before Task 1 starts (Task 1).
+A second pass the same day: Apple Dictation (`DictationTranscriber`) joins the comparison as a second Apple model (Tasks 3, 6, 20); the four WhisperKit models are named by folder, and `.preparing` can come back after macOS updates (Task 7); D1 still works after Task 24 removes the comparison switch (D1, Task 24); a cleanup result that arrives after the paste now reaches the store (Task 21); a corrupt store is moved aside together with its `-wal` and `-shm` files (Task 11); the README is kept current from Task 13; and the plan and spec are committed on branch `native-app` before Task 1 starts (Task 1).
 
 ## Notes for the builder (read before Task 1)
 
@@ -123,7 +123,7 @@ Names used across tasks are defined in the task that creates them and listed in 
 - [ ] **Step 2:** Run `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`. Expected: `Executed 34 tests, with 0 failures`.
 - [ ] **Step 3:** In `CLAUDE.md`, replace the claim that tests cannot run on the laptop with the working command from Step 2 and the reason (Xcode is installed; `xcode-select` points at Command Line Tools). Make the same change in `AGENTS.md`, which is a copy of `CLAUDE.md` for Codex (only its knowledge-base section differs); keep the two in step for the rest of the build.
 - [ ] **Step 4:** Add `.superpowers/` to `.gitignore`.
-- [ ] **Step 5:** Commit everything currently modified or untracked (`AGENTS.md`, `Log.swift`, `PasteEngineTests.swift`, the 13 modified files and the spec; this plan is already committed): `git add -A && git commit -m "chore: commit reliability hardening and native app spec"`.
+- [ ] **Step 5:** Commit everything currently modified or untracked (`AGENTS.md`, `Log.swift`, `PasteEngineTests.swift` and the 13 modified files; the plan and the spec are already committed): `git add -A && git commit -m "chore: commit reliability hardening"`.
 
 ### Task 2: Stage timings and comparison recordings
 
