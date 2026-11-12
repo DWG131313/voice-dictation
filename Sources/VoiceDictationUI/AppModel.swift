@@ -15,6 +15,8 @@ public final class AppModel {
     public let pipeline: DictationPipeline
     public let service: TranscriptionService
     public let store: TranscriptStore
+    /// The main window's transcripts: what is listed and selected.
+    public let library: LibraryModel
     public let permissions: PermissionManager
     public let hotkeys: HotkeyManager
     /// Every model, as last listed by `refreshModels()`.
@@ -88,6 +90,7 @@ public final class AppModel {
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
                                           cleaner: nil, replacements: { [] }, vocabulary: { [] })
         self.store = store
+        self.library = LibraryModel(store: store)
         self.permissions = PermissionManager()
         // Tests pass a fake: the live one reads the real HIToolbox settings.
         self.onboardingSystem = onboardingSystem ?? .live(permissions: permissions)
@@ -302,11 +305,12 @@ public final class AppModel {
 
     /// After each dictation: keep its recording for the engine comparison
     /// when that is on, and keep its transcript, a failed one too (Review
-    /// Focus 4).
+    /// Focus 4), which the window's list then shows, open or not.
     private func finished(_ outcome: DictationOutcome) {
         comparisonRecordings.keep(outcome)
-        store.add(outcome)
+        let transcript = store.add(outcome)
         onboarding.recordOutcome(outcome)
+        if let transcript { library.noteNewTranscript(transcript) }
     }
 
     /// Brings the old app's `history.json` into the store, once. The file

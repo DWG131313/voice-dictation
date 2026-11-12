@@ -117,6 +117,23 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.onboarding.state(of: .tryIt), .done)
     }
 
+    /// The window's list shows a dictation as soon as it is kept, selected
+    /// when nothing else was, whether or not the window is open.
+    @MainActor
+    func testADictationAppearsInTheLibrary() async throws {
+        let model = makeModel([appleEngine()])
+        model.library.reload()
+        XCTAssertTrue(model.library.rows.isEmpty)
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the transcript is listed") { !model.library.rows.isEmpty }
+        XCTAssertEqual(model.library.rows.map(\.text), ["Hello there."])
+        XCTAssertEqual(model.library.selection, model.library.rows.first?.id)
+        XCTAssertEqual(model.store.search("", scope: .all).count, 1, "kept once")
+    }
+
     // MARK: - Welcome window
 
     /// The model list is empty until the first refresh; the launch decision

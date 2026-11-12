@@ -37,17 +37,19 @@ struct VoiceDictationApp: App {
         }
         .menuBarExtraStyle(.menu)
 
-        // Opened from the menu only, never at launch and never restored at
-        // the next one, so starting the app takes focus from nothing.
+        // The transcript library. Opened from the menu only, never at launch
+        // and never restored at the next one, so starting the app takes
+        // focus from nothing. Black to the top edge, as in mockup D: the
+        // title bar is hidden and the traffic lights sit over the sidebar.
         Window("VoiceDictation", id: AppModel.mainWindowID) {
-            // Task 18 puts the transcript library here.
-            Text("Your transcripts will appear here.")
-                .frame(minWidth: 480, minHeight: 320)
+            MainWindow(model: lifecycle.model)
                 .onAppear { lifecycle.windowDidOpen() }
                 .onDisappear { lifecycle.windowDidClose() }
         }
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1120, height: 640)
 
         // The setup steps, shown at launch while any is left; like the main
         // window, never at launch otherwise and never restored.

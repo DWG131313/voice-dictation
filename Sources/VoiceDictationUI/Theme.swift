@@ -82,6 +82,23 @@ public extension View {
     func prismSecondaryButton() -> some View { modifier(PrismSecondaryButton()) }
 }
 
+/// The 1px hairline between regions and under rows (DESIGN.md `divider`).
+public struct Hairline: View {
+    private let axis: Axis
+
+    /// `.horizontal` runs across, under a row; `.vertical` runs down, between columns.
+    public init(_ axis: Axis = .horizontal) {
+        self.axis = axis
+    }
+
+    public var body: some View {
+        Rectangle()
+            .fill(Theme.Color.hairline)
+            .frame(width: axis == .vertical ? 1 : nil, height: axis == .horizontal ? 1 : nil)
+            .accessibilityHidden(true)
+    }
+}
+
 /// The spectrum, 2px: the one colour on a screen, under the selected transcript.
 public struct SpectrumUnderline: View {
     public init() {}
