@@ -18,13 +18,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// Timing for the dictation being recorded, then a FIFO of dictations
     /// waiting on the transcriber (it finishes them in order).
     private var currentTimer = StageTimer()
-    private struct PendingDictation {
-        var timer: StageTimer
-        /// Unix time in milliseconds naming the kept `.wav`/`.txt` pair; nil when not keeping.
-        var comparisonStem: String?
-        let fileURL: URL
-    }
-    private var pending: [PendingDictation] = []
+    private var pending = PendingDictations()
     private var isFirstLaunch: Bool {
         !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
     }
@@ -189,6 +183,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // A replaced transcriber never calls back for its old work.
+        pending.reset()
         transcriber = Transcriber(modelPath: modelManager.modelFileURL.path)
         transcriber.delegate = self
 
@@ -268,12 +264,15 @@ extension AppDelegate: AudioRecorderDelegate {
     public func recordingDidStart() {}
 
     public func recordingDidFinish(fileURL: URL, duration: TimeInterval) {
-        pending.append(PendingDictation(
-            timer: currentTimer,
-            comparisonStem: keepComparisonRecording(of: fileURL),
-            fileURL: fileURL))
+        pending.append(PendingDictation(timer: currentTimer, fileURL: fileURL))
         statusManager.updateStatus(.transcribing(queued: 0))
         transcriber.transcribe(fileURL: fileURL, recordingDuration: duration)
+        // Copy after handing off, so keeping a recording never delays the
+        // transcription. The transcriber deletes the WAV only once whisper
+        // has finished, and its callbacks arrive on this queue later.
+        if let stem = keepComparisonRecording(of: fileURL) {
+            pending.setStem(stem, for: fileURL)
+        }
     }
 
     public func recordingDidFail(error: String) {
@@ -289,7 +288,7 @@ extension AppDelegate: AudioRecorderDelegate {
 // MARK: - TranscriberDelegate
 extension AppDelegate: TranscriberDelegate {
     public func transcriptionCompleted(text: String) {
-        var dictation = pending.isEmpty ? PendingDictation(timer: StageTimer(), comparisonStem: nil, fileURL: URL(fileURLWithPath: "/")) : pending.removeFirst()
+        var dictation = pending.popFirst() ?? PendingDictation(timer: StageTimer(), fileURL: URL(fileURLWithPath: "/"))
         dictation.timer.mark(.textReady)
         if let stem = dictation.comparisonStem {
             saveComparisonTranscript(text, stem: stem)
@@ -309,12 +308,12 @@ extension AppDelegate: TranscriberDelegate {
     }
 
     public func transcriptionFailed(error: String) {
-        if !pending.isEmpty { pending.removeFirst() }
+        _ = pending.popFirst()
         statusManager.updateStatus(.error(message: error))
     }
 
     public func transcriptionDropped(fileURL: URL) {
-        pending.removeAll { $0.fileURL == fileURL }
+        pending.remove(fileURL: fileURL)
     }
 
     public func transcriptionQueueUpdated(count: Int) {
@@ -371,6 +370,7 @@ extension AppDelegate: PreferencesWindowDelegate {
         Log.info("[MODEL] Switching to \(modelId)")
         stopListening()
         transcriber = nil
+        pending.reset()  // the dropped transcriber's callbacks never arrive
         modelManager.switchModel(to: modelId)
         // modelDownloadCompleted will restart listening when ready
     }
