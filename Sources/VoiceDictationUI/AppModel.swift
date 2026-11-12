@@ -9,6 +9,8 @@ import VoiceDictationLib
 public final class AppModel {
     /// The main window's scene, for `openWindow(id:)`.
     public static let mainWindowID = "main"
+    /// The Welcome window's scene.
+    public static let welcomeWindowID = "onboarding"
 
     public let pipeline: DictationPipeline
     public let service: TranscriptionService
@@ -19,6 +21,18 @@ public final class AppModel {
     public private(set) var models: [ModelDescriptor] = []
     /// The model dictation uses, as last listed; nil until then.
     public private(set) var selectedModel: ModelID?
+    /// The Welcome window's steps.
+    @ObservationIgnored public private(set) lazy var onboarding = OnboardingModel(
+        system: .live(permissions: permissions),
+        service: service,
+        models: { [unowned self] in models },
+        selected: { [unowned self] in selectedModel },
+        refreshModels: { [unowned self] in await refreshModels() },
+        preferences: preferences
+    )
+    /// Counts the times the app has asked for the Welcome window to open at
+    /// launch; the menu bar icon, which has the `openWindow` action, opens it.
+    public private(set) var welcomeRequests = 0
 
     @ObservationIgnored private let preferences: PreferencesManager
     @ObservationIgnored private let comparisonRecordings: ComparisonRecordings
@@ -29,10 +43,6 @@ public final class AppModel {
     @ObservationIgnored private var isListening = false
     /// Lists the models again whenever a menu opens; kept as long as the app runs.
     @ObservationIgnored private var menuObserver: NSObjectProtocol?
-
-    private var isFirstLaunch: Bool {
-        !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
-    }
 
     /// The app's parts: the three engines with the model saved for dictation,
     /// the microphone, the paste, and the store with its kept recordings in
@@ -96,21 +106,12 @@ public final class AppModel {
         // rebuild, which is what caused multiple instances to launch at startup.
         LoginItemManager.shared.syncWithStoredPreference()
 
-        // Check permissions
+        // Check permissions. Nothing is asked for here: the Welcome window
+        // has a button for each, so a prompt never lands on a user who has
+        // not yet been told why.
         permissions.checkPermissions()
         Log.info("[INIT] Accessibility=\(permissions.isAccessibilityGranted) Microphone=\(permissions.isMicrophoneGranted)")
         showMissingPermission()
-
-        if !permissions.allPermissionsGranted {
-            Log.info("[INIT] Requesting permissions...")
-            permissions.requestPermissions()
-        }
-
-        // Check Globe key setting
-        if !permissions.checkGlobeKeySetting() {
-            Log.info("[INIT] Globe key not set to Do Nothing")
-            showGlobeKeyWarning()
-        }
 
         // Start permission monitoring
         permissions.startMonitoring()
@@ -124,6 +125,13 @@ public final class AppModel {
             // A failure is kept, and the next dictation tries again.
             await service.prepareSelected()
             await refreshModels()
+        }
+
+        // The first run, or any run with a step left, opens the Welcome window.
+        let firstLaunch = !preferences.hasLaunchedBefore
+        preferences.hasLaunchedBefore = true
+        if onboarding.shouldShowAtLaunch(firstLaunch: firstLaunch) {
+            welcomeRequests += 1
         }
 
         Log.info("[INIT] Done. listening=\(isListening)")
@@ -206,6 +214,7 @@ public final class AppModel {
     private func finished(_ outcome: DictationOutcome) {
         comparisonRecordings.keep(outcome)
         store.add(outcome)
+        onboarding.recordOutcome(outcome)
     }
 
     /// Brings the old app's `history.json` into the store, once. The file
@@ -221,20 +230,6 @@ public final class AppModel {
             : !permissions.isMicrophoneGranted ? "Microphone" : nil
     }
 
-    private func showGlobeKeyWarning() {
-        let alert = NSAlert()
-        alert.messageText = "Globe Key Configuration Needed"
-        alert.informativeText = "VoiceDictation uses the Globe key for push-to-talk. In System Settings > Keyboard, set \"Press 🌐 key to\" to \"Do Nothing\"."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open Keyboard Settings")
-        alert.addButton(withTitle: "Later")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
     private func startListening() {
         guard !isListening else { return }
         guard permissions.isAccessibilityGranted else {
@@ -244,7 +239,6 @@ public final class AppModel {
         hotkeys.start()
         isListening = true
         Log.info("[START] Listening for Globe key")
-        showReadyAlert()
     }
 
     private func stopListening() {
@@ -254,19 +248,6 @@ public final class AppModel {
         // No key-up can arrive now, so end a recording under way here.
         pipeline.hotkeyUp()
         isListening = false
-    }
-
-    private func showReadyAlert() {
-        guard isFirstLaunch else { return }
-        UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
-
-        let alert = NSAlert()
-        alert.messageText = "VoiceDictation is Ready"
-        alert.informativeText = "Hold the Globe key to dictate. Release to transcribe and paste."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
     }
 }
 
@@ -334,21 +315,23 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
         false
     }
 
-    /// The main window has opened: a Dock icon and the app's own menu bar,
-    /// as for any app with a window.
-    public func mainWindowDidOpen() {
+    /// A window (the main one or Welcome) has opened: a Dock icon and the
+    /// app's own menu bar, as for any app with a window.
+    public func windowDidOpen() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
     }
 
-    /// The main window has closed: back to the menu bar only.
-    public func mainWindowDidClose() {
-        NSApp.setActivationPolicy(.accessory)
-        // Going back to accessory can leave this app active with no window,
-        // and a dictation made then would paste nowhere. Hiding hands focus
-        // back to the app that was in front, unless Settings is still open.
-        let otherWindowOpen = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
-        if !otherWindowOpen {
+    /// A window has closed. Inside `onDisappear` the closing window may still
+    /// report itself visible, so the windows are counted a turn later. With
+    /// none left the app returns to the menu bar only and hides, handing
+    /// focus back to the app that was in front: a dictation made while this
+    /// app was active with no window would paste nowhere.
+    public func windowDidClose() {
+        DispatchQueue.main.async {
+            let windows = NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, canBecomeMain: $0.canBecomeMain) }
+            guard WindowPolicy.afterClose(windows: windows) == .leaveAndHide else { return }
+            NSApp.setActivationPolicy(.accessory)
             NSApp.hide(nil)
         }
     }

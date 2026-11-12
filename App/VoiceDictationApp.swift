@@ -33,6 +33,7 @@ struct VoiceDictationApp: App {
             MenuBarContent(model: lifecycle.model)
         } label: {
             MenuBarLabel(pipeline: lifecycle.model.pipeline)
+                .modifier(OpenWelcomeAtLaunch(model: lifecycle.model))
         }
         .menuBarExtraStyle(.menu)
 
@@ -42,24 +43,38 @@ struct VoiceDictationApp: App {
             // Task 18 puts the transcript library here.
             Text("Your transcripts will appear here.")
                 .frame(minWidth: 480, minHeight: 320)
-                .onAppear { lifecycle.mainWindowDidOpen() }
-                .onDisappear { lifecycle.mainWindowDidClose() }
+                .onAppear { lifecycle.windowDidOpen() }
+                .onDisappear { lifecycle.windowDidClose() }
         }
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        // The setup steps, shown at launch while any is left; like the main
+        // window, never at launch otherwise and never restored.
+        Window("Welcome", id: AppModel.welcomeWindowID) {
+            OnboardingView(model: lifecycle.model)
+                .onAppear { lifecycle.windowDidOpen() }
+                .onDisappear { lifecycle.windowDidClose() }
+        }
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        .windowResizability(.contentSize)
+
         Settings {
             // Task 24 puts the settings here.
             SettingsPlaceholder()
+                .onDisappear { lifecycle.windowDidClose() }
         }
         // Like the window, never brought back at the next launch.
         .restorationBehavior(.disabled)
     }
 }
 
-/// Stands in until Task 24. D1 needs the one switch to record comparison clips.
+/// Stands in until Task 24. D1 needs the one switch to record comparison clips,
+/// and the Welcome window is reachable from here.
 private struct SettingsPlaceholder: View {
     @State private var keepComparison = PreferencesManager.shared.keepComparisonRecordings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -68,6 +83,10 @@ private struct SettingsPlaceholder: View {
                 .onChange(of: keepComparison) { _, newValue in
                     PreferencesManager.shared.keepComparisonRecordings = newValue
                 }
+            Button("Show Welcome…") {
+                NSApp.activate()
+                openWindow(id: AppModel.welcomeWindowID)
+            }
         }
         .padding(40)
     }

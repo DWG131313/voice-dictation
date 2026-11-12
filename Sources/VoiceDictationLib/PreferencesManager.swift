@@ -27,6 +27,8 @@ public class PreferencesManager {
         static let launchAtLogin = "launchAtLogin"
         static let keepComparisonRecordings = "keepComparisonRecordings"
         static let keptRecordings = "keptRecordings"
+        static let hasLaunchedBefore = "hasLaunchedBefore"
+        static let onboardingTriedIt = "onboardingTriedIt"
     }
 
     // MARK: - Available Models
@@ -136,6 +138,19 @@ public class PreferencesManager {
             return max(0, defaults.integer(forKey: Keys.keptRecordings))
         }
         set { defaults.set(max(0, newValue), forKey: Keys.keptRecordings) }
+    }
+
+    /// True once the app has been started before; the Welcome window shows
+    /// itself on the first launch whatever else is set up.
+    public var hasLaunchedBefore: Bool {
+        get { defaults.bool(forKey: Keys.hasLaunchedBefore) }
+        set { defaults.set(newValue, forKey: Keys.hasLaunchedBefore) }
+    }
+
+    /// True once a dictation has pasted: the Welcome window's last step.
+    public var onboardingTriedIt: Bool {
+        get { defaults.bool(forKey: Keys.onboardingTriedIt) }
+        set { defaults.set(newValue, forKey: Keys.onboardingTriedIt) }
     }
 
     /// The app uses `shared`, on the standard defaults.

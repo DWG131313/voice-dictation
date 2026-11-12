@@ -1,4 +1,5 @@
 import Cocoa
+import Observation
 import AVFoundation
 import ApplicationServices
 
@@ -6,10 +7,14 @@ public protocol PermissionManagerDelegate: AnyObject {
     func permissionStatusChanged(accessibility: Bool, microphone: Bool)
 }
 
-public class PermissionManager {
-    public weak var delegate: PermissionManagerDelegate?
+/// Whether Accessibility and the microphone are granted, checked every 5
+/// seconds while monitoring. It asks the system and never shows an alert of
+/// its own: the onboarding window (Task 14) says what is missing.
+@Observable
+public final class PermissionManager {
+    @ObservationIgnored public weak var delegate: PermissionManagerDelegate?
 
-    private var pollingTimer: Timer?
+    @ObservationIgnored private var pollingTimer: Timer?
 
     public private(set) var isAccessibilityGranted: Bool = false
     public private(set) var isMicrophoneGranted: Bool = false
@@ -27,19 +32,29 @@ public class PermissionManager {
         checkMicrophone()
     }
 
-    public func requestPermissions() {
-        // Accessibility: prompt the user via system dialog
-        let key = "AXTrustedCheckOptionPrompt" as CFString
-        let options = [key: true] as CFDictionary
-        isAccessibilityGranted = AXIsProcessTrustedWithOptions(options)
+    /// True until the user has answered the system's microphone question.
+    public var isMicrophoneUndetermined: Bool {
+        AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
+    }
 
-        // Microphone: request via AVFoundation
+    /// Shows the system's microphone question; a no-op once answered.
+    public func requestMicrophone() {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
-                self?.isMicrophoneGranted = granted
-                self?.notifyDelegate()
+                guard let self else { return }
+                let changed = self.isMicrophoneGranted != granted
+                self.isMicrophoneGranted = granted
+                if changed { self.notifyDelegate() }
             }
         }
+    }
+
+    /// Shows the system's Accessibility question, which also lists this app
+    /// in System Settings so it can be switched on.
+    public func requestAccessibility() {
+        let key = "AXTrustedCheckOptionPrompt" as CFString
+        let options = [key: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     public func startMonitoring() {
@@ -53,12 +68,12 @@ public class PermissionManager {
         pollingTimer = nil
     }
 
-    public func checkGlobeKeySetting() -> Bool {
-        // Read AppleFnUsageType from com.apple.HIToolbox defaults
-        // 0 = Do Nothing, 1 = Change Input Source, 2 = Show Emoji & Symbols, 3 = Start Dictation
-        let fnUsageType = UserDefaults.standard.persistentDomain(forName: "com.apple.HIToolbox")?["AppleFnUsageType"] as? Int
-        // nil or 0 means "Do Nothing" — that's what we want
-        return fnUsageType == nil || fnUsageType == 0
+    /// The Globe key's setting in System Settings > Keyboard, as macOS saves
+    /// it in `com.apple.HIToolbox`: 0 = Do Nothing, 1 = Change Input Source,
+    /// 2 = Show Emoji & Symbols, 3 = Start Dictation; nil when never set,
+    /// which behaves as Do Nothing.
+    public static func globeKeyUsageType() -> Int? {
+        UserDefaults.standard.persistentDomain(forName: "com.apple.HIToolbox")?["AppleFnUsageType"] as? Int
     }
 
     private func checkAccessibility() {

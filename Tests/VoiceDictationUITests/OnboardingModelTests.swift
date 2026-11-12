@@ -1,0 +1,192 @@
+import XCTest
+@testable import VoiceDictationLib
+@testable import VoiceDictationUI
+
+/// The Welcome window's steps, built from fakes: no permission is asked for,
+/// no System Settings pane opens, `com.apple.HIToolbox` is never read and no
+/// preference is written.
+@MainActor
+final class OnboardingModelTests: XCTestCase {
+    private var microphone = true
+    private var microphoneUndetermined = false
+    private var accessibility = true
+    private var globeKeyUsage: Int? = 0
+    private var models: [ModelDescriptor] = [
+        ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .ready),
+    ]
+    private var selected: ModelID? = .appleSpeech
+    private var opened: [URL] = []
+    private var requests: [String] = []
+    private var refreshes = 0
+    private var onRefresh: () -> Void = {}
+    private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
+    private let engine = FakeEngine(kind: .appleSpeech)
+
+    // MARK: - Completeness
+
+    func testCompleteWhenAllDone() {
+        let model = makeModel()
+        model.recordOutcome(pasted(.pasted))
+
+        XCTAssertEqual(model.steps.map(\.id), [.microphone, .accessibility, .globeKey, .speechModel, .tryIt])
+        XCTAssertTrue(model.steps.allSatisfy { $0.state == .done })
+        XCTAssertTrue(model.isComplete)
+    }
+
+    func testOneStepNeededMeansNotComplete() {
+        let model = makeModel()
+        model.recordOutcome(pasted(.pasted))
+        accessibility = false
+
+        XCTAssertEqual(model.state(of: .accessibility), .needed)
+        XCTAssertFalse(model.isComplete)
+    }
+
+    func testTheWindowShowsAtLaunchWhileSomethingIsLeftAndOnTheFirstRun() {
+        let model = makeModel()
+        XCTAssertTrue(model.shouldShowAtLaunch(firstLaunch: false), "the try-it step is not done yet")
+        model.recordOutcome(pasted(.pasted))
+        XCTAssertFalse(model.shouldShowAtLaunch(firstLaunch: false))
+        XCTAssertTrue(model.shouldShowAtLaunch(firstLaunch: true))
+        microphone = false
+        XCTAssertTrue(model.shouldShowAtLaunch(firstLaunch: false))
+    }
+
+    // MARK: - Permissions
+
+    func testMicrophoneAsksOnceThenOpensItsPane() {
+        let model = makeModel()
+        microphone = false
+        microphoneUndetermined = true
+        model.open(.microphone)
+        XCTAssertEqual(requests, ["microphone"])
+        XCTAssertTrue(opened.isEmpty)
+
+        microphoneUndetermined = false
+        model.open(.microphone)
+        XCTAssertEqual(requests, ["microphone"])
+        XCTAssertEqual(opened.map(\.absoluteString),
+                       ["x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone"])
+    }
+
+    func testAccessibilityListsTheAppThenOpensItsPane() {
+        let model = makeModel()
+        accessibility = false
+        model.open(.accessibility)
+        XCTAssertEqual(requests, ["accessibility"])
+        XCTAssertEqual(opened.map(\.absoluteString),
+                       ["x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"])
+    }
+
+    // MARK: - Globe key
+
+    func testGlobeKeyStepUsesHIToolboxSetting() {
+        let model = makeModel()
+        for usage in [nil, 0] as [Int?] {
+            globeKeyUsage = usage
+            model.refresh()
+            XCTAssertEqual(model.state(of: .globeKey), .done, "usage \(String(describing: usage))")
+        }
+        for usage in [1, 2, 3] {
+            globeKeyUsage = usage
+            model.refresh()
+            XCTAssertEqual(model.state(of: .globeKey), .needed, "usage \(usage)")
+        }
+        XCTAssertEqual(refreshes, 0, "refresh() re-reads permissions, not models")
+
+        model.open(.globeKey)
+        XCTAssertEqual(opened.map(\.absoluteString), ["x-apple.systempreferences:com.apple.Keyboard-Settings.extension"])
+    }
+
+    // MARK: - Speech model
+
+    func testSpeechModelStepNeededWhenAssetsMissing() async throws {
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .notDownloaded)]
+        let model = makeModel()
+        XCTAssertEqual(model.state(of: .speechModel), .needed)
+
+        // Apple's files arrive at once; the list then shows the model ready.
+        onRefresh = { [self] in
+            models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .ready)]
+        }
+        await model.downloadSelectedModel()
+
+        XCTAssertEqual(engine.calls, [.download(.appleSpeech)])
+        XCTAssertEqual(refreshes, 1)
+        XCTAssertEqual(model.state(of: .speechModel), .done)
+    }
+
+    func testSpeechModelStepFollowsTheSelectedModelNotAppleSpeech() async {
+        let tiny = ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en")
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .notDownloaded),
+                  ModelDescriptor(id: tiny, displayName: "Tiny", detail: "", state: .ready)]
+        selected = tiny
+        XCTAssertEqual(makeModel().state(of: .speechModel), .done)
+    }
+
+    func testSpeechModelStatesMapToSteps() {
+        let model = makeModel()
+        func step(_ state: ModelDescriptor.State) -> OnboardingModel.Step {
+            models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: state)]
+            return model.step(.speechModel)
+        }
+        XCTAssertEqual(step(.ready).state, .done)
+        XCTAssertEqual(step(.notDownloaded).state, .needed)
+        XCTAssertNotNil(step(.notDownloaded).actionTitle)
+        XCTAssertEqual(step(.downloading(0.4)).state, .needed)
+        XCTAssertEqual(step(.downloading(0.4)).detail, "Downloading… 40%")
+        XCTAssertNil(step(.downloading(0.4)).actionTitle)
+        XCTAssertEqual(step(.preparing).state, .needed)
+        XCTAssertEqual(step(.preparing).detail, "Preparing…")
+        XCTAssertEqual(step(.unavailable("Not on this Mac")).state, .unavailable("Not on this Mac"))
+    }
+
+    func testSpeechModelStepWaitsForTheListToLoad() {
+        models = []
+        let step = makeModel().step(.speechModel)
+        XCTAssertEqual(step.state, .needed)
+        XCTAssertNil(step.actionTitle)
+    }
+
+    // MARK: - Try it
+
+    func testTryItStepCompletesOnFirstPastedOutcome() {
+        let model = makeModel()
+        XCTAssertEqual(model.state(of: .tryIt), .needed)
+
+        model.recordOutcome(pasted(.failed))
+        model.recordOutcome(pasted(.copied))
+        XCTAssertEqual(model.state(of: .tryIt), .needed)
+
+        model.recordOutcome(pasted(.pasted))
+        XCTAssertEqual(model.state(of: .tryIt), .done)
+        XCTAssertTrue(preferences.onboardingTriedIt, "kept, so the window does not return at every launch")
+        XCTAssertTrue(makeModel().step(.tryIt).state == .done)
+    }
+
+    // MARK: - Helpers
+
+    private func makeModel() -> OnboardingModel {
+        let system = OnboardingSystem(
+            microphoneGranted: { [self] in microphone },
+            microphoneUndetermined: { [self] in microphoneUndetermined },
+            requestMicrophone: { [self] in requests.append("microphone") },
+            accessibilityGranted: { [self] in accessibility },
+            requestAccessibility: { [self] in requests.append("accessibility") },
+            globeKeyUsageType: { [self] in globeKeyUsage },
+            openURL: { [self] in opened.append($0) },
+            refreshPermissions: {}
+        )
+        return OnboardingModel(system: system,
+                               service: TranscriptionService(engines: [engine], selected: .appleSpeech),
+                               models: { [self] in models },
+                               selected: { [self] in selected },
+                               refreshModels: { [self] in refreshes += 1; onRefresh() },
+                               preferences: preferences)
+    }
+
+    private func pasted(_ status: DictationOutcome.Status) -> DictationOutcome {
+        DictationOutcome(date: Date(), clip: nil, rawText: "hi", text: "hi", model: .appleSpeech,
+                         transcribeSeconds: 0.1, appName: "TextEdit", status: status)
+    }
+}
