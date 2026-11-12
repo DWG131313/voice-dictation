@@ -159,6 +159,36 @@ final class WhisperKitEngineTests: XCTestCase {
         XCTAssertEqual(loaded, [tiny])
     }
 
+    /// `fetch` leaves the tokenizer on disk before a cancel can land, so the
+    /// model looks downloaded then; a load must not start under the download,
+    /// whose failure cleanup would remove its files.
+    func testPrepareWhileDownloadingIsRefused() async throws {
+        let calls = Calls()
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        defer { open.finish() }
+        let engine = WhisperKitEngine(root: root, loader: { _ in
+            calls.add()
+            return try await Self.emptyPipeline()
+        }, fetcher: { _, _, _ in
+            try self.fakeDownload(self.tiny)
+            for await _ in gate {}
+        })
+        let downloading = Task { try await engine.download(tiny) { _ in } }
+        try await waitUntil(engine, shows: tiny, as: .downloading(0))
+
+        do {
+            try await engine.prepare(tiny)
+            XCTFail("prepare should be refused while tiny.en downloads")
+        } catch {
+            XCTAssertEqual(error as? TranscriptionError,
+                           .modelNotReady("WhisperKit tiny.en is still downloading"))
+        }
+
+        XCTAssertEqual(calls.value, 0)
+        open.finish()
+        try await downloading.value
+    }
+
     /// A load that `unload()` overtakes still runs to its end, and shows as
     /// preparing until then, but its model is not kept.
     func testUnloadDuringALoadDropsIt() async throws {

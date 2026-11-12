@@ -10,9 +10,12 @@ public actor WhisperKitEngine: TranscriptionEngine {
 
     /// Builds a loaded pipeline from a load configuration. Tests pass a fake.
     typealias Loader = @Sendable (WhisperKitConfig) async throws -> WhisperKit
+    /// Puts a model and its tokenizer under a root. Tests pass a fake.
+    typealias Fetcher = @Sendable (Model, URL, @escaping @Sendable (Double) -> Void) async throws -> Void
 
     private let root: URL
     private let loader: Loader
+    private let fetcher: Fetcher
     /// Every model loaded since the last `unload()`. Preparing one model never
     /// evicts another (Ruling T7-3).
     private var loaded: [ModelID: WhisperKit] = [:]
@@ -31,8 +34,13 @@ public actor WhisperKitEngine: TranscriptionEngine {
     }
 
     init(root: URL, loader: @escaping Loader) {
+        self.init(root: root, loader: loader) { try await Self.fetch($0, into: $1, progress: $2) }
+    }
+
+    init(root: URL, loader: @escaping Loader, fetcher: @escaping Fetcher) {
         self.root = root
         self.loader = loader
+        self.fetcher = fetcher
     }
 
     /// The models loaded now.
@@ -103,7 +111,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
         downloads[id] = latest
         defer { downloads[id] = nil }
         do {
-            try await Self.fetch(model, into: root) { fraction in
+            try await fetcher(model, root) { fraction in
                 latest.fraction = fraction
                 progress(fraction)
             }
@@ -178,6 +186,9 @@ public actor WhisperKitEngine: TranscriptionEngine {
             load = try startLoading(model)
         }
         try await Self.wait(for: load)
+        // The load may have ended before this caller was cancelled; a cancelled
+        // caller ends in CancellationError, not in "unloaded".
+        try Task.checkCancellation()
         guard let pipeline = loaded[model.id] else {
             throw TranscriptionError.modelNotReady("\(model.displayName) was unloaded before it finished loading")
         }
@@ -187,6 +198,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
     /// Starts loading a downloaded model in a task of its own, so a caller
     /// can stop waiting without stopping the load.
     private func startLoading(_ model: Model) throws -> Task<Void, Error> {
+        // `fetch` writes the tokenizer before it can be cancelled, so a model
+        // can look downloaded while its download may still remove its files.
+        guard downloads[model.id] == nil else {
+            throw TranscriptionError.modelNotReady("\(model.displayName) is still downloading")
+        }
         guard isDownloaded(model) else {
             throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")
         }
