@@ -24,6 +24,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var _result = "hello"
     private var _delay: TimeInterval = 0
+    private var _isHeld = false
     private var _prepareDelay: TimeInterval = 0
     private var _prepareError: Error?
     private var _calls: [Call] = []
@@ -43,6 +44,12 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         get { lock.withLock { _delay } }
         set { lock.withLock { _delay = newValue } }
     }
+    /// While true, each `transcribe` waits once it has started, before its
+    /// `delay`, until the test sets this back to false.
+    var isHeld: Bool {
+        get { lock.withLock { _isHeld } }
+        set { lock.withLock { _isHeld = newValue } }
+    }
     var prepareDelay: TimeInterval {
         get { lock.withLock { _prepareDelay } }
         set { lock.withLock { _prepareDelay = newValue } }
@@ -57,7 +64,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     }
     /// Every call in the order it started.
     var calls: [Call] { lock.withLock { _calls } }
-    /// `transcribe` calls cancelled during their `delay`.
+    /// `transcribe` calls cancelled while held or during their `delay`.
     var cancelledCount: Int { lock.withLock { _cancelledCount } }
 
     private func record(_ call: Call) { lock.withLock { _calls.append(call) } }
@@ -75,14 +82,13 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         record(.transcribe(model))
         probe?.enter()
         defer { probe?.leave() }
-        let wait = delay
-        if wait > 0 {
-            do {
-                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-            } catch {
-                lock.withLock { _cancelledCount += 1 }
-                throw error
-            }
+        do {
+            while isHeld { try await Task.sleep(nanoseconds: 2_000_000) }
+            let wait = delay
+            if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        } catch {
+            lock.withLock { _cancelledCount += 1 }
+            throw error
         }
         return result
     }

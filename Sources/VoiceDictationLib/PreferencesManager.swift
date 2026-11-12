@@ -8,6 +8,7 @@ public class PreferencesManager {
     // MARK: - Keys
     private enum Keys {
         static let selectedModel = "selectedModel"
+        static let selectedModelID = "selectedModelID"
         static let historyEnabled = "historyEnabled"
         static let maxHistoryItems = "maxHistoryItems"
         static let launchAtLogin = "launchAtLogin"
@@ -55,6 +56,27 @@ public class PreferencesManager {
 
     public var selectedModel: WhisperModel {
         WhisperModel.available.first { $0.id == selectedModelId } ?? WhisperModel.available[1]
+    }
+
+    /// The model dictation uses, saved as its `storageKey`. Until one is
+    /// saved, a whisper-cli model chosen in the old app carries over.
+    public var selectedModelID: ModelID {
+        get {
+            Self.selectedModelID(saved: defaults.string(forKey: Keys.selectedModelID),
+                                 legacy: defaults.string(forKey: Keys.selectedModel))
+        }
+        set { defaults.set(newValue.storageKey, forKey: Keys.selectedModelID) }
+    }
+
+    /// A saved choice wins. Otherwise the old app's `selectedModel` becomes
+    /// that whisper-cli model, so the app keeps working on first run even if
+    /// Apple's language files are missing. Anything else is Apple Speech.
+    static func selectedModelID(saved: String?, legacy: String?) -> ModelID {
+        if let saved, let id = ModelID(storageKey: saved) { return id }
+        if let legacy, WhisperModel.available.contains(where: { $0.id == legacy }) {
+            return ModelID(engine: .whisperCLI, name: legacy)
+        }
+        return .appleSpeech
     }
 
     public var historyEnabled: Bool {
