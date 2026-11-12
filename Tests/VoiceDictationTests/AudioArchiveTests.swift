@@ -185,6 +185,63 @@ final class AudioArchiveTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(store.add(o)).audioFileName)
     }
 
+    func testRecoveryMovesTheArchiveAsideAndTheNextLaunchKeepsIt() throws {
+        let directory = try makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("This is not a SQLite database.".utf8).write(to: directory.appendingPathComponent("transcripts.store"))
+        let archive = AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true))
+        let oldName = try archive.save(clip(), id: UUID())
+
+        try MainActor.assumeIsolated {
+            let first = TranscriptStore(directory: directory, audio: archive, keptRecordings: { 5 })
+            guard case .recovered(let message) = first.health else { return XCTFail("health is \(first.health)") }
+            let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            let movedFolder = try XCTUnwrap(left.first { $0.hasPrefix("audio.broken-") }, "left: \(left)")
+            XCTAssertFalse(left.contains("audio"), "the new store starts with no archive folder")
+            XCTAssertTrue(message.contains(movedFolder), message)
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(movedFolder).appendingPathComponent(oldName).path))
+
+            // The next launch: a healthy store, whose first add prunes.
+            let second = TranscriptStore(directory: directory, audio: archive, keptRecordings: { 5 })
+            XCTAssertEqual(second.health, .ok)
+            XCTAssertNotNil(second.add(outcome(1)))
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(movedFolder).appendingPathComponent(oldName).path),
+                "the old recording is still there")
+            XCTAssertEqual(files(archive).count, 1)
+        }
+    }
+
+    @MainActor
+    func testAnArchiveThatCannotBeWrittenStillKeepsTheTranscript() throws {
+        let directory = try makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let blocker = directory.appendingPathComponent("audio")
+        try Data("a file, not a folder".utf8).write(to: blocker)
+        let store = makeStore(keeping: 5, archive: AudioArchive(directory: blocker))
+        let t = try XCTUnwrap(store.add(outcome(1)))
+        XCTAssertNil(t.audioFileName)
+        XCTAssertEqual(store.search("", scope: .all).count, 1)
+    }
+
+    func testOnlyPlainM4aNamesReachTheArchive() throws {
+        let directory = try makeDirectory()
+        let archive = AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true))
+        let name = try archive.save(clip(), id: UUID())
+        let outside = directory.appendingPathComponent("outside.m4a")
+        try Data("x".utf8).write(to: outside)
+
+        for bad in ["", ".", "..", "../outside.m4a", "a/b.m4a", "notes.txt", "x.m4a/", ".m4a"] {
+            XCTAssertNil(archive.validURL(for: bad), "\(bad)")
+            archive.remove(bad)
+            XCTAssertThrowsError(try archive.load(bad), bad)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("audio").path))
+        XCTAssertNotNil(archive.validURL(for: name))
+    }
+
     func testKeptRecordingsPreference() {
         let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
         XCTAssertEqual(preferences.keptRecordings, 50)

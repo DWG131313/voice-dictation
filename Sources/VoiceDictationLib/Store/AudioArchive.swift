@@ -24,16 +24,25 @@ public struct AudioArchive: Sendable {
         try AudioClip(contentsOf: url(for: fileName))
     }
 
-    /// Where `fileName` is (or would be) kept. Only its last path component
-    /// counts, so a name can never reach outside the folder.
+    /// Where `fileName` is (or would be) kept. A name that is not a plain
+    /// `<name>.m4a` has no place in the folder: it gets a path where no file
+    /// is ever kept, so reading it fails and nothing outside the folder is
+    /// reached.
     public func url(for fileName: String) -> URL {
-        directory.appendingPathComponent((fileName as NSString).lastPathComponent, isDirectory: false)
+        validURL(for: fileName) ?? directory.appendingPathComponent("invalid-name", isDirectory: false)
+    }
+
+    /// The file for `fileName`, or nil unless it is a plain `<name>.m4a`:
+    /// not empty, no path separator, not `.` or `..`.
+    func validURL(for fileName: String) -> URL? {
+        guard !fileName.isEmpty, fileName != ".", fileName != "..", !fileName.contains("/"),
+              (fileName as NSString).pathExtension.lowercased() == "m4a" else { return nil }
+        return directory.appendingPathComponent(fileName, isDirectory: false)
     }
 
     /// Deletes a kept recording. A file that is not there is not an error.
     public func remove(_ fileName: String) {
-        let file = url(for: fileName)
-        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        guard let file = validURL(for: fileName), FileManager.default.fileExists(atPath: file.path) else { return }
         do {
             try FileManager.default.removeItem(at: file)
         } catch {

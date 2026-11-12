@@ -60,7 +60,8 @@ public final class TranscriptStore {
          keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings }) {
         self.audio = audio
         self.keptRecordings = keptRecordings
-        let opened = Self.open(directory.appendingPathComponent(Self.fileName), inMemory: inMemory, now: now)
+        let opened = Self.open(directory.appendingPathComponent(Self.fileName), inMemory: inMemory, now: now,
+                               archive: audio?.directory)
         container = opened.container
         health = opened.health
     }
@@ -103,7 +104,10 @@ public final class TranscriptStore {
     /// the old recordings, which must not be taken for strays.
     public func prune(keeping limit: Int) {
         guard let context, let audio else { return }
-        let descriptor = FetchDescriptor<Transcript>(sortBy: [SortDescriptor(\.date, order: .reverse)])
+        let descriptor = FetchDescriptor<Transcript>(
+            predicate: #Predicate { $0.audioFileName != nil },
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
         let all: [Transcript]
         do {
             all = try context.fetch(descriptor)
@@ -112,17 +116,22 @@ public final class TranscriptStore {
             return
         }
         var counted = 0
-        var changed = false
+        var pruned: [String] = []
         for t in all {
             guard let name = t.audioFileName, !t.pinned, t.status != .failed else { continue }
             counted += 1
             if counted > max(0, limit) {
-                audio.remove(name)
+                pruned.append(name)
                 t.audioFileName = nil
-                changed = true
             }
         }
-        if changed { save("the pruned recordings") }
+        // Names first, files after: a failed save is rolled back and the
+        // transcripts still name their files. A file that will not delete
+        // is an orphan the next prune finds.
+        if !pruned.isEmpty {
+            guard save("the pruned recordings") else { return }
+            for name in pruned { audio.remove(name) }
+        }
         guard health == .ok else { return }
         let named = Set(all.compactMap(\.audioFileName))
         for file in audio.fileNames() where !named.contains(file) { audio.remove(file) }
@@ -304,7 +313,7 @@ public final class TranscriptStore {
     /// Opens the store at `url`. A store that cannot be opened is moved
     /// aside, its files renamed with the suffix for `now`, and a new, empty
     /// store starts in its place at once (Ruling T11-3).
-    private static func open(_ url: URL, inMemory: Bool, now: Date) -> (container: ModelContainer?, health: Health) {
+    private static func open(_ url: URL, inMemory: Bool, now: Date, archive: URL? = nil) -> (container: ModelContainer?, health: Health) {
         let failure: Error
         do {
             return (try openContainer(at: url, inMemory: inMemory), .ok)
@@ -316,7 +325,7 @@ public final class TranscriptStore {
 
         let moved: [URL]
         do {
-            moved = try moveAside(url, suffix: brokenSuffix(at: now))
+            moved = try moveAside(url, suffix: brokenSuffix(at: now), archive: archive)
         } catch {
             Log.info("[STORE] Could not move \(url.lastPathComponent) aside: \(error)")
             return (nil, .unavailable("History is unavailable: the transcript store could not be opened or moved "
@@ -339,20 +348,35 @@ public final class TranscriptStore {
         }
     }
 
-    /// Renames whichever of the store's files exist with `suffix`, the
+    /// Renames whichever of the store's files exist with `suffix`, and the
+    /// `archive` folder before them, the
     /// `-wal` and `-shm` journals first and the database last, and returns
     /// their new URLs. A failed rename stops the move and is thrown. The
     /// database then still has its name, so no new store is started beside a
     /// journal, and the next open fails again and moves the rest.
-    private static func moveAside(_ url: URL, suffix: String) throws -> [URL] {
+    private static func moveAside(_ url: URL, suffix: String, archive: URL?) throws -> [URL] {
+        let fileManager = FileManager.default
         var moved: [URL] = []
+        // The kept recordings belong to the history being moved aside, whose
+        // transcripts still name them, and a new store would take them for
+        // strays. So the archive folder goes first, and a failed move of it
+        // starts no new store beside the old archive.
+        var movedArchive: URL?
+        if let archive, fileManager.fileExists(atPath: archive.path) {
+            let target = URL(fileURLWithPath: archive.path + suffix)
+            try fileManager.moveItem(at: archive, to: target)
+            Log.info("[STORE] Moved \(archive.lastPathComponent) aside as \(target.lastPathComponent)")
+            movedArchive = target
+        }
         for file in ["-wal", "-shm", ""].map({ URL(fileURLWithPath: url.path + $0) })
-        where FileManager.default.fileExists(atPath: file.path) {
+        where fileManager.fileExists(atPath: file.path) {
             let target = URL(fileURLWithPath: file.path + suffix)
-            try FileManager.default.moveItem(at: file, to: target)
+            try fileManager.moveItem(at: file, to: target)
             Log.info("[STORE] Moved \(file.lastPathComponent) aside as \(target.lastPathComponent)")
             moved.append(target)
         }
+        // Only the store's own files say a store was there to move.
+        if !moved.isEmpty, let movedArchive { moved.append(movedArchive) }
         return moved
     }
 
