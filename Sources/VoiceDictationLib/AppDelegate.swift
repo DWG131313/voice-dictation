@@ -14,6 +14,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// Tracked explicitly so that losing and re-gaining a permission can
     /// restart listening cleanly.
     private var isListening = false
+
+    /// Timing for the dictation being recorded, then a FIFO of dictations
+    /// waiting on the transcriber (it finishes them in order).
+    private var currentTimer = StageTimer()
+    private struct PendingDictation {
+        var timer: StageTimer
+        /// Unix time naming the kept `.wav`/`.txt` pair; nil when not keeping.
+        var comparisonStem: String?
+    }
+    private var pending: [PendingDictation] = []
     private var isFirstLaunch: Bool {
         !UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
     }
@@ -43,6 +53,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         audioRecorder = AudioRecorder()
         audioRecorder.delegate = self
+        audioRecorder.onFirstAudio = { [weak self] time in
+            self?.currentTimer.mark(.firstAudio, at: time)
+        }
 
         pasteEngine = PasteEngine()
 
@@ -107,6 +120,39 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if removed > 0 {
             Log.info("[INIT] Removed \(removed) stale recording(s)")
+        }
+    }
+
+    // MARK: - Comparison recordings
+
+    private static var comparisonDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VoiceDictation/comparison", isDirectory: true)
+    }
+
+    /// Copies the WAV aside (the transcriber deletes it when done). Returns
+    /// the shared file name stem, or nil when the preference is off or the
+    /// copy failed.
+    private func keepComparisonRecording(of wav: URL) -> String? {
+        guard PreferencesManager.shared.keepComparisonRecordings else { return nil }
+        let dir = Self.comparisonDirectory
+        let stem = String(Int(Date().timeIntervalSince1970))
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: wav, to: dir.appendingPathComponent("\(stem).wav"))
+            return stem
+        } catch {
+            Log.info("[COMPARE] Could not keep recording: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func saveComparisonTranscript(_ text: String, stem: String) {
+        let url = Self.comparisonDirectory.appendingPathComponent("\(stem).txt")
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            Log.info("[COMPARE] Could not save transcript: \(error.localizedDescription)")
         }
     }
 
@@ -199,11 +245,14 @@ extension AppDelegate: HotkeyDelegate {
             statusManager.updateStatus(.permissionNeeded("Microphone"))
             return
         }
+        currentTimer = StageTimer()
+        currentTimer.mark(.keyDown)
         statusManager.updateStatus(.recording)
         audioRecorder.startRecording()
     }
 
     public func hotkeyDidEndPress() {
+        currentTimer.mark(.keyUp)
         audioRecorder.stopRecording()
     }
 
@@ -218,6 +267,9 @@ extension AppDelegate: AudioRecorderDelegate {
     public func recordingDidStart() {}
 
     public func recordingDidFinish(fileURL: URL, duration: TimeInterval) {
+        pending.append(PendingDictation(
+            timer: currentTimer,
+            comparisonStem: keepComparisonRecording(of: fileURL)))
         statusManager.updateStatus(.transcribing(queued: 0))
         transcriber.transcribe(fileURL: fileURL, recordingDuration: duration)
     }
@@ -235,8 +287,15 @@ extension AppDelegate: AudioRecorderDelegate {
 // MARK: - TranscriberDelegate
 extension AppDelegate: TranscriberDelegate {
     public func transcriptionCompleted(text: String) {
+        var dictation = pending.isEmpty ? PendingDictation(timer: StageTimer(), comparisonStem: nil) : pending.removeFirst()
+        dictation.timer.mark(.textReady)
+        if let stem = dictation.comparisonStem {
+            saveComparisonTranscript(text, stem: stem)
+        }
         if !text.isEmpty {
             pasteEngine.paste(text: text)
+            dictation.timer.mark(.pasted)
+            Log.info("[TIMING] \(dictation.timer.summary)")
 
             if PreferencesManager.shared.historyEnabled {
                 transcriptionHistory.add(text: text)
@@ -248,6 +307,7 @@ extension AppDelegate: TranscriberDelegate {
     }
 
     public func transcriptionFailed(error: String) {
+        if !pending.isEmpty { pending.removeFirst() }
         statusManager.updateStatus(.error(message: error))
     }
 

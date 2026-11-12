@@ -24,6 +24,7 @@ public class StatusManager: NSObject {
     private let historyMenuItem: NSMenuItem
     private let historySubmenu: NSMenu
     private let launchAtLoginMenuItem: NSMenuItem
+    private let keepRecordingsMenuItem: NSMenuItem
     private var errorClearTimer: Timer?
 
     public override init() {
@@ -35,6 +36,8 @@ public class StatusManager: NSObject {
         historySubmenu = NSMenu()
         historyMenuItem.submenu = historySubmenu
         launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
+
+        keepRecordingsMenuItem = NSMenuItem(title: "Keep recordings for comparison", action: #selector(toggleKeepRecordings(_:)), keyEquivalent: "")
 
         super.init()
 
@@ -62,6 +65,10 @@ public class StatusManager: NSObject {
         }
         menu.addItem(launchAtLoginMenuItem)
 
+        keepRecordingsMenuItem.target = self
+        keepRecordingsMenuItem.state = PreferencesManager.shared.keepComparisonRecordings ? .on : .off
+        menu.addItem(keepRecordingsMenuItem)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit VoiceDictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
@@ -78,6 +85,12 @@ public class StatusManager: NSObject {
         let newValue = !PreferencesManager.shared.launchAtLogin
         LoginItemManager.shared.setEnabled(newValue)
         PreferencesManager.shared.launchAtLogin = newValue
+        sender.state = newValue ? .on : .off
+    }
+
+    @objc private func toggleKeepRecordings(_ sender: NSMenuItem) {
+        let newValue = !PreferencesManager.shared.keepComparisonRecordings
+        PreferencesManager.shared.keepComparisonRecordings = newValue
         sender.state = newValue ? .on : .off
     }
 

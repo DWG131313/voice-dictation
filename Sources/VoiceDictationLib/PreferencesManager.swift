@@ -11,6 +11,7 @@ public class PreferencesManager {
         static let historyEnabled = "historyEnabled"
         static let maxHistoryItems = "maxHistoryItems"
         static let launchAtLogin = "launchAtLogin"
+        static let keepComparisonRecordings = "keepComparisonRecordings"
     }
 
     // MARK: - Available Models
@@ -78,6 +79,14 @@ public class PreferencesManager {
     public var launchAtLogin: Bool {
         get { defaults.bool(forKey: Keys.launchAtLogin) }
         set { defaults.set(newValue, forKey: Keys.launchAtLogin) }
+    }
+
+    /// Keep each recording and the text the engine produced for it in
+    /// `~/Library/Application Support/VoiceDictation/comparison/`, for the
+    /// engine comparison. Defaults to off.
+    public var keepComparisonRecordings: Bool {
+        get { defaults.bool(forKey: Keys.keepComparisonRecordings) }
+        set { defaults.set(newValue, forKey: Keys.keepComparisonRecordings) }
     }
 
     private init() {}

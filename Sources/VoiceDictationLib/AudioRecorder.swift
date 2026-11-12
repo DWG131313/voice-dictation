@@ -11,6 +11,9 @@ public protocol AudioRecorderDelegate: AnyObject {
 
 public class AudioRecorder {
     public weak var delegate: AudioRecorderDelegate?
+    /// Called once per recording, on the main queue, with the time the first
+    /// microphone buffer arrived.
+    public var onFirstAudio: ((Date) -> Void)?
 
     // A fresh engine per recording. Reusing one across input-device changes
     // (AirPods connecting, a USB mic unplugged) leaves it with a stale input
@@ -26,6 +29,7 @@ public class AudioRecorder {
     // Loudest sample seen this recording (0...1), updated on the audio thread.
     private let peakLock = NSLock()
     private var peakAmplitude: Float = 0
+    private var firstAudioReported = false
     /// Recordings whose peak never rises above this are treated as silence and
     /// discarded without running whisper. Whisper hallucinates words like
     /// "you" or "Thank you." on silent input, and a muted or absent mic would
@@ -135,6 +139,7 @@ public class AudioRecorder {
                     guard let self = self,
                           let audioFile = self.audioFile,
                           let converter = self.converter else { return }
+                    self.reportFirstAudio()
 
                     let frameCount = AVAudioFrameCount(
                         (Double(buffer.frameLength) * 16000.0 / hardwareFormat.sampleRate).rounded(.up)
@@ -180,7 +185,7 @@ public class AudioRecorder {
         }
 
         isRecording = true
-        peakLock.lock(); peakAmplitude = 0; peakLock.unlock()
+        peakLock.lock(); peakAmplitude = 0; firstAudioReported = false; peakLock.unlock()
         recordingStartTime = Date()
         installConfigObserver(for: engine)
         maxDurationTimer?.invalidate()
@@ -240,6 +245,17 @@ public class AudioRecorder {
     }
 
     // MARK: - Private
+
+    /// Runs on the audio thread for every buffer; only the first one reports.
+    private func reportFirstAudio() {
+        let now = Date()
+        peakLock.lock()
+        let first = !firstAudioReported
+        firstAudioReported = true
+        peakLock.unlock()
+        guard first else { return }
+        DispatchQueue.main.async { [weak self] in self?.onFirstAudio?(now) }
+    }
 
     private func trackPeak(in buffer: AVAudioPCMBuffer) {
         guard let channel = buffer.floatChannelData?[0] else { return }
