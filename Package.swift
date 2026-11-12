@@ -4,6 +4,9 @@ import PackageDescription
 let package = Package(
     name: "VoiceDictation",
     platforms: [.macOS(.v26)],
+    dependencies: [
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.1.1"),
+    ],
     targets: [
         // Library target with all logic (testable)
         .target(
@@ -13,7 +16,10 @@ let package = Package(
         ),
         .target(
             name: "VoiceDictationLib",
-            dependencies: ["ObjCHelpers"],
+            dependencies: [
+                "ObjCHelpers",
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+            ],
             path: "Sources/VoiceDictationLib"
         ),
         // Thin executable — just the entry point
@@ -24,7 +30,10 @@ let package = Package(
         ),
         .testTarget(
             name: "VoiceDictationTests",
-            dependencies: ["VoiceDictationLib"],
+            dependencies: [
+                "VoiceDictationLib",
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+            ],
             path: "Tests/VoiceDictationTests",
             resources: [.copy("Resources")]
         ),
