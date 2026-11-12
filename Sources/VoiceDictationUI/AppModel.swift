@@ -23,7 +23,7 @@ public final class AppModel {
     public private(set) var selectedModel: ModelID?
     /// The Welcome window's steps.
     @ObservationIgnored public private(set) lazy var onboarding = OnboardingModel(
-        system: .live(permissions: permissions),
+        system: onboardingSystem,
         service: service,
         models: { [unowned self] in models },
         selected: { [unowned self] in selectedModel },
@@ -31,8 +31,11 @@ public final class AppModel {
         preferences: preferences
     )
     /// Counts the times the app has asked for the Welcome window to open at
-    /// launch; the menu bar icon, which has the `openWindow` action, opens it.
+    /// launch; the menu bar icon, which has the `openWindow` action, opens it
+    /// and takes the request (`takeWelcomeRequest`).
     public private(set) var welcomeRequests = 0
+    @ObservationIgnored private var welcomeRequestsServed = 0
+    @ObservationIgnored private let onboardingSystem: OnboardingSystem
 
     @ObservationIgnored private let preferences: PreferencesManager
     @ObservationIgnored private let comparisonRecordings: ComparisonRecordings
@@ -69,13 +72,16 @@ public final class AppModel {
     /// permissions and arms the hotkey. Tests pass fakes, an in-memory store
     /// and preferences kept in memory.
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
-         preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL) {
+         preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
+         onboardingSystem: OnboardingSystem? = nil) {
         self.service = service
         // Tasks 21 and 22 add the cleaner and the replacements.
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
                                           cleaner: nil, replacements: { [] }, vocabulary: { [] })
         self.store = store
         self.permissions = PermissionManager()
+        // Tests pass a fake: the live one reads the real HIToolbox settings.
+        self.onboardingSystem = onboardingSystem ?? .live(permissions: permissions)
         self.hotkeys = HotkeyManager()
         self.preferences = preferences
         self.comparisonRecordings = comparison
@@ -120,21 +126,41 @@ public final class AppModel {
         // waits for the model, or fails and is kept with its audio.
         startListening()
 
+        // Read now, before anything can be marked as launched.
+        let firstLaunch = !preferences.hasLaunchedBefore
+        preferences.hasLaunchedBefore = true
+
         Task {
             await refreshModels()
+            // Only now is the model list known (it is empty until the first
+            // refresh), so only now can the steps be judged.
+            await decideWelcomeAtLaunch(firstLaunch: firstLaunch)
             // A failure is kept, and the next dictation tries again.
             await service.prepareSelected()
             await refreshModels()
         }
 
-        // The first run, or any run with a step left, opens the Welcome window.
-        let firstLaunch = !preferences.hasLaunchedBefore
-        preferences.hasLaunchedBefore = true
+        Log.info("[INIT] Done. listening=\(isListening)")
+    }
+
+    // MARK: - Welcome window
+
+    /// Asks for the Welcome window on the first run, or when a step is left.
+    /// Call once the models are listed.
+    func decideWelcomeAtLaunch(firstLaunch: Bool) async {
+        await refreshModels()
+        onboarding.refresh()
         if onboarding.shouldShowAtLaunch(firstLaunch: firstLaunch) {
             welcomeRequests += 1
         }
+    }
 
-        Log.info("[INIT] Done. listening=\(isListening)")
+    /// True once per request: the view that opens the window takes it, so a
+    /// view appearing again later opens nothing and takes no focus.
+    public func takeWelcomeRequest() -> Bool {
+        guard welcomeRequestsServed < welcomeRequests else { return false }
+        welcomeRequestsServed = welcomeRequests
+        return true
     }
 
     // MARK: - Models
@@ -329,7 +355,7 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
     /// app was active with no window would paste nowhere.
     public func windowDidClose() {
         DispatchQueue.main.async {
-            let windows = NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, canBecomeMain: $0.canBecomeMain) }
+            let windows = NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, isMiniaturized: $0.isMiniaturized, canBecomeMain: $0.canBecomeMain) }
             guard WindowPolicy.afterClose(windows: windows) == .leaveAndHide else { return }
             NSApp.setActivationPolicy(.accessory)
             NSApp.hide(nil)

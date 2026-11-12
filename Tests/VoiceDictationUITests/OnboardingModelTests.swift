@@ -21,6 +21,7 @@ final class OnboardingModelTests: XCTestCase {
     private var onRefresh: () -> Void = {}
     private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
     private let engine = FakeEngine(kind: .appleSpeech)
+    private let whisperKitEngine = FakeEngine(kind: .whisperKit)
 
     // MARK: - Completeness
 
@@ -116,6 +117,32 @@ final class OnboardingModelTests: XCTestCase {
         XCTAssertEqual(model.state(of: .speechModel), .done)
     }
 
+    /// T14-1 in general: Download fetches the selected model, whichever engine it is.
+    func testDownloadFetchesTheSelectedModelOfAnotherEngine() async {
+        let tiny = ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en")
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .ready),
+                  ModelDescriptor(id: tiny, displayName: "Tiny", detail: "", state: .notDownloaded)]
+        selected = tiny
+        let model = makeModel()
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download Tiny")
+
+        await model.downloadSelectedModel()
+
+        XCTAssertEqual(whisperKitEngine.calls, [.download(tiny)])
+        XCTAssertEqual(engine.calls, [])
+    }
+
+    /// Preparing is the normal state at launch, not a reason to interrupt.
+    func testAPreparingModelDoesNotOpenTheWindowAtLaunch() {
+        let model = makeModel()
+        model.recordOutcome(pasted(.pasted))
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .preparing)]
+        XCTAssertFalse(model.isComplete)
+        XCTAssertFalse(model.shouldShowAtLaunch(firstLaunch: false))
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .notDownloaded)]
+        XCTAssertTrue(model.shouldShowAtLaunch(firstLaunch: false))
+    }
+
     func testSpeechModelStepFollowsTheSelectedModelNotAppleSpeech() async {
         let tiny = ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en")
         models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .notDownloaded),
@@ -178,7 +205,7 @@ final class OnboardingModelTests: XCTestCase {
             refreshPermissions: {}
         )
         return OnboardingModel(system: system,
-                               service: TranscriptionService(engines: [engine], selected: .appleSpeech),
+                               service: TranscriptionService(engines: [engine, whisperKitEngine], selected: selected ?? .appleSpeech),
                                models: { [self] in models },
                                selected: { [self] in selected },
                                refreshModels: { [self] in refreshes += 1; onRefresh() },

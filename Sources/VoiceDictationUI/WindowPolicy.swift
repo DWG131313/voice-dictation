@@ -2,6 +2,8 @@
 /// still counts as one the user has open.
 struct WindowSnapshot: Equatable {
     var isVisible: Bool
+    /// In the Dock: not visible, but still open.
+    var isMiniaturized: Bool
     var canBecomeMain: Bool
 }
 
@@ -19,6 +21,6 @@ enum WindowPolicy {
     /// `windows` are the app's windows once the closing one has gone. The
     /// menu bar menu's panel cannot become main, so it never counts.
     static func afterClose(windows: [WindowSnapshot]) -> AfterClose {
-        windows.contains { $0.isVisible && $0.canBecomeMain } ? .stayRegular : .leaveAndHide
+        windows.contains { ($0.isVisible || $0.isMiniaturized) && $0.canBecomeMain } ? .stayRegular : .leaveAndHide
     }
 }

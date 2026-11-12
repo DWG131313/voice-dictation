@@ -113,6 +113,56 @@ final class AppModelTests: XCTestCase {
         let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
         XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8),
                        "Hello there.")
+        // The first pasted dictation completes the Welcome window's last step.
+        XCTAssertEqual(model.onboarding.state(of: .tryIt), .done)
+    }
+
+    // MARK: - Welcome window
+
+    /// The model list is empty until the first refresh; the launch decision
+    /// must wait for it, or every launch would open the window.
+    @MainActor
+    func testNothingLeftMeansNoWelcomeAtLaunch() async {
+        preferences.onboardingTriedIt = true
+        let model = makeModel([appleEngine()])
+        XCTAssertTrue(model.models.isEmpty)
+
+        await model.decideWelcomeAtLaunch(firstLaunch: false)
+
+        XCTAssertEqual(model.welcomeRequests, 0)
+    }
+
+    @MainActor
+    func testAStepLeftOrAFirstRunAsksForTheWelcomeWindow() async {
+        preferences.onboardingTriedIt = true
+        let missing = makeModel([appleEngine()], system: .fake(accessibility: false))
+        await missing.decideWelcomeAtLaunch(firstLaunch: false)
+        XCTAssertEqual(missing.welcomeRequests, 1)
+
+        let first = makeModel([appleEngine()])
+        await first.decideWelcomeAtLaunch(firstLaunch: true)
+        XCTAssertEqual(first.welcomeRequests, 1)
+    }
+
+    @MainActor
+    func testAModelStillPreparingAtLaunchDoesNotAskForTheWelcomeWindow() async {
+        preferences.onboardingTriedIt = true
+        let apple = FakeEngine(kind: .appleSpeech, models: [descriptor(.appleSpeech, .preparing)])
+        let model = makeModel([apple])
+        await model.decideWelcomeAtLaunch(firstLaunch: false)
+        XCTAssertEqual(model.welcomeRequests, 0)
+    }
+
+    /// The icon can appear again (its image changes with the state); only
+    /// the first sight after a request may open the window.
+    @MainActor
+    func testOneWelcomeRequestIsServedOnce() async {
+        let model = makeModel([appleEngine()])
+        XCTAssertFalse(model.takeWelcomeRequest())
+        await model.decideWelcomeAtLaunch(firstLaunch: true)
+        XCTAssertTrue(model.takeWelcomeRequest())
+        XCTAssertFalse(model.takeWelcomeRequest())
+        XCTAssertFalse(model.takeWelcomeRequest())
     }
 
     /// Ruling T9-2: a dictation whose text came back empty pastes nothing and
@@ -164,13 +214,14 @@ final class AppModelTests: XCTestCase {
     // MARK: - Helpers
 
     @MainActor
-    private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech) -> AppModel {
+    private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
+                           system: OnboardingSystem = .fake()) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences,
                  comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
-                 dataDirectory: directory)
+                 dataDirectory: directory, onboardingSystem: system)
     }
 
     private func appleEngine() -> FakeEngine {

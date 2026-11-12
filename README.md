@@ -16,14 +16,9 @@ Built for dictating prompts to Claude Code, but works anywhere.
    ./scripts/run-dev.sh
    ```
 
-2. Grant permissions when prompted:
-   - **Accessibility** (System Settings > Privacy & Security > Accessibility)
-   - **Microphone** (prompted automatically)
+2. The Welcome window opens on the first run, and again whenever a step is left. It walks through Microphone, Accessibility, the Globe key ("Press Globe key to" set to "Do Nothing") and the speech model, with a button for each. Nothing is asked for before you press it.
 
-3. Set Globe key to "Do Nothing":
-   - System Settings > Keyboard > "Press Globe key to" > "Do Nothing"
-
-4. The app will download the Whisper base.en model (~150MB) on first launch.
+3. The app will download the Whisper base.en model (~150MB) on first launch.
 
 ## Usage
 

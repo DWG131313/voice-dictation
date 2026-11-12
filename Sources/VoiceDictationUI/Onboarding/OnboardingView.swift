@@ -91,7 +91,7 @@ public struct OpenWelcomeAtLaunch: ViewModifier {
     }
 
     private func openIfAsked() {
-        guard model.welcomeRequests > 0 else { return }
+        guard model.takeWelcomeRequest() else { return }
         NSApp.activate()
         openWindow(id: AppModel.welcomeWindowID)
     }

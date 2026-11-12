@@ -14,7 +14,16 @@ public struct MenuBarContent: View {
     }
 
     public var body: some View {
-        Text(Self.statusLine(for: model.pipeline.state))
+        if case .needsPermission = model.pipeline.state {
+            // A way to the permissions even if the Welcome window never
+            // opened at launch.
+            Button(Self.statusLine(for: model.pipeline.state)) {
+                NSApp.activate()
+                openWindow(id: AppModel.welcomeWindowID)
+            }
+        } else {
+            Text(Self.statusLine(for: model.pipeline.state))
+        }
         Divider()
         Button("Open VoiceDictation") {
             // A menu bar app is not active when its menu is used, so the

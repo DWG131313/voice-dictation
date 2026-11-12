@@ -1,5 +1,6 @@
 import Foundation
 @testable import VoiceDictationLib
+@testable import VoiceDictationUI
 
 // Slim copies of the fakes in VoiceDictationTests, which this test module
 // cannot see.
@@ -116,5 +117,17 @@ final class FakePaster: Pasting {
     func paste(text: String) -> Bool {
         pasted.append(text)
         return true
+    }
+}
+
+extension OnboardingSystem {
+    /// A system that asks for nothing, opens nothing and reads no real
+    /// setting, so a test never touches `com.apple.HIToolbox`.
+    static func fake(microphone: Bool = true, accessibility: Bool = true, globeKeyUsage: Int? = 0) -> OnboardingSystem {
+        OnboardingSystem(
+            microphoneGranted: { microphone }, microphoneUndetermined: { false }, requestMicrophone: {},
+            accessibilityGranted: { accessibility }, requestAccessibility: {},
+            globeKeyUsageType: { globeKeyUsage }, openURL: { _ in }, refreshPermissions: {}
+        )
     }
 }

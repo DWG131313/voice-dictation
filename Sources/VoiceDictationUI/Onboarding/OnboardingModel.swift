@@ -64,7 +64,7 @@ public final class OnboardingModel {
 
     /// Read again by `refresh()`; the other steps read live state, which the
     /// views track.
-    private var globeKeyUsage: Int?
+    private var globeKeyUsage: Int?   // nil, as macOS saves it for Do Nothing, until `refresh()`
     /// While the speech model downloads: how far, 0 to 1.
     private var downloadProgress: Double?
     private var downloadFailure: String?
@@ -90,7 +90,6 @@ public final class OnboardingModel {
         self.refreshModels = refreshModels
         self.preferences = preferences
         self.triedIt = preferences.onboardingTriedIt
-        self.globeKeyUsage = system.globeKeyUsageType()
     }
 
     // MARK: - Steps
@@ -218,7 +217,10 @@ public final class OnboardingModel {
 
     /// Whether the Welcome window opens at launch: on the first run, and
     /// whenever a step is left.
+    /// A speech model still preparing is the normal state at launch, so it
+    /// does not count as a step left.
     func shouldShowAtLaunch(firstLaunch: Bool) -> Bool {
-        firstLaunch || !isComplete
+        let preparing = selected().flatMap { id in models().first { $0.id == id } }?.state == .preparing
+        return firstLaunch || steps.contains { $0.state != .done && !($0.id == .speechModel && preparing) }
     }
 }

@@ -63,6 +63,7 @@ struct VoiceDictationApp: App {
         Settings {
             // Task 24 puts the settings here.
             SettingsPlaceholder()
+                .onAppear { lifecycle.windowDidOpen() }
                 .onDisappear { lifecycle.windowDidClose() }
         }
         // Like the window, never brought back at the next launch.
