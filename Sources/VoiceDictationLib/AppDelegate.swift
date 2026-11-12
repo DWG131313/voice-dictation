@@ -51,6 +51,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         audioRecorder.onFirstAudio = { [weak self] time in
             self?.currentTimer.mark(.firstAudio, at: time)
         }
+        // Ready the microphone now so the first syllable is not lost. This
+        // does not start it.
+        audioRecorder.prepare()
 
         pasteEngine = PasteEngine()
 
@@ -125,16 +128,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("VoiceDictation/comparison", isDirectory: true)
     }
 
-    /// Copies the WAV aside (the transcriber deletes it when done). Returns
-    /// the shared file name stem, or nil when the preference is off or the
-    /// copy failed.
-    private func keepComparisonRecording(of wav: URL) -> String? {
+    /// Saves the clip as a WAV for the engine comparison. Returns the shared
+    /// file name stem, or nil when the preference is off or the write failed.
+    private func keepComparisonRecording(of clip: AudioClip) -> String? {
         guard PreferencesManager.shared.keepComparisonRecordings else { return nil }
         let dir = Self.comparisonDirectory
         let stem = String(Int(Date().timeIntervalSince1970 * 1000))
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: wav, to: dir.appendingPathComponent("\(stem).wav"))
+            try clip.writeWAV(to: dir.appendingPathComponent("\(stem).wav"))
             return stem
         } catch {
             Log.info("[COMPARE] Could not keep recording: \(error.localizedDescription)")
@@ -263,14 +265,26 @@ extension AppDelegate: HotkeyDelegate {
 extension AppDelegate: AudioRecorderDelegate {
     public func recordingDidStart() {}
 
-    public func recordingDidFinish(fileURL: URL, duration: TimeInterval) {
+    public func recordingDidFinish(clip: AudioClip) {
+        // whisper-cli reads files, so the clip goes to a temporary WAV, which
+        // the transcriber deletes when done. A unique name keeps two quick
+        // dictations from sharing a file.
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-dictation-\(UUID().uuidString).wav")
+        do {
+            try clip.writeWAV(to: fileURL)
+        } catch {
+            Log.info("[AUDIO] Could not write the recording: \(error.localizedDescription)")
+            statusManager.updateStatus(.error(message: "Could not save the recording"))
+            return
+        }
         pending.append(PendingDictation(timer: currentTimer, fileURL: fileURL))
         statusManager.updateStatus(.transcribing(queued: 0))
-        transcriber.transcribe(fileURL: fileURL, recordingDuration: duration)
-        // Copy after handing off, so keeping a recording never delays the
-        // transcription. The transcriber deletes the WAV only once whisper
-        // has finished, and its callbacks arrive on this queue later.
-        if let stem = keepComparisonRecording(of: fileURL) {
+        transcriber.transcribe(fileURL: fileURL, recordingDuration: clip.duration)
+        // Write the comparison copy after handing off, so keeping a recording
+        // never delays the transcription. The transcriber's callbacks arrive
+        // on this queue later, so the stem is set before they can.
+        if let stem = keepComparisonRecording(of: clip) {
             pending.setStem(stem, for: fileURL)
         }
     }

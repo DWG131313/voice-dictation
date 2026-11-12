@@ -1,56 +1,123 @@
 import AVFoundation
 import Cocoa
+import CoreAudio
 import ObjCHelpers
 
 public protocol AudioRecorderDelegate: AnyObject {
     func recordingDidStart()
-    func recordingDidFinish(fileURL: URL, duration: TimeInterval)
+    func recordingDidFinish(clip: AudioClip)
     func recordingDidFail(error: String)
     func recordingDiscarded()
 }
 
+/// What happens to a finished recording.
+public enum RecordingVerdict {
+    case keep, tooShort, silent
+}
+
+/// Records the microphone into memory as 16 kHz mono samples.
+///
+/// The capture engine is built ahead of time (`prepare()`) so the first
+/// syllable is not lost, but it only runs while recording: a running input
+/// lights the microphone indicator. Use from the main thread.
 public class AudioRecorder {
+    /// Recordings shorter than this are accidental taps.
+    public static let minimumDuration: TimeInterval = 0.5
+    /// Recordings whose peak never reaches this are treated as silence and
+    /// discarded. Whisper hallucinates words like "you" or "Thank you." on
+    /// silent input, and a muted or absent mic would otherwise paste those.
+    /// -40 dBFS is far below any audible speech.
+    public static let silenceThreshold: Float = 0.01
+
+    /// Too short wins over silent, so an accidental tap reads as a tap.
+    public static func verdict(duration: TimeInterval, peak: Float) -> RecordingVerdict {
+        if duration < minimumDuration { return .tooShort }
+        if peak < silenceThreshold { return .silent }
+        return .keep
+    }
+
+    /// Whether an engine prepared for one input format must be rebuilt for
+    /// another (AirPods connected since, say). Its tap and converter only
+    /// fit the old format, so it would record nothing.
+    static func needsRebuild(prepared: AVAudioFormat?, current: AVAudioFormat) -> Bool {
+        guard let prepared else { return true }
+        return prepared.sampleRate != current.sampleRate || prepared.channelCount != current.channelCount
+    }
+
     public weak var delegate: AudioRecorderDelegate?
-    /// Called once per recording, on the main queue, with the time the first
-    /// microphone buffer arrived.
+    /// Called at most once per recording, on the main queue, with the time the
+    /// first microphone buffer arrived. Always before that recording's
+    /// delegate call.
     public var onFirstAudio: ((Date) -> Void)?
+    /// The peak (0...1) of each converted buffer while recording, on the main queue.
+    public var onLevel: ((Float) -> Void)?
+    /// The Core Audio UID of the microphone to record from; nil follows the
+    /// system default, as does a UID that matches no connected device.
+    /// Setting it prepares again (after the current recording, if one is running).
+    public var inputDeviceUID: String? {
+        didSet { if inputDeviceUID != oldValue { prepare() } }
+    }
 
-    // A fresh engine per recording. Reusing one across input-device changes
-    // (AirPods connecting, a USB mic unplugged) leaves it with a stale input
-    // format and it silently records nothing.
-    private var engine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
-    private var converter: AVAudioConverter?
-    private var recordingURL: URL?
-    private var recordingStartTime: Date?
-    private var maxDurationTimer: Timer?
-    private var configChangeObserver: NSObjectProtocol?
-
-    // Loudest sample seen this recording (0...1), updated on the audio thread.
-    private let peakLock = NSLock()
-    private var peakAmplitude: Float = 0
-    private var firstAudioReported = false
-    /// Recordings whose peak never rises above this are treated as silence and
-    /// discarded without running whisper. Whisper hallucinates words like
-    /// "you" or "Thank you." on silent input, and a muted or absent mic would
-    /// otherwise paste those. -40 dBFS is far below any audible speech.
-    public var silenceThreshold: Float = 0.01
-
-    private let minimumDuration: TimeInterval = 0.5
     /// Safety net: if the key-up event is ever lost, stop on our own rather
     /// than recording forever.
     public var maximumDuration: TimeInterval = 300
 
     public private(set) var isRecording = false
 
+    /// An engine built for one input format, and the converter from that
+    /// format to the clip's. Each one serves a single recording.
+    private struct PreparedInput {
+        let engine: AVAudioEngine
+        let converter: AVAudioConverter
+        let format: AVAudioFormat
+    }
+
+    private var prepared: PreparedInput?
+    private var tapInstalled = false
+    private var configChangeObserver: NSObjectProtocol?
+
+    private var recordingStartTime: Date?
+    private var maxDurationTimer: Timer?
+    /// Numbers recordings, so a late callback from one never reaches the next.
+    private var recordingID = 0
+    private var firstAudioDelivered = false
+
+    /// What the tap thread hands over. Only touched under `captureLock`.
+    private struct Capture {
+        var recordingID = 0
+        var isOpen = false
+        var samples: [Float] = []
+        var peak: Float = 0
+        var firstAudio: Date?
+    }
+
+    private let captureLock = NSLock()
+    private var capture = Capture()
+
     private let tickOnSound = NSSound(named: .init("Tink"))
     private let tickOffSound = NSSound(named: .init("Pop"))
 
-    public init() {}
+    public init() {
+        observeDefaultInputDevice()
+    }
 
     deinit {
-        removeConfigObserver()
         maxDurationTimer?.invalidate()
+        discardEngine()
+    }
+
+    /// Builds a fresh engine and converter for the current input without
+    /// starting them, so the next recording starts at once. Called at launch,
+    /// after every recording, and when the input changes. Does nothing while
+    /// recording, or until microphone access is granted, so the permission
+    /// prompt only ever follows a key press.
+    public func prepare() {
+        guard !isRecording, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        do {
+            try buildInput()
+        } catch {
+            Log.info("[AUDIO] Not prepared: \(error.localizedDescription)")
+        }
     }
 
     public func startRecording() {
@@ -79,115 +146,47 @@ public class AudioRecorder {
             return
         }
 
-        let engine = AVAudioEngine()
-        self.engine = engine
-        let inputNode = engine.inputNode
-
-        // Validate audio format (0 channels means no mic access or no device)
-        let hardwareFormat = inputNode.outputFormat(forBus: 0)
-        Log.info("[AUDIO] Input format: channels=\(hardwareFormat.channelCount) sampleRate=\(hardwareFormat.sampleRate)")
-        guard hardwareFormat.channelCount > 0, hardwareFormat.sampleRate > 0 else {
-            self.engine = nil
-            delegate?.recordingDidFail(error: "No microphone available. Check System Settings > Privacy & Security > Microphone.")
-            return
-        }
-
-        // Create temp file
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileName = "voice-dictation-\(Int(Date().timeIntervalSince1970)).wav"
-        let fileURL = tempDir.appendingPathComponent(fileName)
-        recordingURL = fileURL
-
-        // Target format: 16kHz mono PCM 16-bit (what whisper.cpp expects)
-        let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: true
-        )!
-
+        let input: PreparedInput
         do {
-            audioFile = try AVAudioFile(
-                forWriting: fileURL,
-                settings: outputFormat.settings
-            )
+            input = try inputForRecording()
         } catch {
-            cleanup()
-            delegate?.recordingDidFail(error: "Failed to create audio file: \(error.localizedDescription)")
+            delegate?.recordingDidFail(error: error.localizedDescription)
             return
         }
 
-        // Record at hardware's native format, convert each buffer before writing
-        let convertFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: false
-        )!
-        guard let converter = AVAudioConverter(from: hardwareFormat, to: convertFormat) else {
-            cleanup()
-            delegate?.recordingDidFail(error: "Unsupported microphone format (\(Int(hardwareFormat.sampleRate)) Hz, \(hardwareFormat.channelCount) ch)")
-            return
-        }
-        self.converter = converter
+        // Start clean before the tap can deliver anything.
+        recordingID += 1
+        let id = recordingID
+        firstAudioDelivered = false
+        captureLock.withLock { capture = Capture(recordingID: id, isOpen: true) }
 
-        // Wrap in ObjC exception catcher — installTap throws NSException (not Swift Error)
-        // when mic permission is denied or format is invalid
+        // installTap raises an Objective-C exception (not a Swift error) when
+        // mic permission is denied or the format is invalid.
+        let converter = input.converter
         do {
             try ObjCExceptionCatcher.`try`({
-                inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { [weak self] buffer, _ in
-                    guard let self = self,
-                          let audioFile = self.audioFile,
-                          let converter = self.converter else { return }
-                    self.reportFirstAudio()
-
-                    let frameCount = AVAudioFrameCount(
-                        (Double(buffer.frameLength) * 16000.0 / hardwareFormat.sampleRate).rounded(.up)
-                    )
-                    guard frameCount > 0,
-                          let convertedBuffer = AVAudioPCMBuffer(pcmFormat: convertFormat, frameCapacity: frameCount) else { return }
-
-                    var error: NSError?
-                    var hasData = true  // Track whether input buffer has been consumed
-                    converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                        if hasData {
-                            hasData = false
-                            outStatus.pointee = .haveData
-                            return buffer
-                        } else {
-                            outStatus.pointee = .noDataNow
-                            return nil
-                        }
-                    }
-
-                    if error == nil, convertedBuffer.frameLength > 0 {
-                        self.trackPeak(in: convertedBuffer)
-                        do {
-                            try audioFile.write(from: convertedBuffer)
-                        } catch {
-                            Log.info("[AUDIO] Error writing audio buffer: \(error)")
-                        }
-                    }
+                input.engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input.format) { [weak self] buffer, _ in
+                    self?.receive(buffer, converter: converter, recordingID: id)
                 }
             })
+            tapInstalled = true
         } catch {
-            cleanup()
+            discardEngine()
             delegate?.recordingDidFail(error: "Cannot access microphone: \(error.localizedDescription)")
             return
         }
 
         do {
-            try engine.start()
+            try input.engine.start()
         } catch {
-            cleanup()
+            Log.info("[AUDIO] Engine did not start: \(error.localizedDescription)")
+            discardEngine()
             delegate?.recordingDidFail(error: "Microphone in use by another app")
             return
         }
 
         isRecording = true
-        peakLock.lock(); peakAmplitude = 0; firstAudioReported = false; peakLock.unlock()
         recordingStartTime = Date()
-        installConfigObserver(for: engine)
         maxDurationTimer?.invalidate()
         maxDurationTimer = Timer.scheduledTimer(withTimeInterval: maximumDuration, repeats: false) { [weak self] _ in
             Log.info("[AUDIO] Maximum recording duration reached — stopping automatically")
@@ -197,89 +196,188 @@ public class AudioRecorder {
         delegate?.recordingDidStart()
     }
 
+    /// Ends the recording and calls the delegate before returning.
     public func stopRecording() {
         guard isRecording else { return }
-        tearDownEngine()
-
+        let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        let captured = endCapture()
         tickOffSound?.play()
 
-        guard let startTime = recordingStartTime,
-              let fileURL = recordingURL else {
-            cleanup()
+        switch Self.verdict(duration: duration, peak: captured.peak) {
+        case .tooShort:
             delegate?.recordingDiscarded()
-            return
-        }
-
-        let duration = Date().timeIntervalSince(startTime)
-        recordingStartTime = nil
-        recordingURL = nil
-
-        if duration < minimumDuration {
-            // Too short — accidental tap
-            cleanupFile(at: fileURL)
+        case .silent:
+            Log.info("[AUDIO] Recording of \(String(format: "%.1f", duration))s was silent (peak \(captured.peak)) — discarding")
             delegate?.recordingDiscarded()
-            return
+        case .keep:
+            let clip = AudioClip(samples: captured.samples)
+            Log.info("[AUDIO] Recording finished: \(String(format: "%.1f", duration))s (\(String(format: "%.1f", clip.duration))s of audio), peak \(String(format: "%.2f", captured.peak))")
+            delegate?.recordingDidFinish(clip: clip)
         }
-
-        peakLock.lock(); let peak = peakAmplitude; peakLock.unlock()
-        if peak < silenceThreshold {
-            Log.info("[AUDIO] Recording of \(String(format: "%.1f", duration))s was silent (peak \(peak)) — discarding")
-            cleanupFile(at: fileURL)
-            delegate?.recordingDiscarded()
-            return
-        }
-
-        Log.info("[AUDIO] Recording finished: \(String(format: "%.1f", duration))s, peak \(String(format: "%.2f", peak))")
-        delegate?.recordingDidFinish(fileURL: fileURL, duration: duration)
+        prepare()
     }
 
     public func cancelRecording() {
         guard isRecording else { return }
-        tearDownEngine()
-        cleanup()
+        _ = endCapture()
         delegate?.recordingDiscarded()
+        prepare()
     }
 
-    public func cleanupFile(at url: URL) {
-        try? FileManager.default.removeItem(at: url)
-    }
+    // MARK: - Capture
 
-    // MARK: - Private
-
-    /// Runs on the audio thread for every buffer; only the first one reports.
-    private func reportFirstAudio() {
-        let now = Date()
-        peakLock.lock()
-        let first = !firstAudioReported
-        firstAudioReported = true
-        peakLock.unlock()
-        guard first else { return }
-        DispatchQueue.main.async { [weak self] in self?.onFirstAudio?(now) }
-    }
-
-    private func trackPeak(in buffer: AVAudioPCMBuffer) {
-        guard let channel = buffer.floatChannelData?[0] else { return }
-        var peak: Float = 0
-        for i in 0..<Int(buffer.frameLength) {
-            let v = abs(channel[i])
-            if v > peak { peak = v }
+    /// The prepared input, rebuilt first if nothing is prepared or the input
+    /// format moved since. Both of the input node's formats are checked: the
+    /// input side is the hardware's, the output side is what the tap gets.
+    private func inputForRecording() throws -> PreparedInput {
+        if let input = prepared {
+            let node = input.engine.inputNode
+            let stale = Self.needsRebuild(prepared: input.format, current: node.outputFormat(forBus: 0))
+                || Self.needsRebuild(prepared: input.format, current: node.inputFormat(forBus: 0))
+            if !stale { return input }
+            Log.info("[AUDIO] Input changed since it was prepared — rebuilding")
         }
-        peakLock.lock()
-        if peak > peakAmplitude { peakAmplitude = peak }
-        peakLock.unlock()
+        return try buildInput()
     }
 
-    /// If the default input device changes mid-recording the engine stops
-    /// delivering buffers. Finish with what we have rather than sit there
-    /// silently until the key is released.
-    private func installConfigObserver(for engine: AVAudioEngine) {
+    /// Replaces the prepared input with a fresh engine on the chosen
+    /// microphone. Prepares the engine but never starts it.
+    @discardableResult
+    private func buildInput() throws -> PreparedInput {
+        discardEngine()
+        let engine = AVAudioEngine()
+        if let uid = inputDeviceUID {
+            select(microphone: uid, on: engine.inputNode)
+        }
+
+        // 0 channels means no mic access or no device
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            throw RecorderError("No microphone available. Check System Settings > Privacy & Security > Microphone.")
+        }
+        guard let converter = AVAudioConverter(from: format, to: AudioClip.audioFormat) else {
+            throw RecorderError("Unsupported microphone format (\(Int(format.sampleRate)) Hz, \(format.channelCount) ch)")
+        }
+        do {
+            try ObjCExceptionCatcher.`try`({ engine.prepare() })
+        } catch {
+            throw RecorderError("Cannot access microphone: \(error.localizedDescription)")
+        }
+
+        let input = PreparedInput(engine: engine, converter: converter, format: format)
+        prepared = input
+        observeConfigurationChanges(of: engine)
+        Log.info("[AUDIO] Prepared input: channels=\(format.channelCount) sampleRate=\(format.sampleRate)")
+        return input
+    }
+
+    /// Stops and releases the engine; stopping turns the microphone off.
+    private func discardEngine() {
+        removeConfigObserver()
+        if let engine = prepared?.engine {
+            if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+            engine.stop()
+        }
+        tapInstalled = false
+        prepared = nil
+    }
+
+    /// Runs on the tap's thread for every buffer.
+    private func receive(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, recordingID id: Int) {
+        let arrived = Date()
+        let samples = Self.convert(buffer, with: converter)
+        let level = samples.reduce(0) { max($0, abs($1)) }
+        let isFirst: Bool? = captureLock.withLock {
+            guard capture.isOpen, capture.recordingID == id else { return nil }
+            capture.samples.append(contentsOf: samples)
+            capture.peak = max(capture.peak, level)
+            guard capture.firstAudio == nil else { return false }
+            capture.firstAudio = arrived
+            return true
+        }
+        guard let isFirst else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isRecording, self.recordingID == id else { return }
+            if isFirst { self.deliverFirstAudio() }
+            self.onLevel?(level)
+        }
+    }
+
+    /// Converts one tap buffer to 16 kHz mono. The converter keeps its
+    /// resampling state between buffers, so they join seamlessly.
+    static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter) -> [Float] {
+        let capacity = AVAudioFrameCount(
+            (Double(buffer.frameLength) * AudioClip.sampleRate / buffer.format.sampleRate).rounded(.up)
+        )
+        guard capacity > 0,
+              let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return [] }
+
+        var supplied = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, inputStatus in
+            if supplied {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, error == nil, let channel = output.floatChannelData?[0] else { return [] }
+        return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
+    }
+
+    private func deliverFirstAudio() {
+        guard !firstAudioDelivered, let time = captureLock.withLock({ capture.firstAudio }) else { return }
+        firstAudioDelivered = true
+        onFirstAudio?(time)
+    }
+
+    /// Stops the engine and takes what was captured. A first-audio time still
+    /// on its way to the main queue is delivered now, so it can never land
+    /// after this recording's delegate call.
+    private func endCapture() -> Capture {
+        isRecording = false
+        recordingStartTime = nil
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
+        discardEngine()
+        let captured = captureLock.withLock {
+            let captured = capture
+            capture = Capture()
+            return captured
+        }
+        if !firstAudioDelivered, let time = captured.firstAudio {
+            firstAudioDelivered = true
+            onFirstAudio?(time)
+        }
+        return captured
+    }
+
+    // MARK: - Input changes
+
+    /// The engine stops itself when the input hardware's format changes. The
+    /// notification arrives on the engine's internal queue, and tearing the
+    /// engine down from there can deadlock (AVAudioEngine.h), so the work
+    /// happens on the main queue.
+    private func observeConfigurationChanges(of engine: AVAudioEngine) {
         removeConfigObserver()
         configChangeObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            guard let self = self, self.isRecording else { return }
-            Log.info("[AUDIO] Audio configuration changed during recording — finishing early")
-            self.stopRecording()
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self, weak engine] _ in
+            DispatchQueue.main.async { [weak self, weak engine] in
+                guard let self, let engine, engine === self.prepared?.engine else { return }
+                if self.isRecording {
+                    // The engine has stopped delivering buffers. Finish with
+                    // what we have rather than sit there silently until the
+                    // key is released.
+                    Log.info("[AUDIO] Audio configuration changed during recording — finishing early")
+                    self.stopRecording()
+                } else {
+                    Log.info("[AUDIO] Audio configuration changed — preparing again")
+                    self.prepare()
+                }
+            }
         }
     }
 
@@ -290,26 +388,68 @@ public class AudioRecorder {
         }
     }
 
-    private func tearDownEngine() {
-        isRecording = false
-        maxDurationTimer?.invalidate()
-        maxDurationTimer = nil
-        removeConfigObserver()
-        if let engine = engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+    /// A new default microphone (AirPods connecting, say) gets a fresh engine
+    /// before the next key press. During a recording there is nothing to do:
+    /// `prepare()` runs when it ends.
+    ///
+    /// The listener stays registered for the life of the process. Swift hands
+    /// Core Audio a new block on every call, so AudioObjectRemovePropertyListenerBlock
+    /// never matches the one added (it still returns noErr). Capturing `self`
+    /// weakly makes a leftover listener do nothing.
+    private func observeDefaultInputDevice() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
+            guard let self, !self.isRecording else { return }
+            Log.info("[AUDIO] Default input device changed — preparing again")
+            self.prepare()
         }
-        engine = nil
-        converter = nil
-        audioFile = nil  // Releasing the file finalizes the WAV header
+        if status != noErr {
+            Log.info("[AUDIO] Cannot watch the default input device (OSStatus \(status))")
+        }
     }
 
-    private func cleanup() {
-        tearDownEngine()
-        if let url = recordingURL {
-            cleanupFile(at: url)
+    /// Points the engine's input at the microphone with this UID, if it is
+    /// connected; otherwise the engine keeps the system default.
+    private func select(microphone uid: String, on inputNode: AVAudioInputNode) {
+        guard let device = Self.deviceID(forUID: uid) else {
+            Log.info("[AUDIO] Microphone \(uid) is not connected — using the system default")
+            return
         }
-        recordingURL = nil
-        recordingStartTime = nil
+        do {
+            try inputNode.auAudioUnit.setDeviceID(device)
+        } catch {
+            Log.info("[AUDIO] Cannot select microphone \(uid): \(error.localizedDescription) — using the system default")
+        }
     }
+
+    /// The Core Audio device with this UID, or nil when none is connected.
+    static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var qualifier = uid as CFString
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &qualifier) { qualifierPointer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), qualifierPointer, &size, &device
+            )
+        }
+        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
+        return device
+    }
+}
+
+/// A recorder setup failure, worded for the menu bar.
+private struct RecorderError: LocalizedError {
+    let errorDescription: String?
+
+    init(_ message: String) { errorDescription = message }
 }
