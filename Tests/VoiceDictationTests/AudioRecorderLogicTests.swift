@@ -25,6 +25,39 @@ final class AudioRecorderLogicTests: XCTestCase {
         XCTAssertTrue(AudioRecorder.needsRebuild(prepared: format(48_000, channels: 1), current: format(48_000, channels: 2)))
     }
 
+    // A configuration change while idle: rebuild only when the format moved,
+    // and not forever (each rebuild could cause the next).
+
+    func testIdleChangeKeepsEngineWhenFormatIsUnchanged() {
+        XCTAssertFalse(AudioRecorder.shouldRebuildWhenIdle(
+            prepared: format(48_000, channels: 1), current: format(48_000, channels: 1), rebuildsInARow: 0))
+    }
+
+    func testIdleChangeRebuildsWhenFormatMoved() {
+        XCTAssertTrue(AudioRecorder.shouldRebuildWhenIdle(
+            prepared: format(48_000, channels: 1), current: format(24_000, channels: 1), rebuildsInARow: 0))
+    }
+
+    func testIdleChangeStopsRebuildingAtTheLimit() {
+        XCTAssertFalse(AudioRecorder.shouldRebuildWhenIdle(
+            prepared: format(48_000, channels: 1), current: format(24_000, channels: 1),
+            rebuildsInARow: AudioRecorder.idleRebuildLimit))
+    }
+
+    func testIdleRebuildsResumeAfterARecording() {
+        var rebuilds = AudioRecorder.IdleRebuilds()
+        let prepared = format(48_000, channels: 1)
+        let moved = [format(24_000, channels: 1)]
+        for _ in 0..<AudioRecorder.idleRebuildLimit {
+            XCTAssertTrue(rebuilds.allow(prepared: prepared, current: moved))
+        }
+        XCTAssertFalse(rebuilds.allow(prepared: prepared, current: moved))
+
+        rebuilds.recordingEnded()
+
+        XCTAssertTrue(rebuilds.allow(prepared: prepared, current: moved))
+    }
+
     /// The tap path, without a microphone: 100 ms buffers at 48 kHz through
     /// one converter come out as one continuous 16 kHz stream.
     func testConvertsTapBuffersToContinuous16kMono() throws {

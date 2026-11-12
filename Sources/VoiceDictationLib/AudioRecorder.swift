@@ -44,6 +44,36 @@ public class AudioRecorder {
         return prepared.sampleRate != current.sampleRate || prepared.channelCount != current.channelCount
     }
 
+    /// The most engine rebuilds that configuration changes may cause between
+    /// two recordings. If preparing an engine ever changed the device's format
+    /// itself, each rebuild would cause the next one.
+    static let idleRebuildLimit = 2
+
+    /// Whether a configuration change while idle should rebuild the engine:
+    /// only when the input format moved, and only below the limit. An engine
+    /// that stopped itself re-prepares on `start()`, and the key-down check
+    /// still catches anything skipped here.
+    static func shouldRebuildWhenIdle(prepared: AVAudioFormat?, current: AVAudioFormat, rebuildsInARow: Int) -> Bool {
+        rebuildsInARow < idleRebuildLimit && needsRebuild(prepared: prepared, current: current)
+    }
+
+    /// Counts the rebuilds idle configuration changes cause until the next recording.
+    struct IdleRebuilds {
+        private(set) var inARow = 0
+
+        /// Asks `shouldRebuildWhenIdle` about each of the input's current
+        /// formats, and counts a yes.
+        mutating func allow(prepared: AVAudioFormat?, current: [AVAudioFormat]) -> Bool {
+            let rebuild = current.contains {
+                AudioRecorder.shouldRebuildWhenIdle(prepared: prepared, current: $0, rebuildsInARow: inARow)
+            }
+            if rebuild { inARow += 1 }
+            return rebuild
+        }
+
+        mutating func recordingEnded() { inARow = 0 }
+    }
+
     public weak var delegate: AudioRecorderDelegate?
     /// Called at most once per recording, on the main queue, with the time the
     /// first microphone buffer arrived. Always before that recording's
@@ -70,11 +100,14 @@ public class AudioRecorder {
         let engine: AVAudioEngine
         let converter: AVAudioConverter
         let format: AVAudioFormat
+        /// The system's default input when the engine was built.
+        let defaultDevice: AudioDeviceID?
     }
 
     private var prepared: PreparedInput?
     private var tapInstalled = false
     private var configChangeObserver: NSObjectProtocol?
+    private var idleRebuilds = IdleRebuilds()
 
     private var recordingStartTime: Date?
     private var maxDurationTimer: Timer?
@@ -227,17 +260,23 @@ public class AudioRecorder {
     // MARK: - Capture
 
     /// The prepared input, rebuilt first if nothing is prepared or the input
-    /// format moved since. Both of the input node's formats are checked: the
-    /// input side is the hardware's, the output side is what the tap gets.
+    /// format moved since.
     private func inputForRecording() throws -> PreparedInput {
         if let input = prepared {
-            let node = input.engine.inputNode
-            let stale = Self.needsRebuild(prepared: input.format, current: node.outputFormat(forBus: 0))
-                || Self.needsRebuild(prepared: input.format, current: node.inputFormat(forBus: 0))
+            let stale = Self.currentFormats(of: input.engine).contains {
+                Self.needsRebuild(prepared: input.format, current: $0)
+            }
             if !stale { return input }
             Log.info("[AUDIO] Input changed since it was prepared — rebuilding")
         }
         return try buildInput()
+    }
+
+    /// Both of the input node's formats: the input side is the hardware's,
+    /// the output side is what the tap gets. After a configuration change the
+    /// output side can keep its old format.
+    private static func currentFormats(of engine: AVAudioEngine) -> [AVAudioFormat] {
+        [engine.inputNode.outputFormat(forBus: 0), engine.inputNode.inputFormat(forBus: 0)]
     }
 
     /// Replaces the prepared input with a fresh engine on the chosen
@@ -245,6 +284,9 @@ public class AudioRecorder {
     @discardableResult
     private func buildInput() throws -> PreparedInput {
         discardEngine()
+        // Read before the engine picks its device: if the default changes in
+        // between, the listener rebuilds once more rather than not at all.
+        let defaultDevice = Self.defaultInputDevice()
         let engine = AVAudioEngine()
         if let uid = inputDeviceUID {
             select(microphone: uid, on: engine.inputNode)
@@ -264,7 +306,7 @@ public class AudioRecorder {
             throw RecorderError("Cannot access microphone: \(error.localizedDescription)")
         }
 
-        let input = PreparedInput(engine: engine, converter: converter, format: format)
+        let input = PreparedInput(engine: engine, converter: converter, format: format, defaultDevice: defaultDevice)
         prepared = input
         observeConfigurationChanges(of: engine)
         Log.info("[AUDIO] Prepared input: channels=\(format.channelCount) sampleRate=\(format.sampleRate)")
@@ -341,6 +383,7 @@ public class AudioRecorder {
         recordingStartTime = nil
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+        idleRebuilds.recordingEnded()
         discardEngine()
         let captured = captureLock.withLock {
             let captured = capture
@@ -366,16 +409,18 @@ public class AudioRecorder {
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self, weak engine] _ in
             DispatchQueue.main.async { [weak self, weak engine] in
-                guard let self, let engine, engine === self.prepared?.engine else { return }
+                guard let self, let engine, let input = self.prepared, input.engine === engine else { return }
                 if self.isRecording {
                     // The engine has stopped delivering buffers. Finish with
                     // what we have rather than sit there silently until the
                     // key is released.
                     Log.info("[AUDIO] Audio configuration changed during recording — finishing early")
                     self.stopRecording()
-                } else {
-                    Log.info("[AUDIO] Audio configuration changed — preparing again")
+                } else if self.idleRebuilds.allow(prepared: input.format, current: Self.currentFormats(of: engine)) {
+                    Log.info("[AUDIO] Input format changed while idle — preparing again")
                     self.prepare()
+                } else {
+                    Log.info("[AUDIO] Audio configuration changed while idle — keeping the prepared engine (rebuilt \(self.idleRebuilds.inARow) of \(Self.idleRebuildLimit) times since the last recording)")
                 }
             }
         }
@@ -390,7 +435,9 @@ public class AudioRecorder {
 
     /// A new default microphone (AirPods connecting, say) gets a fresh engine
     /// before the next key press. During a recording there is nothing to do:
-    /// `prepare()` runs when it ends.
+    /// `prepare()` runs when it ends. One device change can also reach the
+    /// configuration-change handler, so an engine already built under the
+    /// current default is kept: one rebuild per change, whichever fires first.
     ///
     /// The listener stays registered for the life of the process. Swift hands
     /// Core Audio a new block on every call, so AudioObjectRemovePropertyListenerBlock
@@ -404,12 +451,27 @@ public class AudioRecorder {
         )
         let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
             guard let self, !self.isRecording else { return }
+            if let input = self.prepared, input.defaultDevice == Self.defaultInputDevice() { return }
             Log.info("[AUDIO] Default input device changed — preparing again")
             self.prepare()
         }
         if status != noErr {
             Log.info("[AUDIO] Cannot watch the default input device (OSStatus \(status))")
         }
+    }
+
+    /// The system's default input device, or nil when there is none.
+    static func defaultInputDevice() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
+        return device
     }
 
     /// Points the engine's input at the microphone with this UID, if it is
