@@ -6,6 +6,9 @@ public protocol TranscriberDelegate: AnyObject {
     func transcriptionCompleted(text: String)
     func transcriptionFailed(error: String)
     func transcriptionQueueUpdated(count: Int)
+    /// A queued recording was discarded because the queue was full. Called
+    /// before its file is deleted.
+    func transcriptionDropped(fileURL: URL)
 }
 
 public class Transcriber {
@@ -22,17 +25,26 @@ public class Transcriber {
 
     public func transcribe(fileURL: URL, recordingDuration: TimeInterval) {
         if isTranscribing {
-            if queue.count >= maxQueueDepth {
-                // Drop oldest
-                let dropped = queue.removeFirst()
-                try? FileManager.default.removeItem(at: dropped.0)
+            if let dropped = Self.enqueue((fileURL, recordingDuration), into: &queue, maxDepth: maxQueueDepth) {
+                delegate?.transcriptionDropped(fileURL: dropped)
+                try? FileManager.default.removeItem(at: dropped)
             }
-            queue.append((fileURL, recordingDuration))
             delegate?.transcriptionQueueUpdated(count: queue.count)
             return
         }
 
         runTranscription(fileURL: fileURL, recordingDuration: recordingDuration)
+    }
+
+    /// Appends to the waiting queue, dropping the oldest entry when full.
+    /// Returns the dropped file, if any.
+    static func enqueue(_ item: (URL, TimeInterval), into queue: inout [(URL, TimeInterval)], maxDepth: Int) -> URL? {
+        var dropped: URL?
+        if queue.count >= maxDepth {
+            dropped = queue.removeFirst().0
+        }
+        queue.append(item)
+        return dropped
     }
 
     private func runTranscription(fileURL: URL, recordingDuration: TimeInterval) {

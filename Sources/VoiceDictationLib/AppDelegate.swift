@@ -20,8 +20,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentTimer = StageTimer()
     private struct PendingDictation {
         var timer: StageTimer
-        /// Unix time naming the kept `.wav`/`.txt` pair; nil when not keeping.
+        /// Unix time in milliseconds naming the kept `.wav`/`.txt` pair; nil when not keeping.
         var comparisonStem: String?
+        let fileURL: URL
     }
     private var pending: [PendingDictation] = []
     private var isFirstLaunch: Bool {
@@ -136,7 +137,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private func keepComparisonRecording(of wav: URL) -> String? {
         guard PreferencesManager.shared.keepComparisonRecordings else { return nil }
         let dir = Self.comparisonDirectory
-        let stem = String(Int(Date().timeIntervalSince1970))
+        let stem = String(Int(Date().timeIntervalSince1970 * 1000))
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: wav, to: dir.appendingPathComponent("\(stem).wav"))
@@ -269,7 +270,8 @@ extension AppDelegate: AudioRecorderDelegate {
     public func recordingDidFinish(fileURL: URL, duration: TimeInterval) {
         pending.append(PendingDictation(
             timer: currentTimer,
-            comparisonStem: keepComparisonRecording(of: fileURL)))
+            comparisonStem: keepComparisonRecording(of: fileURL),
+            fileURL: fileURL))
         statusManager.updateStatus(.transcribing(queued: 0))
         transcriber.transcribe(fileURL: fileURL, recordingDuration: duration)
     }
@@ -287,7 +289,7 @@ extension AppDelegate: AudioRecorderDelegate {
 // MARK: - TranscriberDelegate
 extension AppDelegate: TranscriberDelegate {
     public func transcriptionCompleted(text: String) {
-        var dictation = pending.isEmpty ? PendingDictation(timer: StageTimer(), comparisonStem: nil) : pending.removeFirst()
+        var dictation = pending.isEmpty ? PendingDictation(timer: StageTimer(), comparisonStem: nil, fileURL: URL(fileURLWithPath: "/")) : pending.removeFirst()
         dictation.timer.mark(.textReady)
         if let stem = dictation.comparisonStem {
             saveComparisonTranscript(text, stem: stem)
@@ -309,6 +311,10 @@ extension AppDelegate: TranscriberDelegate {
     public func transcriptionFailed(error: String) {
         if !pending.isEmpty { pending.removeFirst() }
         statusManager.updateStatus(.error(message: error))
+    }
+
+    public func transcriptionDropped(fileURL: URL) {
+        pending.removeAll { $0.fileURL == fileURL }
     }
 
     public func transcriptionQueueUpdated(count: Int) {

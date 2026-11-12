@@ -20,7 +20,7 @@ Subagent-driven development, Danny's choice on 2026-11-11: a fresh implementer p
 Implementers do not launch the app (controller ruling P2), so checks that need the running app, a microphone, permissions or a human are listed here for Danny.
 
 - Task 2: launch the build, dictate once, and open `~/Library/Logs/VoiceDictation.log`. You should see a line like `[TIMING] keyDown→firstAudio=120ms keyUp→text=800ms text→pasted=15ms`.
-- Task 2: in the menu bar menu, turn on "Keep recordings for comparison" (a checkmark appears), dictate once, and look in `~/Library/Application Support/VoiceDictation/comparison/`. You should see a `<unix-time>.wav` and a `<unix-time>.txt` with the same name; the text is what the current engine produced.
+- Task 2: in the menu bar menu, turn on "Keep recordings for comparison" (a checkmark appears), dictate once, and look in `~/Library/Application Support/VoiceDictation/comparison/`. You should see a `<unix-ms>.wav` and a `<unix-ms>.txt` (Unix time in milliseconds) with the same name; the text is what the current engine produced.
 
 ## Findings
 

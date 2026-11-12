@@ -2,6 +2,20 @@ import XCTest
 @testable import VoiceDictationLib
 
 final class TranscriberTests: XCTestCase {
+    func testOverflowDropsOldestQueuedRecording() {
+        let urls = (1...5).map { URL(fileURLWithPath: "/tmp/\($0).wav") }
+        var queue: [(URL, TimeInterval)] = []
+        var dropped: [URL] = []
+        for url in urls.prefix(3) {
+            XCTAssertNil(Transcriber.enqueue((url, 1), into: &queue, maxDepth: 3))
+        }
+        for url in urls.suffix(2) {
+            if let d = Transcriber.enqueue((url, 1), into: &queue, maxDepth: 3) { dropped.append(d) }
+        }
+        XCTAssertEqual(dropped, [urls[0], urls[1]])
+        XCTAssertEqual(queue.map { $0.0 }, [urls[2], urls[3], urls[4]])
+    }
+
     func testParseWhisperOutput() {
         let output = """
         [00:00:00.000 --> 00:00:03.000]   Hello, this is a test.
