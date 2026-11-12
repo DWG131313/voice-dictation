@@ -214,6 +214,13 @@ final class AppModelTests: XCTestCase {
     // MARK: - Helpers
 
     @MainActor
+    func testCreatingTheModelRegistersTheFontsOnce() {
+        let before = Fonts.registerCalls
+        _ = makeModel([appleEngine()])
+        XCTAssertEqual(Fonts.registerCalls, before + 1)
+    }
+
+    @MainActor
     private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
                            system: OnboardingSystem = .fake()) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),

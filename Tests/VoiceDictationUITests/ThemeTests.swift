@@ -34,4 +34,26 @@ final class ThemeTests: XCTestCase {
         XCTAssertEqual([Theme.Space.xs, Theme.Space.sm, Theme.Space.md, Theme.Space.lg, Theme.Space.xl],
                        [4, 8, 16, 24, 40])
     }
+
+    private func width(_ font: CTFont) -> CGFloat {
+        let str = NSAttributedString(string: "Hamburgefonts", attributes: [.font: font])
+        return str.size().width
+    }
+
+    func testVariableWeightsAreDistinct() {
+        Fonts.registerAll()
+        for name in ["Jost-Regular", "WorkSans-Regular"] {
+            let regular = width(Fonts.face(name, size: 40, weight: 400))
+            let medium = width(Fonts.face(name, size: 40, weight: 500))
+            let semibold = width(Fonts.face(name, size: 40, weight: 600))
+            XCTAssertNotEqual(regular, medium, name)
+            XCTAssertNotEqual(medium, semibold, name)
+        }
+    }
+
+    func testThemeFontsUseTheRealWeights() {
+        Fonts.registerAll()
+        XCTAssertNotEqual(width(Theme.Font.titleFace(26)), width(Fonts.face("Jost-Regular", size: 26, weight: 400)))
+        XCTAssertNotEqual(width(Theme.Font.uiFace(26, medium: true)), width(Theme.Font.uiFace(26)))
+    }
 }

@@ -74,6 +74,8 @@ public final class AppModel {
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
          preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
          onboardingSystem: OnboardingSystem? = nil) {
+        // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
+        Fonts.registerAll()
         self.service = service
         // Tasks 21 and 22 add the cleaner and the replacements.
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,

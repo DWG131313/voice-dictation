@@ -108,7 +108,7 @@ Dark only; there is no light mode, the prism needs the dark. Text is `#F2F2F2` o
 
 ## Typography
 
-Jost for the one title per screen, Work Sans for the interface, DM Mono for times and figures. All three ship inside the app (SIL OFL licences beside the files), so nothing is fetched at run time. Jost and Work Sans are variable fonts; weights 400, 500 and 600 are used, never bold above 600.
+Jost for the one title per screen, Work Sans for the interface, DM Mono for times and figures. All three ship inside the app (SIL OFL licences beside the files), so nothing is fetched at run time. Jost and Work Sans are variable fonts, and the code sets their weight axis explicitly: Jost 600 for titles, Work Sans 400 for text and 500 for labels, DM Mono 400. Never bold above 600.
 
 ## Layout
 

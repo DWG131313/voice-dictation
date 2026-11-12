@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 
 /// Prism design tokens (see DESIGN.md). Dark only, radius 0, no shadows.
@@ -20,14 +21,19 @@ public enum Theme {
     }
 
     public enum Font {
+        static func titleFace(_ size: CGFloat) -> CTFont { Fonts.face("Jost-Regular", size: size, weight: 600) }
+        static func uiFace(_ size: CGFloat, medium: Bool = false) -> CTFont {
+            Fonts.face("WorkSans-Regular", size: size, weight: medium ? 500 : 400)
+        }
+
         /// Jost 600, one title per screen.
         public static func title(_ size: CGFloat = 26) -> SwiftUI.Font {
-            .custom("Jost-Regular", size: size).weight(.semibold)
+            SwiftUI.Font(titleFace(size))
         }
 
         /// Work Sans 400, or 500 when `medium`.
         public static func ui(_ size: CGFloat = 14, medium: Bool = false) -> SwiftUI.Font {
-            .custom("WorkSans-Regular", size: size).weight(medium ? .medium : .regular)
+            SwiftUI.Font(uiFace(size, medium: medium))
         }
 
         /// DM Mono, for times and figures.
