@@ -72,7 +72,8 @@ public struct FoundationModelCleaner: TextCleaner {
     }
 
     /// Loads the model and readies a new session for the next cleanup, which
-    /// then starts sooner. The app calls it at launch and after each dictation.
+    /// then starts sooner. The app calls it at launch, at each hotkey-down and after each dictation,
+    /// always off the main thread (Ruling T21-2).
     public func prewarm() {
         guard isAvailable else { return }
         let session = Self.makeSession()
