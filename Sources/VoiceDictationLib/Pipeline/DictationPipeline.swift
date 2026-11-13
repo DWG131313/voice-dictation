@@ -50,7 +50,9 @@ public protocol Pasting {
 /// At most `maximumWaiting` recordings wait behind the one being transcribed.
 /// When another arrives, the oldest waiting one is skipped: not pasted, and
 /// reported as Failed with its audio (Review Focus 4). It normally never
-/// reaches the engine; `enqueue` describes the one narrow exception.
+/// reaches the engine; `enqueue` describes the one narrow exception. A
+/// dictation whose text is back, waiting only for the paste before its own,
+/// does not count as waiting.
 ///
 /// Each text goes through, in order: `OutputFilter` (in the service, Ruling
 /// P3), Danny's replacements, the cleaner and `CleanupGuard`, then the paste
@@ -118,8 +120,8 @@ public final class DictationPipeline {
     /// by itself while the key stayed down. `cancelHold` can still take it
     /// back until the hold ends.
     @ObservationIgnored private var dictationOfThisHold: UUID?
-    /// Recordings handed to the service, oldest first: the first is being
-    /// transcribed, the rest wait.
+    /// Recordings handed to the service, oldest first. Of those not yet
+    /// `isTranscribed`, the first is being transcribed and the rest wait.
     @ObservationIgnored private var line: [Dictation] = []
     /// The dictation being cleaned up, out of the line and not yet pasted.
     /// The next one in line is transcribed meanwhile, and pastes after it.
@@ -169,6 +171,10 @@ public final class DictationPipeline {
         // microphone access first.
         recorder.startRecording()
         settle()
+        // Ruling T21-2: the cleanup model loads while Danny speaks, since a
+        // cold one outlasts the time limit. Off the main thread and after
+        // the recorder has started, it adds nothing to keyDown→firstAudio.
+        prewarmCleanup()
     }
 
     public func hotkeyUp() {
@@ -320,36 +326,49 @@ public final class DictationPipeline {
     private func enqueue(_ clip: AudioClip, timer: StageTimer) -> UUID {
         let service = self.service
         let words = vocabulary()
+        let id = UUID()
         // Each call goes to the service now, so the service sees every
         // dictation waiting and keeps re-transcriptions behind them.
-        let transcription = Task { () -> Transcription in
+        let transcription = Task { [weak self] () -> Transcription in
+            let result: Result<TranscriptionResult, Error>
             do {
-                let result = try await service.transcribe(clip, vocabulary: words)
-                return Transcription(result: .success(result), model: result.model)
+                result = .success(try await service.transcribe(clip, vocabulary: words))
             } catch {
-                return Transcription(result: .failure(error), model: await service.selected)
+                result = .failure(error)
+            }
+            // Back on the main actor: from now on it no longer counts as waiting.
+            self?.markTranscribed(id)
+            switch result {
+            case .success(let value): return Transcription(result: result, model: value.model)
+            case .failure: return Transcription(result: result, model: await service.selected)
             }
         }
-        let dictation = Dictation(date: Date(), clip: clip, timer: timer, transcription: transcription)
-        line.append(dictation)
-        // Too many waiting: skip the oldest waiting one, `line[1]`. The
-        // pipeline counts `line[0]` as being transcribed until `finishLine`
-        // takes its result on the main actor. A recording that ends after
-        // the service has returned that result, but before `finishLine` has
-        // taken it, still skips `line[1]`, although only three are then
-        // waiting at the service and `line[1]` is already in the engine. In
-        // that moment the skip need not happen, and it falls on a clip that
-        // has already reached the engine. The window is one main-actor hop,
-        // so the behaviour is kept (controller ruling, Task 9 review).
-        if line.count - 1 > Self.maximumWaiting {
-            skip(line.remove(at: 1))
+        line.append(Dictation(id: id, date: Date(), clip: clip, timer: timer, transcription: transcription))
+        // Too many waiting: skip the oldest waiting one (Review Focus 4).
+        // Only dictations whose call to the service has not returned count:
+        // the first is being transcribed, the rest wait. Those before it
+        // have their text and wait only for a paste, which a cleanup can
+        // hold back for `cleanupTimeLimit`. A recording that ends between
+        // the service returning the first one's text and its task marking
+        // it still counts that one, so it may skip a dictation already in
+        // the engine. The window is one main-actor hop, so it is kept
+        // (ruling, Task 9 review; Task 21's review moved the count to the mark).
+        if let first = line.firstIndex(where: { !$0.isTranscribed }),
+           line.count - (first + 1) > Self.maximumWaiting {
+            skip(line.remove(at: first + 1))
         }
         settle()
         if !isFinishingLine {
             isFinishingLine = true
             Task { await finishLine() }
         }
-        return dictation.id
+        return id
+    }
+
+    /// Its call to the service has returned. Gone means cancelled or skipped.
+    private func markTranscribed(_ id: UUID) {
+        guard let index = line.firstIndex(where: { $0.id == id }) else { return }
+        line[index].isTranscribed = true
     }
 
     /// Finishes the dictations in line one at a time, oldest first, so they
@@ -447,11 +466,15 @@ public final class DictationPipeline {
     // MARK: - Cleanup
 
     /// Readies the cleaner for the next dictation, while cleanup is on and
-    /// the cleaner can run: the app calls it at launch, and the pipeline
-    /// after each pasted dictation.
+    /// the cleaner can run: at launch (the app), when the hotkey goes down
+    /// (Ruling T21-2) and after each pasted dictation. The check and the
+    /// prewarm run off the main thread, which also runs the event tap.
     public func prewarmCleanup() {
-        guard let cleaner, cleanupEnabled(), cleaner.isAvailable else { return }
-        cleaner.prewarm()
+        guard let cleaner, cleanupEnabled() else { return }
+        Task.detached(priority: .utility) {
+            guard cleaner.isAvailable else { return }
+            cleaner.prewarm()
+        }
     }
 
     /// The second step of the order (Ruling T21-1): Danny's replacements,
@@ -481,9 +504,9 @@ public final class DictationPipeline {
     /// text to paste; an error, a rejection or the time limit gives the raw
     /// text, and none of them shows an error (Review Focus 3).
     private func clean(_ raw: String, with cleaner: TextCleaner, for id: UUID) async -> CleanupEnd {
-        let work = Task { try await Self.run(cleaner, on: raw) }
+        let work = Task { try await CleanerRun.run(cleaner, on: raw) }
         let limit = cleanupLimitSeconds
-        let wait = Task { await Self.wait(for: work, upTo: limit) }
+        let wait = Task { await CleanerRun.wait(for: work, upTo: limit) }
         cleaning = Cleaning(id: id, work: work, wait: wait)
         settle()
         let waited = await wait.value
@@ -526,40 +549,6 @@ public final class DictationPipeline {
             }
             Log.info("[PIPELINE] Cleanup came back after \(String(format: "%.2f", run.seconds)) s; kept beside the pasted text")
             self?.onLateCleanup?(id, run.text, run.seconds)
-        }
-    }
-
-    /// Runs the cleaner, off the main thread, and times it.
-    nonisolated private static func run(_ cleaner: TextCleaner, on raw: String) async throws -> CleanerRun {
-        let start = ContinuousClock.now
-        let text = try await cleaner.clean(raw)
-        let elapsed = start.duration(to: .now).components
-        return CleanerRun(text: text, seconds: Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18)
-    }
-
-    /// Waits for `work` until it ends, `seconds` pass, or this wait is
-    /// cancelled, whichever comes first. `work` itself is never cancelled
-    /// here: past the time limit it runs on, for a late result.
-    nonisolated private static func wait(for work: Task<CleanerRun, Error>, upTo seconds: TimeInterval) async -> Waited {
-        await withTaskGroup(of: Waited.self) { group in
-            group.addTask {
-                do {
-                    return .finished(.success(try await valueUnlessCancelled(of: work)))
-                } catch {
-                    return Task.isCancelled ? .cancelled : .finished(.failure(error))
-                }
-            }
-            group.addTask {
-                do {
-                    try await Task.sleep(for: .seconds(seconds))
-                    return .timedOut
-                } catch {
-                    return .cancelled
-                }
-            }
-            let first = await group.next() ?? .cancelled
-            group.cancelAll()
-            return first
         }
     }
 
@@ -645,12 +634,14 @@ public final class DictationPipeline {
 
     /// A recording in line, with its own marks, so its timing survives the wait.
     private struct Dictation {
-        let id = UUID()
+        let id: UUID
         /// When the recording ended.
         let date: Date
         let clip: AudioClip
         let timer: StageTimer
         let transcription: Task<Transcription, Never>
+        /// Set on the main actor once its call to the service has returned.
+        var isTranscribed = false
     }
 
     /// What the service made of a clip.
@@ -666,20 +657,7 @@ public final class DictationPipeline {
         /// The cleaner's run. Past the time limit it runs on, for a late result.
         let work: Task<CleanerRun, Error>
         /// Waits for `work` up to the time limit; `cancelCleanup` ends it at once.
-        let wait: Task<Waited, Never>
-    }
-
-    /// What the cleaner gave back, and how long it took.
-    private struct CleanerRun: Sendable {
-        let text: String
-        let seconds: Double
-    }
-
-    /// What the wait for a cleanup saw first.
-    private enum Waited: Sendable {
-        case finished(Result<CleanerRun, Error>)
-        case timedOut
-        case cancelled
+        let wait: Task<CleanerRun.Waited, Never>
     }
 
     /// How a dictation's cleanup ended, for its paste.

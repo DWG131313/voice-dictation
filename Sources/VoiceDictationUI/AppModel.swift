@@ -163,8 +163,9 @@ public final class AppModel {
         // waits for the model, or fails and is kept with its audio.
         startListening()
 
-        // Loads the cleanup model, so a dictation soon after launch is not
-        // slowed by the load. The pipeline readies it again after each one.
+        // Loads the cleanup model, off the main thread, so a dictation soon
+        // after launch is not slowed by the load. The pipeline readies it
+        // again when the hotkey goes down and after each dictation.
         pipeline.prewarmCleanup()
 
         // Read now, before anything can be marked as launched.

@@ -197,9 +197,10 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertEqual(paster.pasted, [raw])
         XCTAssertNil(outcomes.first?.cleanedText)
         XCTAssertNil(outcomes.first?.cleanupSeconds)
-        XCTAssertEqual(cleaner.prewarmCount, 0, "a cleaner that is off is not readied")
         pipeline.prewarmCleanup()
-        XCTAssertEqual(cleaner.prewarmCount, 0)
+        // Time for a stray prewarm, which runs off the main thread, to land.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(cleaner.prewarmCount, 0, "a cleaner that is off is readied")
 
         cleanupOn = true
         dictate(on: pipeline)
@@ -216,10 +217,12 @@ final class CleanupPipelineTests: XCTestCase {
 
         dictate(on: pipeline)
         try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+        // Time for a stray prewarm, which runs off the main thread, to land.
+        try await Task.sleep(for: .milliseconds(50))
 
         XCTAssertEqual(cleaner.given, [])
         XCTAssertEqual(paster.pasted, [raw])
-        XCTAssertEqual(cleaner.prewarmCount, 0)
+        XCTAssertEqual(cleaner.prewarmCount, 0, "a cleaner that cannot run is readied")
 
         cleaner.isAvailable = true
         cleaner.reply = { [cleaned] _ in cleaned }
@@ -311,6 +314,61 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.dictationsInFlight, 0)
     }
 
+    /// Review Focus 4 counts only the dictations still waiting at the
+    /// service. One whose text is back, waiting for the paste of the one
+    /// cleaned up before it, is no longer waiting. With A held in cleanup, B
+    /// transcribed and C held in the engine, D, E and F wait and nothing is
+    /// skipped. A seventh then skips D, the oldest waiting, which never
+    /// reaches the engine.
+    @MainActor
+    func testTheLineSkipsOnlyWhenAFourthWaitsAtTheService() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.textForClip = { clip in "number \(Int(clip.samples[0])) um is ready now" }
+        let (pipeline, service) = makePipelineAndService(apple)
+        pipeline.cleanupLimitSeconds = 10
+        pipeline.errorDisplaySeconds = 0.2
+        cleaner.reply = { $0.replacingOccurrences(of: " um", with: "") }
+        cleaner.isHeld = true
+
+        dictate(numbered(1), on: pipeline)
+        try await waitUntil("A is cleaned up") { cleaner.given.count == 1 }
+        dictate(numbered(2), on: pipeline)
+        try await waitUntil("B is transcribed") {
+            guard apple.transcribedClips.count == 2 else { return false }
+            return await service.dictationsInLine == 0
+        }
+        apple.isHeld = true
+        dictate(numbered(3), on: pipeline)
+        try await waitUntil("C reaches the engine") { apple.transcribedClips.count == 3 }
+        for number in 4...6 {
+            dictate(numbered(number), on: pipeline)
+            try await waitUntil("dictation \(number) waits at the service") {
+                await service.dictationsInLine == number - 2
+            }
+        }
+        // Time for a skip to be reported.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(outcomes.map(\.failure), [], "skipped with three waiting")
+        XCTAssertEqual(apple.cancelledCount, 0, "C was stopped in the engine")
+        XCTAssertEqual(pipeline.state, .cleaning)
+
+        dictate(numbered(7), on: pipeline)
+        try await waitUntil("the oldest waiting is skipped") { outcomes.count == 1 }
+        let skipped = try XCTUnwrap(outcomes.first)
+        XCTAssertEqual(skipped.clip, numbered(4), "skipped a dictation other than D")
+        XCTAssertEqual(skipped.status, .failed)
+        XCTAssertEqual(skipped.failure, DictationPipeline.skippedFailure)
+
+        apple.isHeld = false
+        cleaner.isHeld = false
+        try await waitUntil("every dictation finishes") { outcomes.count == 7 }
+        let pasted = [1, 2, 3, 5, 6, 7]
+        XCTAssertEqual(paster.pasted, pasted.map { "number \($0) is ready now" })
+        XCTAssertEqual(apple.transcribedClips, pasted.map(numbered), "D reached the engine")
+        try await waitUntil("the pipeline settles") { pipeline.state == .idle }
+        XCTAssertEqual(pipeline.dictationsInFlight, 0)
+    }
+
     /// Ruling P5: the timing line adds cleanup's interval when it ran.
     @MainActor
     func testTimingAddsTheCleanupIntervalWhenCleanupRan() async throws {
@@ -340,24 +398,51 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertFalse(skippedTiming.summary.contains("cleaned"), skippedTiming.summary)
     }
 
-    /// The cleaner is readied after each dictation, and at launch through
-    /// `prewarmCleanup()`.
+    /// The cleaner is readied at launch through `prewarmCleanup()`, when the
+    /// key goes down (Ruling T21-2), and after each dictation, every time off
+    /// the main thread.
     @MainActor
     func testCleanerIsPrewarmedAfterEachDictation() async throws {
         let apple = FakeEngine(kind: .appleSpeech)
         apple.result = "ship it"
         let pipeline = makePipeline(apple)
         pipeline.prewarmCleanup()
-        XCTAssertEqual(cleaner.prewarmCount, 1)
+        try await waitUntil("readied at launch") { cleaner.prewarmCount == 1 }
 
         dictate(on: pipeline)
         try await waitUntil("the dictation finishes") { outcomes.count == 1 }
-        XCTAssertEqual(cleaner.prewarmCount, 2, "readied after a dictation, also one too short to clean")
+        try await waitUntil("readied at key-down and after a dictation, also one too short to clean") {
+            cleaner.prewarmCount == 3
+        }
 
         apple.result = raw
         dictate(on: pipeline)
         try await waitUntil("the next dictation finishes") { outcomes.count == 2 }
-        XCTAssertEqual(cleaner.prewarmCount, 3)
+        try await waitUntil("readied at key-down and after it") { cleaner.prewarmCount == 5 }
+        // Time for a stray prewarm to land.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(cleaner.prewarmedOnMainThread, Array(repeating: false, count: 5),
+                       "readied on the main thread, or too often")
+    }
+
+    /// Ruling T21-2: the key going down readies the cleaner, so the model
+    /// loads while Danny speaks; macOS unloads it after a few idle minutes,
+    /// and a cold cleanup outlasts the time limit. It is readied once, off
+    /// the main thread, so the recording's start waits for nothing.
+    @MainActor
+    func testHotkeyDownPrewarmsOffTheMainThread() async throws {
+        let pipeline = makePipeline(engineText: raw)
+
+        pipeline.hotkeyDown()
+        XCTAssertEqual(recorder.startCount, 1)
+        guard case .recording = pipeline.state else { return XCTFail("not recording: \(pipeline.state)") }
+        try await waitUntil("the cleaner is readied") { cleaner.prewarmCount == 1 }
+        // Time for a stray prewarm to land.
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(cleaner.prewarmedOnMainThread, [false], "readied on the main thread, or more than once")
+        XCTAssertEqual(cleaner.given, [], "readying cleans nothing")
+        pipeline.cancel()
     }
 
     // MARK: - Cancelling (no late cleanup)
@@ -430,13 +515,19 @@ final class CleanupPipelineTests: XCTestCase {
     @MainActor
     private func makePipeline(_ engine: FakeEngine,
                               replacements: @escaping () -> [Replacement] = { [] }) -> DictationPipeline {
+        makePipelineAndService(engine, replacements: replacements).pipeline
+    }
+
+    @MainActor
+    private func makePipelineAndService(_ engine: FakeEngine, replacements: @escaping () -> [Replacement] = { [] })
+        -> (pipeline: DictationPipeline, service: TranscriptionService) {
         let service = TranscriptionService(engines: [engine], selected: .appleSpeech)
         let pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster, cleaner: cleaner,
                                          replacements: replacements, vocabulary: { [] },
                                          cleanupEnabled: { [weak self] in self?.cleanupOn ?? false })
         pipeline.onOutcome = { [weak self] outcome in self?.outcomes.append(outcome) }
         pipeline.onLateCleanup = { [weak self] id, text, seconds in self?.lateCleanups.append((id, text, seconds)) }
-        return pipeline
+        return (pipeline, service)
     }
 
     /// Holds the hotkey while the recorder captures `clip`, then lets go.

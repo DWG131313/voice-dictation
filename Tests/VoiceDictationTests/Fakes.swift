@@ -169,7 +169,7 @@ final class FakeCleaner: TextCleaner, @unchecked Sendable {
     private var _onClean: (@Sendable (String) -> Void)?
     private var _given: [String] = []
     private var _finishedCount = 0
-    private var _prewarmCount = 0
+    private var _prewarmedOnMainThread: [Bool] = []
 
     /// What it makes of a text; nil gives the text back unchanged.
     var reply: (@Sendable (String) -> String)? {
@@ -210,9 +210,14 @@ final class FakeCleaner: TextCleaner, @unchecked Sendable {
     var given: [String] { lock.withLock { _given } }
     /// Cleanups that have replied or thrown.
     var finishedCount: Int { lock.withLock { _finishedCount } }
-    var prewarmCount: Int { lock.withLock { _prewarmCount } }
+    var prewarmCount: Int { lock.withLock { _prewarmedOnMainThread.count } }
+    /// For each prewarm, in the order they ran, whether it ran on the main thread.
+    var prewarmedOnMainThread: [Bool] { lock.withLock { _prewarmedOnMainThread } }
 
-    func prewarm() { lock.withLock { _prewarmCount += 1 } }
+    func prewarm() {
+        let onMainThread = Thread.isMainThread
+        lock.withLock { _prewarmedOnMainThread.append(onMainThread) }
+    }
 
     func clean(_ raw: String) async throws -> String {
         lock.withLock { _given.append(raw) }

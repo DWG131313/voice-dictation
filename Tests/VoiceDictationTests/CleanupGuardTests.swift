@@ -4,7 +4,10 @@ import XCTest
 /// The rewrite guard (Task 21): cleanup may delete fillers and stammers and
 /// change case and punctuation, and nothing else. The cases are the brief's,
 /// word for word, and the rest of the 28 in the controller's reference
-/// (`guard_reference.py`), which agrees with every answer here.
+/// (`guard_reference.py`), which agrees with every answer for those 28.
+/// Ruling T21-3 (the spec over the plan) keeps apostrophes in their words,
+/// where the reference deletes them, so the apostrophe cases are the
+/// ruling's: "were" → "we're" is a changed word.
 final class CleanupGuardTests: XCTestCase {
     // MARK: - Accepted
 
@@ -25,6 +28,13 @@ final class CleanupGuardTests: XCTestCase {
 
     func testAcceptsApostrophesHyphensAndASplitSentence() {
         XCTAssertTrue(CleanupGuard.accepts(raw: "i don't know, it's e-mail", cleaned: "I don't know. It's email."))
+    }
+
+    /// Ruling T21-3: every apostrophe reads as the same one, so a curly one
+    /// that becomes straight, or the other way round, changes no word.
+    func testAcceptsAnyApostropheGlyph() {
+        XCTAssertTrue(CleanupGuard.accepts(raw: "i don’t know about that", cleaned: "I don't know about that."))
+        XCTAssertTrue(CleanupGuard.accepts(raw: "i don't know about that", cleaned: "I don’t know about that."))
     }
 
     /// A filler set off by commas.
@@ -71,6 +81,17 @@ final class CleanupGuardTests: XCTestCase {
 
     func testRejectsReorderedWords() {
         XCTAssertFalse(CleanupGuard.accepts(raw: "call sam then email pat", cleaned: "Email Pat, then call Sam."))
+    }
+
+    /// Ruling T21-3: an apostrophe added or removed changes the word ("were"
+    /// is not "we're"), which the spec says cleanup must never do.
+    func testRejectsAnApostropheAddedOrRemoved() {
+        XCTAssertFalse(CleanupGuard.accepts(raw: "were going to ship it on friday",
+                                            cleaned: "We're going to ship it on Friday."))
+        XCTAssertFalse(CleanupGuard.accepts(raw: "its broken", cleaned: "It's broken."))
+        XCTAssertFalse(CleanupGuard.accepts(raw: "well ship it tomorrow then", cleaned: "We'll ship it tomorrow then."))
+        XCTAssertFalse(CleanupGuard.accepts(raw: "lets ship it now", cleaned: "Let's ship it now."))
+        XCTAssertFalse(CleanupGuard.accepts(raw: "it's broken", cleaned: "Its broken."), "an apostrophe removed")
     }
 
     func testRejectsADroppedWordThatIsNoFiller() {
@@ -133,21 +154,23 @@ final class CleanupGuardTests: XCTestCase {
 
     // MARK: - Tokens
 
+    /// The brief's case. Ruling T21-3 changed its third word from the
+    /// brief's `its` to `it's`: an apostrophe stays in its word.
     func testTokensMarkPauses() {
         let tokens = CleanupGuard.tokens("so, um — it's e-mail")
 
-        XCTAssertEqual(tokens.map(\.word), ["so", "um", "its", "email"])
+        XCTAssertEqual(tokens.map(\.word), ["so", "um", "it's", "email"])
         XCTAssertEqual(tokens.map(\.pauseBefore), [false, true, true, false])
         XCTAssertEqual(tokens.map(\.pauseAfter), [true, true, false, false])
     }
 
     /// An en dash and both ellipses are pause marks, a full stop is not, and
-    /// a mark before the first word or after the last is no pause. Curly
-    /// apostrophes go, like straight ones.
+    /// a mark before the first word or after the last is no pause. A curly
+    /// apostrophe reads as a straight one (Ruling T21-3).
     func testTokensPauseMarksAtTheEdges() {
         let tokens = CleanupGuard.tokens("…Well – I’m ok... right. Fine…")
 
-        XCTAssertEqual(tokens.map(\.word), ["well", "im", "ok", "right", "fine"])
+        XCTAssertEqual(tokens.map(\.word), ["well", "i'm", "ok", "right", "fine"])
         XCTAssertEqual(tokens.map(\.pauseBefore), [false, true, false, true, false])
         XCTAssertEqual(tokens.map(\.pauseAfter), [true, false, true, false, false])
         XCTAssertEqual(CleanupGuard.tokens(""), [])

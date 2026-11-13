@@ -35,6 +35,54 @@ final class FoundationModelCleanerTests: XCTestCase {
         XCTAssertEqual(FoundationModelCleaner.options(for: "one two three").maximumResponseTokens, 55)
     }
 
+    /// A reply wrapped in quotation marks, straight or curly, loses one pair
+    /// when the dictation has none of that kind: the guard reads them as
+    /// punctuation, so they would be pasted. The blank lines a reply starts
+    /// or ends with go too.
+    func testReplyLosesQuotationMarksAroundItAll() throws {
+        let raw = "um so i think we should uh ship it"
+        for reply in ["\"I think we should ship it.\"", "“I think we should ship it.”",
+                      "'I think we should ship it.'", "‘I think we should ship it.’",
+                      "\n “ I think we should ship it. ” \n", "I think we should ship it.\n\n"] {
+            XCTAssertEqual(try FoundationModelCleaner.text(fromReply: reply, for: raw), "I think we should ship it.",
+                           reply)
+        }
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "\"‘Ship it.’\"", for: "ship it"), "‘Ship it.’",
+                       "one pair only")
+    }
+
+    /// Quotation marks stay when the dictation has its own of that kind, and
+    /// when they do not wrap the whole reply in one pair.
+    func testReplyKeepsOtherQuotationMarks() throws {
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "\"Ship it now.\"", for: "\"ship it now\""),
+                       "\"Ship it now.\"")
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "“Ship it now.”", for: "he said “ship it now”"),
+                       "“Ship it now.”")
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "'I don't know.'", for: "i don't know"),
+                       "'I don't know.'", "the dictation's apostrophe is a single mark")
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "\"Ship\" and \"merge\"", for: "ship and merge"),
+                       "\"Ship\" and \"merge\"", "two pairs, not one around it all")
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "\"“Ship it.”\"", for: "ship it"), "\"“Ship it.”\"",
+                       "a pair inside a pair of the same kind")
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "He said “ship it”", for: "he said ship it"),
+                       "He said “ship it”")
+    }
+
+    /// A reply that breaks a line the dictation does not is rejected, so the
+    /// raw text pastes: in a terminal, a pasted line break can act as Return.
+    func testReplyWithLineBreaksTheDictationLacksIsRejected() throws {
+        let raw = "um so i think we should uh ship it"
+        for reply in ["I think we should\nship it.", "I think.\n\nWe should ship it.", "I think\r\nwe should ship it.",
+                      "\"I think\nwe should ship it.\"", "I think\u{2028}we should ship it."] {
+            XCTAssertThrowsError(try FoundationModelCleaner.text(fromReply: reply, for: raw), reply) { error in
+                XCTAssertEqual(error as? CleanupError, .addedLineBreaks, reply)
+            }
+        }
+        XCTAssertEqual(try FoundationModelCleaner.text(fromReply: "First line.\nSecond line.",
+                                                       for: "first line\nsecond line"),
+                       "First line.\nSecond line.", "the dictation breaks lines too")
+    }
+
     /// Step 7: the real model on a short sample, run five times as the app
     /// would, readied first and after each. Each result passes the guard and
     /// has lost its "um" and "uh". The median time is printed for the notes.

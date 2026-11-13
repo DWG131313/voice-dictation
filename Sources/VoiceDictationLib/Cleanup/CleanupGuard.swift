@@ -3,7 +3,9 @@ import Foundation
 /// Decides whether a cleanup only did what cleanup may do: delete fillers and
 /// stammers, and change case and punctuation. Any other change, an added,
 /// changed or reordered word, or a deleted word that is not a filler, rejects
-/// it, and the raw text is pasted instead (Review Focus 3).
+/// it, and the raw text is pasted instead (Review Focus 3). An apostrophe is
+/// part of its word, not punctuation, so "were" → "we're" is a changed word
+/// (Ruling T21-3).
 ///
 /// "right", "so", "like" and "you know" are fillers only some of the time,
 /// so they may go only where the speech marks them as fillers: set off by a
@@ -28,8 +30,11 @@ public enum CleanupGuard {
         public let pauseAfter: Bool
     }
 
-    /// The text's words, lowercased, with apostrophes and hyphens removed
-    /// ("It's e-mail" is `its`, `email`); any other character that is not a
+    /// The text's words, lowercased. Every apostrophe (' ’ ‘ ʼ) reads as `'`
+    /// and stays in its word, so "It’s" is `it's`, and "its" → "it's" is a
+    /// changed word (Ruling T21-3: the spec over the plan, which removed
+    /// them). Hyphens are removed, so "e-mail" is `email`; that leaves
+    /// "re-sign" → "resign" a known gap. Any other character that is not a
     /// letter or a digit separates words. A comma, a dash (— or –) or an
     /// ellipsis (… or ...) between two words is a pause, marked on both;
     /// there is none before the first word or after the last.
@@ -39,8 +44,9 @@ public enum CleanupGuard {
         var gaps: [String] = []
         var word = ""
         var gap = ""
-        for character in s.lowercased() where !joiners.contains(character) {
-            if character.isLetter || character.isNumber {
+        for read in s.lowercased() where !hyphens.contains(read) {
+            let character: Character = apostrophes.contains(read) ? "'" : read
+            if character.isLetter || character.isNumber || character == "'" {
                 if word.isEmpty {
                     gaps.append(gap)
                     gap = ""
@@ -89,7 +95,10 @@ public enum CleanupGuard {
     // MARK: - The rule's parts
 
     /// Removed before the words are read, so they join what they sit in.
-    private static let joiners: Set<Character> = ["'", "’", "‘", "ʼ", "-", "‐", "‑"]
+    private static let hyphens: Set<Character> = ["-", "‐", "‑"]
+
+    /// Read as `'`, part of the word they sit in.
+    private static let apostrophes: Set<Character> = ["'", "’", "‘", "ʼ"]
 
     private static func isPause(_ gap: String) -> Bool {
         gap.contains(",") || gap.contains("—") || gap.contains("–") || gap.contains("…") || gap.contains("...")
