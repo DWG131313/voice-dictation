@@ -253,6 +253,10 @@ final class FakeRecorder: Recording {
 
     /// What the next stop hands over; nil makes the recording too short to keep.
     var nextClip: AudioClip?
+    /// When true, a stop applies the real `AudioRecorder.verdict` to
+    /// `nextClip`, using its length and loudest sample, and discards the
+    /// recording unless the verdict is `.keep`, as `AudioRecorder` does.
+    var appliesRealVerdict = false
     /// When set, starting fails with this message, as without microphone access.
     var startFailure: String?
     /// When true, starting waits, as for the microphone permission prompt,
@@ -284,11 +288,16 @@ final class FakeRecorder: Recording {
     func stopRecording() {
         guard isRecording else { return }
         isRecording = false
-        if let clip = nextClip {
+        if let clip = nextClip, !appliesRealVerdict || keeps(clip) {
             delegate?.recordingDidFinish(clip: clip)
         } else {
             delegate?.recordingDiscarded()
         }
+    }
+
+    private func keeps(_ clip: AudioClip) -> Bool {
+        let peak = clip.samples.reduce(Float(0)) { max($0, abs($1)) }
+        return AudioRecorder.verdict(duration: clip.duration, peak: peak) == .keep
     }
 
     func cancelRecording() {
