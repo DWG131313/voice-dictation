@@ -230,25 +230,39 @@ public final class DictationPipeline {
     /// is showing. A failure is shown as an error and rethrown; the selection
     /// is then unchanged.
     public func selectModel(_ id: ModelID, named name: String, downloadingFirst: Bool = false) async throws {
-        modelsPreparing.append(name)
-        settle()
-        defer {
-            if let index = modelsPreparing.lastIndex(of: name) { modelsPreparing.remove(at: index) }
-            settle()
-        }
         do {
-            if downloadingFirst {
-                Log.info("[PIPELINE] Downloading \(id.storageKey)")
-                try await service.download(id) { _ in }
+            try await whilePreparing(name) {
+                if downloadingFirst {
+                    Log.info("[PIPELINE] Downloading \(id.storageKey)")
+                    try await service.download(id) { _ in }
+                }
+                try await service.select(id)
+                Log.info("[PIPELINE] Dictating with \(id.storageKey)")
             }
-            try await service.select(id)
-            Log.info("[PIPELINE] Dictating with \(id.storageKey)")
         } catch {
             let reason = Self.describe(error)
             Log.info("[PIPELINE] Could not switch to \(id.storageKey): \(reason)")
             show(reason)
             throw error
         }
+    }
+
+    /// Shows `.preparingModel(name)` while `work` runs, whenever nothing
+    /// more urgent is showing. For a model choice that downloads elsewhere.
+    public func whilePreparing<T>(_ name: String, _ work: () async throws -> T) async rethrows -> T {
+        modelsPreparing.append(name)
+        settle()
+        defer {
+            if let index = modelsPreparing.lastIndex(of: name) { modelsPreparing.remove(at: index) }
+            settle()
+        }
+        return try await work()
+    }
+
+    /// Shows why a model choice failed, as an error for a few seconds.
+    public func showModelFailure(_ reason: String) {
+        Log.info("[PIPELINE] Model choice failed: \(reason)")
+        show(reason)
     }
 
     // MARK: - The line

@@ -176,6 +176,119 @@ final class ModelsModelTests: XCTestCase {
         XCTAssertEqual(preferences.selectedModelID, .appleSpeech)
     }
 
+    // MARK: - Fix round 1
+
+    /// The menu bar's choice shows the preparing state while it downloads.
+    @MainActor
+    func testChoosingShowsThePreparingStateWhileDownloading() async throws {
+        let gate = Gate()
+        whisperKit.onDownload = { _, progress in progress(0.2); await gate.wait() }
+        let model = makeModel(selected: .appleSpeech)
+        await model.refreshModels()
+
+        let choice = Task { await model.choose(descriptor(base, .notDownloaded)) }
+        try await waitUntil("preparing shows") { model.downloadProgress[base] == 0.2 }
+
+        XCTAssertEqual(model.pipeline.state, .preparingModel(base.name))
+        await gate.open()
+        await choice.value
+        XCTAssertNotEqual(model.pipeline.state, .preparingModel(base.name))
+    }
+
+    /// A failed menu bar download is shown by the pipeline, window open or not.
+    @MainActor
+    func testAFailedChoiceIsShownByThePipeline() async {
+        whisperKit.onDownload = { _, _ in throw TranscriptionError.failed("No network") }
+        let model = makeModel(selected: .appleSpeech)
+        await model.refreshModels()
+
+        await model.choose(descriptor(base, .notDownloaded))
+
+        XCTAssertEqual(model.pipeline.state, .error("No network"))
+        XCTAssertEqual(model.selectedModel, .appleSpeech)
+    }
+
+    @MainActor
+    func testACancelledChoiceShowsNoError() async throws {
+        whisperKit.onDownload = { _, progress in progress(0.1); try await Task.sleep(for: .seconds(60)) }
+        let model = makeModel(selected: .appleSpeech)
+        await model.refreshModels()
+        let choice = Task { await model.choose(descriptor(base, .notDownloaded)) }
+        try await waitUntil("download under way") { model.downloadProgress[base] == 0.1 }
+
+        model.cancelDownload(base)
+        await choice.value
+
+        XCTAssertEqual(model.pipeline.state, .idle)
+    }
+
+    /// Choosing a model whose download is already under way joins it.
+    @MainActor
+    func testChoosingAModelAlreadyDownloadingJoinsTheDownload() async throws {
+        let gate = Gate()
+        whisperKit.onDownload = { [whisperKit] id, progress in
+            progress(0.5)
+            await gate.wait()
+            whisperKit.modelList = [ModelDescriptor(id: id, displayName: id.name, detail: "", state: .ready)]
+        }
+        let model = makeModel(selected: .appleSpeech)
+        await model.refreshModels()
+        let download = Task { await model.download(base) }
+        try await waitUntil("download under way") { model.downloadProgress[base] == 0.5 }
+        let overlaid = try XCTUnwrap(model.models.first { $0.id == base })
+        XCTAssertEqual(overlaid.state, .downloading(0.5))
+
+        let choice = Task { await model.choose(overlaid) }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(model.selectedModel, .appleSpeech, "waits for the download")
+        await gate.open()
+        await choice.value
+        _ = await download.value
+
+        XCTAssertEqual(model.selectedModel, base)
+        XCTAssertEqual(whisperKit.calls.filter { $0 == .download(base) }.count, 1)
+    }
+
+    @MainActor
+    func testASecondDownloadCallJoinsTheFirst() async throws {
+        let gate = Gate()
+        whisperKit.onDownload = { _, progress in progress(0.5); await gate.wait() }
+        let model = makeModel(selected: .appleSpeech)
+        await model.refreshModels()
+
+        let first = Task { await model.download(base) }
+        try await waitUntil("download under way") { model.downloadProgress[base] == 0.5 }
+        let second = Task { await model.download(base) }
+        try await Task.sleep(for: .milliseconds(30))
+        await gate.open()
+        let results = [await first.value, await second.value]
+
+        XCTAssertEqual(results, [true, true])
+        XCTAssertEqual(whisperKit.calls.filter { $0 == .download(base) }.count, 1)
+    }
+
+    /// A note about a row goes when that model's state changes.
+    @MainActor
+    func testARowMessageGoesWhenTheModelsStateChanges() async {
+        let model = makeModel(selected: tiny)
+        await model.refreshModels()
+        await model.deleteModel(tiny)
+        XCTAssertNotNil(model.modelMessages[tiny])
+
+        await model.refreshModels()
+        XCTAssertNotNil(model.modelMessages[tiny], "still the same state")
+        whisperKit.modelList = [descriptor(tiny, .notDownloaded), descriptor(base, .notDownloaded)]
+        await model.refreshModels()
+
+        XCTAssertNil(model.modelMessages[tiny])
+    }
+
+    func testCancelOnlyOffersWhatThisAppCanCancel() {
+        let row = descriptor(tiny, .downloading(0.2))
+        XCTAssertEqual(ModelsView.actions(for: row, selected: .appleSpeech, cancellable: true), [.cancel])
+        XCTAssertEqual(ModelsView.actions(for: row, selected: .appleSpeech, cancellable: false), [])
+    }
+
     // MARK: - Order
 
     func testSectionsKeepApplesFirstThenWhisperKitThenThePreviousEngine() {
@@ -192,7 +305,7 @@ final class ModelsModelTests: XCTestCase {
     func testButtonsFitTheState() {
         let selected: ModelID = .appleSpeech
         func actions(_ id: ModelID, _ state: ModelDescriptor.State) -> [ModelsView.Action] {
-            ModelsView.actions(for: descriptor(id, state), selected: selected)
+            ModelsView.actions(for: descriptor(id, state), selected: selected, cancellable: true)
         }
         XCTAssertEqual(actions(.appleSpeech, .ready), [.inUse])
         XCTAssertEqual(actions(.appleDictation, .ready), [.use])

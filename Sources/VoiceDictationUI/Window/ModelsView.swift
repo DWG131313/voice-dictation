@@ -34,7 +34,8 @@ struct ModelsView: View {
 
     /// The buttons a model's state calls for. The Apple models have no
     /// Delete (macOS manages their files); the one in use cannot be deleted.
-    static func actions(for model: ModelDescriptor, selected: ModelID?) -> [Action] {
+    /// Cancel is offered only for a download this app can cancel.
+    static func actions(for model: ModelDescriptor, selected: ModelID?, cancellable: Bool) -> [Action] {
         switch model.state {
         case .ready:
             let isSelected = model.id == selected
@@ -42,7 +43,7 @@ struct ModelsView: View {
             if model.id.engine != .appleSpeech, !isSelected { actions.append(.delete) }
             return actions
         case .notDownloaded: return [.download]
-        case .downloading: return [.cancel]
+        case .downloading: return cancellable ? [.cancel] : []
         case .preparing, .unavailable: return []
         }
     }
@@ -97,7 +98,8 @@ struct ModelsView: View {
     }
 
     private func row(_ descriptor: ModelDescriptor) -> some View {
-        let actions = Self.actions(for: descriptor, selected: model.selectedModel)
+        let actions = Self.actions(for: descriptor, selected: model.selectedModel,
+                                   cancellable: model.downloadProgress[descriptor.id] != nil)
         return VStack(spacing: 0) {
             HStack(alignment: .top, spacing: Theme.Space.md) {
                 VStack(alignment: .leading, spacing: Theme.Space.xs) {
@@ -159,7 +161,6 @@ struct ModelsView: View {
             Button("In use") {}
                 .prismSecondaryButton()
                 .disabled(true)
-                .opacity(0.5)
         }
     }
 }

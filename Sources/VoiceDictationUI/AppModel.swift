@@ -33,6 +33,8 @@ public final class AppModel {
     public private(set) var modelMessages: [ModelID: String] = [:]
     /// The downloads under way, which Cancel cancels.
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
+    /// The state each row's note was made in.
+    @ObservationIgnored private var noteStates: [ModelID: ModelDescriptor.State] = [:]
     /// The Welcome window's steps.
     @ObservationIgnored public private(set) lazy var onboarding = OnboardingModel(
         system: onboardingSystem,
@@ -206,31 +208,56 @@ public final class AppModel {
             return downloading
         }
         self.selectedModel = selected
+        // A note belongs to the state the model was in when it was made.
+        for (id, state) in noteStates where self.models.first(where: { $0.id == id })?.state != state {
+            modelMessages[id] = nil
+            noteStates[id] = nil
+        }
+    }
+
+    private func clearNote(on id: ModelID) {
+        modelMessages[id] = nil
+        noteStates[id] = nil
+    }
+
+    /// Notes `text` on a model's row, until its state changes.
+    private func note(_ text: String, on id: ModelID) {
+        modelMessages[id] = text
+        noteStates[id] = models.first { $0.id == id }?.state
     }
 
     /// Makes `model` the one dictation uses and remembers the choice. The
     /// pipeline shows the progress, and a failure, which leaves the choice
     /// as it was and is noted on the model's row too. Never downloads.
     func use(_ model: ModelDescriptor) async {
-        modelMessages[model.id] = nil
+        clearNote(on: model.id)
+        var failure: String?
         do {
             try await pipeline.selectModel(model.id, named: model.displayName)
             preferences.selectedModelID = model.id
         } catch {
-            modelMessages[model.id] = Self.message(for: error)
+            failure = Self.message(for: error)
         }
         await refreshModels()
+        if let failure { note(failure, on: model.id) }
     }
 
     /// The menu bar's choice, and the same two operations as the Models
     /// section (Ruling T20-1): a model not on the Mac is downloaded first,
     /// which Danny can watch and cancel in the section; a cancelled or
-    /// failed download selects nothing.
+    /// failed download selects nothing. The status line shows the model
+    /// preparing meanwhile, and a failed download shows as an error there.
     func choose(_ model: ModelDescriptor) async {
-        if model.state == .notDownloaded {
-            guard await download(model.id) else { return }
+        let id = model.id
+        await pipeline.whilePreparing(model.displayName) {
+            if model.state == .notDownloaded || downloads[id] != nil {
+                guard await download(id) else {
+                    if let reason = modelMessages[id] { pipeline.showModelFailure(reason) }
+                    return
+                }
+            }
+            await use(model)
         }
-        await use(model)
     }
 
     /// Downloads a model. Never changes the one in use (Ruling P8). Returns
@@ -239,22 +266,24 @@ public final class AppModel {
     @discardableResult
     func download(_ id: ModelID) async -> Bool {
         if let running = downloads[id] { return await running.value }
-        modelMessages[id] = nil
+        clearNote(on: id)
         downloadProgress[id] = 0
         let service = service
         let task = Task { [self] () -> Bool in
             var finished = false
+            var failure: String?
             do {
                 try await service.download(id) { [weak self] fraction in
                     Task { @MainActor in self?.downloadProgressed(id, to: fraction) }
                 }
                 finished = true
             } catch {
-                if !Task.isCancelled, !(error is CancellationError) { modelMessages[id] = Self.message(for: error) }
+                if !Task.isCancelled, !(error is CancellationError) { failure = Self.message(for: error) }
             }
             downloads[id] = nil
             downloadProgress[id] = nil
             await refreshModels()
+            if let failure { note(failure, on: id) }
             return finished
         }
         downloads[id] = task
@@ -271,13 +300,15 @@ public final class AppModel {
     /// Deletes a model's files. The one in use, one still preparing and the
     /// Apple models, which macOS manages, are refused; the row says why.
     func deleteModel(_ id: ModelID) async {
-        modelMessages[id] = nil
+        clearNote(on: id)
+        var failure: String?
         do {
             try await service.delete(id)
         } catch {
-            modelMessages[id] = Self.message(for: error)
+            failure = Self.message(for: error)
         }
         await refreshModels()
+        if let failure { note(failure, on: id) }
     }
 
     private func downloadProgressed(_ id: ModelID, to fraction: Double) {
