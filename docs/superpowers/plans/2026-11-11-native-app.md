@@ -12,6 +12,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-11-native-app-design.md`. Read it first; this plan argues from it. Approved mockups and the indicator prototype are on this laptop only (not in git) in `.superpowers/brainstorm/30815-1794455251/content/` (`main-window-six-directions.html` option D, `prism-live-line-fluid.html`).
 
+**Revised 2026-11-12:** Task 24A (a smoother live volume line) was added after Danny's first hands-on use. It runs after Task 24.
+
 **Revised 2026-11-11 after review.** Danny decided three things: a dictation always goes ahead of a re-transcription (Global Constraints; Tasks 3, 5–8); a dictation skipped because three were already waiting is kept as Failed with its audio (Review Focus 4; Tasks 9, 19); cleanup leaves false starts in, a deliberate departure from the spec (Task 21). Also changed after checking the code and the libraries: the cleanup guard's rule (Task 21), WhisperKit's package, storage and network use (Task 7), and keeping the agent docs true during the build (Tasks 1, 13).
 
 A second pass the same day: Apple Dictation (`DictationTranscriber`) joins the comparison as a second Apple model (Tasks 3, 6, 20); the four WhisperKit models are named by folder, and `.preparing` can come back after macOS updates (Task 7); D1 still works after Task 24 removes the comparison switch (D1, Task 24); a cleanup result that arrives after the paste now reaches the store (Task 21); a corrupt store is moved aside together with its `-wal` and `-shm` files (Task 11); the README is kept current from Task 13; and the plan and spec are committed on branch `native-app` before Task 1 starts (Task 1).
@@ -589,6 +591,35 @@ Rows, in order: Hotkey (picker); Hands-free lock (toggle, one-line explanation);
 - [ ] **Step 1: Failing tests.** `testCleanupRowDisabledWithReasonWhenUnavailable`; `testLoweringKeptRecordingsPrunesImmediately`; `testMissingMicrophoneFallsBackToDefault` (stored UID no longer present → recorder uses default and the row shows "System default"); `testHotkeyChangeRestartsTap`.
 - [ ] **Step 2:** Implement. Input device selection sets the device on the engine's input unit before `prepare()`; a device change observer refreshes the list.
 - [ ] **Step 3:** Tests pass; by hand, pick a second microphone if one is attached. Commit: `feat: settings`.
+
+### Task 24A: Smoother live volume line
+
+Added 2026-11-12 from Danny's first hands-on use. The indicator's line "is a little jittery and less fluid than I would like it to be. It looks like it may be hanging."
+
+**Likely causes**, from facts the build already found:
+- The tap delivers one peak per buffer of about 100 ms, because `installTap`'s buffer size is clamped to 100–400 ms (Task 4).
+- `LevelLine` pushes a vertex every 50 ms and holds the last peak for the empty interval (Ruling T17-1), so the line moves in two-vertex steps.
+- Peaks are stamped when they reach the main thread, so callbacks that arrive bunched make the scroll lurch.
+
+It runs after Task 24, which also changes `AudioRecorder.swift`.
+
+**Files:** Modify `AudioRecorder.swift`, `Indicator/LevelLine.swift`, `AppModel.swift`. Test in `Tests/VoiceDictationUITests/LevelLineTests.swift` and the recorder's existing test file.
+
+**Produces:**
+- `static func slicePeaks(_ samples: UnsafeBufferPointer<Float>, sampleRate: Double, startTime: TimeInterval, slice: TimeInterval = LevelLine.interval) -> [(peak: Float, at: TimeInterval)]` in `AudioRecorder`. This is pure: one peak per 50 ms slice of a buffer, each stamped with the time its first sample was captured.
+- `onLevel` is called once per slice with that time: `onLevel: ((_ peak: Float, _ at: TimeInterval) -> Void)?`. The time is a monotonic clock derived from the buffer's host time, on the same clock `LevelLine` draws with.
+- `LevelLine.add(peak:at:)` uses the slice's own time, never its arrival time, so the grid advances evenly however the callbacks bunch. Sample-and-hold (T17-1) stays only for an interval that got no slice, such as a dropped buffer.
+
+- [ ] **Step 1: Failing tests.**
+  - `testSlicesBufferIntoFiftyMillisecondPeaks`: a 100 ms buffer, loud first half and quiet second, gives two peaks, loud then quiet, stamped 50 ms apart.
+  - `testBunchedArrivalsStillScrollEvenly`: slices arrive in bursts, with their own times 50 ms apart, and the vertices still advance exactly `step` per interval.
+  - `testSlicedPeaksLeaveNoPlateaus`: alternating loud and quiet slices give a different amplitude on each vertex.
+  - Every existing `LevelLineTests` case still passes, including the pinned amplitudes.
+- [ ] **Step 2:** Implement. Keep the constants and maths of Task 17, and keep Reduce Motion's flat line.
+- [ ] **Step 3: Hands-on** (Ruling P2, for Danny):
+  - while speaking, the line scrolls without pauses or two-step jumps;
+  - after the dictation, VoiceDictation is back near 0% CPU in Activity Monitor.
+  Commit: `fix: smoother live volume line`.
 
 ---
 
