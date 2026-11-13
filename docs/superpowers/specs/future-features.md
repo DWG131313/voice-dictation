@@ -1,6 +1,6 @@
 # VoiceDictation — Future Features (Post-v2)
 
-> **Retired 2026-11-12.** This page is kept for history, because the v2 plan cites it. Open ideas now live in `docs/feature-requests.md`. Most of this list shipped in the native app. Two items moved to the backlog: streaming text and a Homebrew install. The idea of other languages was dropped, because the app is English only.
+> **Retired 2026-11-12.** This page is kept for history, because the v2 plan cites it. Open ideas now live in `docs/feature-requests.md`. Most of this list shipped in the native app. The Homebrew install moved to the backlog. Streaming text and other languages were dropped; the app is English only.
 
 Features intentionally deferred to keep the build focused. Revisit after the current feature set is stable.
 

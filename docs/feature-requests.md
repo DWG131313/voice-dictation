@@ -15,12 +15,6 @@ Questions for the design session:
 - Where does the choice live?
 - Does the icon change with the skin?
 
-## Show the text as you speak
-
-*From the old app's future list; kept 2026-11-12.*
-
-Show the words while Danny is still talking, instead of only after he lets go of the key. Today the whole recording is transcribed after the release. Whisper, the default engine, reads whole recordings, so live text would mean re-reading the latest audio every second or so while he talks.
-
 ## Install with Homebrew
 
 *From the old app's future list; kept 2026-11-12.*
