@@ -23,7 +23,7 @@ final class LibraryModelTests: XCTestCase {
     func testNewTranscriptAppearsFirst() throws {
         let store = memoryStore()
         store.add(outcome("First.", at: base))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         XCTAssertEqual(library.rows.map(\.text), ["First."])
 
@@ -41,7 +41,7 @@ final class LibraryModelTests: XCTestCase {
         let store = memoryStore()
         let first = try XCTUnwrap(store.add(outcome("First.", at: base)))
         store.add(outcome("Second.", at: base.addingTimeInterval(60)))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         library.selection = first.id
 
@@ -59,7 +59,7 @@ final class LibraryModelTests: XCTestCase {
 
         // An empty library selects its first transcript.
         let emptyStore = memoryStore()
-        let empty = LibraryModel(store: emptyStore)
+        let empty = makeLibrary(emptyStore)
         empty.windowOpened()
         XCTAssertNil(empty.selection)
         let only = try XCTUnwrap(emptyStore.add(outcome("Only.", at: base)))
@@ -68,7 +68,7 @@ final class LibraryModelTests: XCTestCase {
 
         // One that is not listed here (not pinned, on Pinned) is not selected.
         let pinnedStore = memoryStore()
-        let pinned = LibraryModel(store: pinnedStore)
+        let pinned = makeLibrary(pinnedStore)
         pinned.windowOpened()
         pinned.section = .pinned
         let unpinned = try XCTUnwrap(pinnedStore.add(outcome("Not pinned.", at: base)))
@@ -84,7 +84,7 @@ final class LibraryModelTests: XCTestCase {
     func testReopenedWindowSelectsTheNewest() throws {
         let store = memoryStore()
         let first = try XCTUnwrap(store.add(outcome("D1.", at: base)))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         XCTAssertEqual(library.selection, first.id)
 
@@ -114,7 +114,7 @@ final class LibraryModelTests: XCTestCase {
     func testClosedWindowDoesNotRelist() throws {
         let store = memoryStore()
         store.add(outcome("First.", at: base))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         library.windowClosed()
 
@@ -255,7 +255,7 @@ final class LibraryModelTests: XCTestCase {
     func testEmptyStates() throws {
         // No transcripts.
         let store = memoryStore()
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Globe and speak.")
 
@@ -277,7 +277,7 @@ final class LibraryModelTests: XCTestCase {
         guard case .unavailable(let message) = unavailable.health else {
             return XCTFail("health is \(unavailable.health)")
         }
-        let broken = LibraryModel(store: unavailable)
+        let broken = makeLibrary(unavailable)
         broken.reload()
         XCTAssertEqual(broken.emptyMessage, message)
         broken.query = "tests"
@@ -295,7 +295,7 @@ final class LibraryModelTests: XCTestCase {
         guard case .recovered(let message) = store.health else {
             return XCTFail("health is \(store.health)")
         }
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         XCTAssertEqual(library.notice, message)
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Globe and speak.")
@@ -308,7 +308,7 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertNil(library.emptyMessage)
         XCTAssertEqual(library.notice, message)
 
-        let healthy = LibraryModel(store: memoryStore())
+        let healthy = makeLibrary(memoryStore())
         healthy.reload()
         XCTAssertNil(healthy.notice)
     }
@@ -325,7 +325,7 @@ final class LibraryModelTests: XCTestCase {
         let today = try XCTUnwrap(store.add(outcome("Run the tests again.", at: midnight.addingTimeInterval(1))))
         let pinned = try XCTUnwrap(store.add(outcome("Set up Tailscale.", at: midnight.addingTimeInterval(2))))
         store.setPinned(pinned, true)
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
 
         library.reload()
         XCTAssertEqual(library.rows.map(\.id), [pinned.id, today.id, older.id])
@@ -356,7 +356,7 @@ final class LibraryModelTests: XCTestCase {
         store.add(outcome("Today.", at: midnight.addingTimeInterval(1)))
         let pinned = try XCTUnwrap(store.add(outcome("Pinned.", at: midnight.addingTimeInterval(-2 * 86_400))))
         store.setPinned(pinned, true)
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.query = "today"
         library.reload()
 
@@ -384,7 +384,7 @@ final class LibraryModelTests: XCTestCase {
         let a = try XCTUnwrap(store.add(outcome("A.", at: base)))
         let b = try XCTUnwrap(store.add(outcome("B.", at: base.addingTimeInterval(60))))
         let c = try XCTUnwrap(store.add(outcome("C.", at: base.addingTimeInterval(120))))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.reload()
         XCTAssertEqual(library.selection, c.id)
 
@@ -404,7 +404,7 @@ final class LibraryModelTests: XCTestCase {
         library.moveSelection(by: -1)
         XCTAssertEqual(library.selection, a.id, "up from nothing: the last row")
 
-        let empty = LibraryModel(store: memoryStore())
+        let empty = makeLibrary(memoryStore())
         empty.reload()
         empty.moveSelection(by: 1)
         XCTAssertNil(empty.selection)
@@ -429,7 +429,7 @@ final class LibraryModelTests: XCTestCase {
         let store = memoryStore()
         let older = try XCTUnwrap(store.add(outcome("Book the service appointment.", at: base)))
         store.add(outcome("Run the tests again.", at: base.addingTimeInterval(60)))
-        let library = LibraryModel(store: store)
+        let library = makeLibrary(store)
         library.windowOpened()
         XCTAssertEqual(library.copyCommandText, "Run the tests again.")
 
@@ -500,6 +500,14 @@ final class LibraryModelTests: XCTestCase {
 
     private func when(_ date: Date, now: Date) -> String {
         LibraryModel.whenString(date, now: now, calendar: calendar, locale: enUS)
+    }
+
+    /// A library whose actions reach nothing real: no engines, a paster that
+    /// only records, and stand-in apps (Task 19 adds the actions).
+    @MainActor
+    private func makeLibrary(_ store: TranscriptStore) -> LibraryModel {
+        LibraryModel(store: store, service: TranscriptionService(engines: [], selected: .appleSpeech),
+                     paster: FakePaster(), system: FakeApps().system)
     }
 
     @MainActor

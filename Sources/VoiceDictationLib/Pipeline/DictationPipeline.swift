@@ -22,12 +22,16 @@ public protocol Recording: AnyObject {
 
 extension AudioRecorder: Recording {}
 
-/// Puts text into the frontmost app.
+/// Puts text into the frontmost app, or on the clipboard.
 public protocol Pasting {
     /// Puts `text` on the clipboard and pastes it into the frontmost app.
     /// Returns false when it could not paste; the text then stays on the
     /// clipboard.
     func paste(text: String) -> Bool
+    /// Puts `text` on the clipboard and leaves it there, pasting nothing:
+    /// the window's Copy, and a text that must not go to whatever app is in
+    /// front (Task 19).
+    func copy(text: String)
     /// The app a paste would go to.
     var frontmostAppName: String? { get }
 }
@@ -394,8 +398,9 @@ public final class DictationPipeline {
         if state != next { state = next }
     }
 
-    /// The words to show for a failure.
-    static func describe(_ error: Error) -> String {
+    /// The words to show for a failure; the window says a re-transcription's
+    /// failure in the same words.
+    public static func describe(_ error: Error) -> String {
         switch error {
         case TranscriptionError.modelNotReady(let reason), TranscriptionError.engineUnavailable(let reason),
              TranscriptionError.failed(let reason):

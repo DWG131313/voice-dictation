@@ -211,15 +211,21 @@ final class FakeRecorder: Recording {
     }
 }
 
-/// A paster that records what it was asked to paste instead of pasting it.
+/// A paster that records what it was asked to paste or copy instead of
+/// touching the clipboard.
 final class FakePaster: Pasting {
     /// False pastes nothing, as without Accessibility access.
     var succeeds = true
     var frontmostAppName: String? = "TextEdit"
     private(set) var pasted: [String] = []
+    private(set) var copied: [String] = []
 
     func paste(text: String) -> Bool {
         pasted.append(text)
         return succeeds
+    }
+
+    func copy(text: String) {
+        copied.append(text)
     }
 }

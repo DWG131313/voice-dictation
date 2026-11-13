@@ -38,8 +38,9 @@ public final class TranscriptStore {
     static let fileName = "transcripts.store"
 
     public private(set) var health: Health
-    /// Where recordings are kept; nil keeps none.
-    private let audio: AudioArchive?
+    /// Where recordings are kept; nil keeps none. The window plays and
+    /// re-transcribes a transcript's `audioFileName` from here (Task 19).
+    public let audio: AudioArchive?
     /// How many ordinary transcripts keep their recording (`PreferencesManager.keptRecordings`).
     private let keptRecordings: () -> Int
     /// Nil when the store is unavailable.
@@ -212,9 +213,14 @@ public final class TranscriptStore {
 
     /// A hand edit: makes `newText` the main text and marks the transcript
     /// edited. Empty or whitespace-only text, or the same text, changes
-    /// nothing. `rawText` and `cleanedText` are never touched.
+    /// nothing. `rawText` and `cleanedText` are never touched. The first edit
+    /// of a text no hand has touched sets that text aside first, by the rule
+    /// `revertToRaw` uses, so a promoted re-transcription Danny then edits is
+    /// kept (Ruling T19-2). Later edits set nothing aside: the window saves
+    /// them again and again as he types, and ⌘Z covers his mistakes.
     public func updateText(_ t: Transcript, _ newText: String) {
         guard !Self.isBlank(newText), newText != t.text else { return }
+        if !t.isEdited { setAsideUnlessKept(t) }
         t.text = newText
         t.isEdited = true
         save("an edit")
@@ -231,14 +237,46 @@ public final class TranscriptStore {
     /// later from a re-transcription.
     public func revertToRaw(_ t: Transcript) {
         guard !Self.isBlank(t.rawText) else { return }
-        if t.modelKey != t.rawModelKey || (t.text != t.rawText && t.text != t.cleanedText) {
-            setAsideMainText(of: t, promoting: nil)
-        }
+        setAsideUnlessKept(t)
         t.text = t.rawText
         t.modelKey = t.rawModelKey
         t.transcribeSeconds = t.rawTranscribeSeconds
         t.isEdited = false
         save("a revert to raw")
+    }
+
+    /// "Use cleaned" (Task 19): makes the cleaned text the main text, with
+    /// the dictation's own model and time, for a cleanup that came back after
+    /// the paste. The main text it replaces is set aside as in `revertToRaw`.
+    /// Without a cleaned text, or when it is blank or already the main text,
+    /// nothing changes.
+    public func useCleaned(_ t: Transcript) {
+        guard let cleaned = t.cleanedText, !Self.isBlank(cleaned), cleaned != t.text else { return }
+        setAsideUnlessKept(t)
+        t.text = cleaned
+        t.modelKey = t.rawModelKey
+        t.transcribeSeconds = t.rawTranscribeSeconds
+        t.isEdited = false
+        save("the cleaned text")
+    }
+
+    /// Sets the transcript's status. The window makes a failed dictation
+    /// Copied once a re-transcription has given it a text and put that on
+    /// the clipboard (Review Focus 1); its recording then prunes like any
+    /// other's (Ruling T12-1). `failure` stays: it says why the dictation
+    /// itself failed.
+    public func setStatus(_ t: Transcript, _ status: DictationOutcome.Status) {
+        guard t.status != status else { return }
+        t.statusRaw = status.rawValue
+        save("a status")
+    }
+
+    /// Sets the main text aside (`setAsideMainText`) unless the transcript
+    /// keeps it anyway, as the dictation's own `rawText` or `cleanedText`
+    /// under its own model.
+    private func setAsideUnlessKept(_ t: Transcript) {
+        guard t.modelKey != t.rawModelKey || (t.text != t.rawText && t.text != t.cleanedText) else { return }
+        setAsideMainText(of: t, promoting: nil)
     }
 
     /// Keeps the main text as a `wasMain` alternate, unless it is blank or

@@ -26,6 +26,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     private var _models: [ModelDescriptor]
     private var _result = "Hello there."
     private var _isHeld = false
+    private var _delay: TimeInterval = 0
     private var _unloadable: Set<ModelID> = []
     private var _calls: [Call] = []
 
@@ -47,6 +48,11 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         get { lock.withLock { _isHeld } }
         set { lock.withLock { _isHeld = newValue } }
     }
+    /// How long each `transcribe` takes once it is let go, in seconds.
+    var delay: TimeInterval {
+        get { lock.withLock { _delay } }
+        set { lock.withLock { _delay = newValue } }
+    }
     /// Models whose `prepare` fails.
     var unloadable: Set<ModelID> {
         get { lock.withLock { _unloadable } }
@@ -66,6 +72,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     func transcribe(_ clip: AudioClip, model: ModelID, vocabulary: [String]) async throws -> String {
         record(.transcribe(model))
         while isHeld { try await Task.sleep(nanoseconds: 2_000_000) }
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
         return result
     }
 
@@ -109,14 +116,53 @@ final class FakeRecorder: Recording {
     }
 }
 
-/// A paster that records what it was asked to paste instead of pasting it.
+/// A paster that records what it was asked to paste or copy instead of
+/// touching the clipboard.
 final class FakePaster: Pasting {
     var frontmostAppName: String? = "TextEdit"
+    /// False pastes nothing, as without Accessibility access.
+    var succeeds = true
     private(set) var pasted: [String] = []
+    private(set) var copied: [String] = []
 
     func paste(text: String) -> Bool {
         pasted.append(text)
-        return true
+        return succeeds
+    }
+
+    func copy(text: String) {
+        copied.append(text)
+    }
+}
+
+/// The apps Paste again sees, in place of macOS's: nothing is hidden or
+/// brought to the front. Process identifiers name the apps; this one is 1.
+@MainActor
+final class FakeApps {
+    static let thisApp: pid_t = 1
+
+    /// The app in front before this one; nil when there was none.
+    var previous: pid_t? = 42
+    var frontmost: pid_t? = FakeApps.thisApp
+    /// The app that comes to the front when this one hides; nil leaves the
+    /// front as it was, as a slow app would for a moment.
+    var frontmostAfterHide: pid_t? = 42
+    private(set) var hides = 0
+    private(set) var unhides = 0
+
+    var system: PasteAgainSystem {
+        PasteAgainSystem(
+            previousApp: { self.previous },
+            frontmostApp: { self.frontmost },
+            hide: {
+                self.hides += 1
+                if let next = self.frontmostAfterHide { self.frontmost = next }
+            },
+            unhide: {
+                self.unhides += 1
+                self.frontmost = FakeApps.thisApp
+            }
+        )
     }
 }
 

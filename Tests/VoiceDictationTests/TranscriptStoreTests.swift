@@ -196,6 +196,50 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(store.search("cafe", scope: .all), [], "search reads the main text only")
     }
 
+    /// Ruling T19-2: the first edit of a promoted re-transcription keeps that
+    /// text as an alternate; the edits after it, as the autosave repeats
+    /// while Danny types, set nothing more aside.
+    @MainActor
+    func testFirstEditSetsAsideTheMachineTextOnce() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("Hello there.", model: .appleSpeech, transcribeSeconds: 0.2)))
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Hello, there.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first), in: transcript)
+        XCTAssertEqual(transcript.alternates.map(\.text), ["Hello there."])
+
+        store.updateText(transcript, "Hello, there, Danny")
+        store.updateText(transcript, "Hello, there, Danny.")
+        store.updateText(transcript, "Hello there, Danny.")
+
+        XCTAssertEqual(transcript.text, "Hello there, Danny.")
+        XCTAssertTrue(transcript.isEdited)
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello, there."])
+        let promoted = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello, there." })
+        XCTAssertTrue(promoted.wasMain)
+        XCTAssertEqual(promoted.modelKey, "whisperKit/base.en")
+        XCTAssertEqual(promoted.seconds, 0.5)
+        XCTAssertEqual(try alternatesStored(in: store), 2)
+    }
+
+    /// An edit of the dictation's own raw or cleaned text sets nothing aside:
+    /// the transcript keeps both. A pasted text of other wording is kept.
+    @MainActor
+    func testEditingTheDictationsOwnTextSetsNothingAside() throws {
+        let store = memoryStore()
+        let cleaned = try XCTUnwrap(store.add(outcome("Hello there.", rawText: "um hello there", cleanedText: "Hello there.")))
+        store.updateText(cleaned, "Hello there, Danny.")
+        XCTAssertTrue(cleaned.alternates.isEmpty)
+
+        let raw = try XCTUnwrap(store.add(outcome("hello there")))
+        store.updateText(raw, "Hello there.")
+        XCTAssertTrue(raw.alternates.isEmpty)
+
+        let replaced = try XCTUnwrap(store.add(outcome("Ship the GV70.", rawText: "ship the gv seventy")))
+        store.updateText(replaced, "Ship the GV70 today.")
+        XCTAssertEqual(replaced.alternates.map(\.text), ["Ship the GV70."])
+        XCTAssertEqual(replaced.alternates.map(\.wasMain), [true])
+    }
+
     @MainActor
     func testRevertToRaw() throws {
         let store = memoryStore()
@@ -380,15 +424,16 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(previous.modelKey, "appleSpeech/en-US")
         XCTAssertEqual(previous.seconds, 0.2)
 
-        // A hand edit that another result replaces is kept as "edited".
+        // A hand edit that another result replaces is kept as "edited". The
+        // edit itself set aside the base.en text it changed (Ruling T19-2).
         store.updateText(transcript, "Hello, there, Danny.")
         store.promote(previous, in: transcript)
 
         XCTAssertEqual(transcript.text, "Hello there.")
         XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US")
         XCTAssertFalse(transcript.isEdited)
-        XCTAssertEqual(transcript.alternates.map(\.modelKey), ["edited"])
-        XCTAssertEqual(transcript.alternates.map(\.text), ["Hello, there, Danny."])
+        let byModel = Dictionary(uniqueKeysWithValues: transcript.alternates.map { ($0.modelKey, $0.text) })
+        XCTAssertEqual(byModel, ["edited": "Hello, there, Danny.", "whisperKit/base.en": "Hello, there."])
     }
 
     /// Danny's hand edit, set aside by a promote, is still his edit when it
@@ -414,7 +459,9 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertNotNil(ModelID(storageKey: transcript.modelKey))
         XCTAssertEqual(transcript.transcribeSeconds, 0.5)
         XCTAssertEqual(transcript.rawModelKey, "appleSpeech/en-US")
-        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello there!"], "nothing is lost")
+        // The first edit set aside the base.en text it changed (Ruling T19-2).
+        XCTAssertEqual(Set(transcript.alternates.map(\.text)), ["Hello there.", "Hello, there.", "Hello there!"],
+                       "nothing is lost")
         let replaced = try XCTUnwrap(transcript.alternates.first { $0.text == "Hello there!" })
         XCTAssertEqual(replaced.modelKey, "whisperKit/small.en")
         XCTAssertEqual(replaced.seconds, 0.9)
@@ -484,6 +531,63 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(try alternatesStored(in: store), 2)
     }
 
+    // MARK: - Status and Use cleaned (Task 19)
+
+    /// Review Focus 1: a failed dictation that a re-transcription gave text is
+    /// Copied, and its recording then prunes like any other (Ruling T12-1).
+    @MainActor
+    func testSetStatusMakesAFailedTranscriptCopiedAndItsRecordingPrunable() throws {
+        let directory = try makeDirectory()
+        let archive = AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true))
+        let store = TranscriptStore(directory: directory, inMemory: true, audio: archive, keptRecordings: { 1 })
+        let failed = try XCTUnwrap(store.add(failedOutcome(at: base)))
+        store.add(outcome("Newer.", at: base.addingTimeInterval(60)))
+        store.add(outcome("Newer still.", at: base.addingTimeInterval(120)))
+        XCTAssertNotNil(failed.audioFileName, "a failed dictation keeps its recording")
+
+        store.addAlternate(to: failed, TranscriptionResult(text: "Hello there.", model: .appleSpeech, elapsed: 0.3))
+        store.promote(try XCTUnwrap(failed.alternates.first), in: failed)
+        store.setStatus(failed, .copied)
+
+        XCTAssertEqual(failed.status, .copied)
+        XCTAssertEqual(failed.statusRaw, "copied")
+        store.add(outcome("Newest.", at: base.addingTimeInterval(180)))
+        XCTAssertNil(failed.audioFileName, "now an ordinary transcript, it prunes")
+        XCTAssertEqual(archive.fileNames().count, 1)
+    }
+
+    /// "Use cleaned": a cleanup that arrived after the paste becomes the main
+    /// text, with the dictation's own model and time. The raw text it
+    /// replaces stays on the transcript, so nothing is set aside; another
+    /// model's text is, as in `revertToRaw`.
+    @MainActor
+    func testUseCleanedMakesTheCleanedTextTheMainText() throws {
+        let store = memoryStore()
+        let transcript = try XCTUnwrap(store.add(outcome("um so ship it", model: .appleSpeech, transcribeSeconds: 0.2)))
+        store.useCleaned(transcript)
+        XCTAssertEqual(transcript.text, "um so ship it", "nothing to use without a cleaned text")
+        transcript.cleanedText = "So ship it."
+
+        store.useCleaned(transcript)
+
+        XCTAssertEqual(transcript.text, "So ship it.")
+        XCTAssertFalse(transcript.isEdited)
+        XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US")
+        XCTAssertEqual(transcript.rawText, "um so ship it")
+        XCTAssertTrue(transcript.alternates.isEmpty)
+
+        store.addAlternate(to: transcript, TranscriptionResult(text: "Um, so, ship it.", model: whisperBase, elapsed: 0.5))
+        store.promote(try XCTUnwrap(transcript.alternates.first { !$0.wasMain }), in: transcript)
+        store.useCleaned(transcript)
+
+        XCTAssertEqual(transcript.text, "So ship it.")
+        XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US")
+        XCTAssertEqual(transcript.transcribeSeconds, 0.2)
+        let replaced = try XCTUnwrap(transcript.alternates.first { $0.text == "Um, so, ship it." }, "kept")
+        XCTAssertTrue(replaced.wasMain)
+        XCTAssertEqual(replaced.modelKey, "whisperKit/base.en")
+    }
+
     @MainActor
     func testDeleteRemovesTheTranscriptAndItsAlternates() throws {
         let store = memoryStore()
@@ -542,7 +646,8 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(edited.text, "Edited by hand.")
         XCTAssertTrue(edited.isEdited)
         XCTAssertTrue(edited.pinned)
-        XCTAssertEqual(edited.alternates.map(\.text), ["Edited!"])
+        // The pasted text the first edit replaced is kept too (Ruling T19-2).
+        XCTAssertEqual(Set(edited.alternates.map(\.text)), ["Edited.", "Edited!"])
         XCTAssertEqual(reverted.text, "reverted")
         XCTAssertFalse(reverted.isEdited)
         XCTAssertEqual(promoted.text, "Promoted!")

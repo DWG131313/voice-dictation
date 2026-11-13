@@ -3,16 +3,21 @@ import SwiftUI
 import VoiceDictationLib
 
 /// The right column, from mockup D: the selected transcript's title (app and
-/// time, the screen's one Jost title), its status word, four facts, and its
-/// text, which can be selected. Empty while nothing is selected.
+/// time, the screen's one Jost title), its status word, four facts, its text,
+/// which Danny can edit, the actions under it, and the comparison when it has
+/// other versions. Empty while nothing is selected.
 struct TranscriptDetail: View {
     let library: LibraryModel
-    /// As `AppModel.models` lists them, to name the transcript's model.
+    /// As `AppModel.models` lists them, to name the transcript's model and
+    /// offer the others for re-transcription.
     let models: [ModelDescriptor]
 
     /// The transcript text's size and line height (mockup D: 16 pt, 1.65).
     static let textSize: CGFloat = 16
     static let lineHeight: CGFloat = 1.65
+    /// The text keeps room for about three lines, however much the
+    /// comparison below it takes.
+    static let minimumTextHeight: CGFloat = 80
 
     var body: some View {
         if let transcript = library.selectedTranscript {
@@ -28,19 +33,42 @@ struct TranscriptDetail: View {
         return VStack(alignment: .leading, spacing: 0) {
             header(t)
             facts(t)
-            if shown.isReason {
-                // A failed dictation has no text: why it failed, muted.
-                Text(shown.text)
-                    .font(Theme.Font.ui(Self.textSize))
-                    .foregroundStyle(Theme.Color.textMuted)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                TranscriptText(id: t.id, text: shown.text, library: library)
+            // The text's only frame: no border around it.
+            Hairline()
+            Group {
+                if shown.isReason {
+                    // A failed dictation has no text: why it failed, muted.
+                    Text(shown.text)
+                        .font(Theme.Font.ui(Self.textSize))
+                        .foregroundStyle(Theme.Color.textMuted)
+                } else {
+                    TranscriptText(transcript: t, text: library.shownText(t), library: library)
+                }
+            }
+            .padding(.top, Theme.Space.md)
+            .frame(maxWidth: .infinity, minHeight: Self.minimumTextHeight, maxHeight: .infinity, alignment: .topLeading)
+            DetailActions(library: library, transcript: t, models: models)
+                .padding(.top, Theme.Space.md)
+            if !t.alternates.isEmpty {
+                ComparisonView(library: library, transcript: t, models: models)
+                    .padding(.top, Theme.Space.lg)
             }
         }
         .padding(.horizontal, Theme.Space.lg + Theme.Space.xs)
         .padding(.vertical, Theme.Space.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .confirmationDialog("Delete this pinned transcript?", isPresented: deletionAsked(t), titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { library.delete(t, confirmed: true) }
+            Button("Cancel", role: .cancel) { library.cancelDeletion() }
+        } message: {
+            Text("Its recording and its other versions are deleted with it.")
+        }
+    }
+
+    /// Whether Danny is being asked to confirm deleting `t`, a pinned transcript.
+    private func deletionAsked(_ t: Transcript) -> Binding<Bool> {
+        Binding(get: { library.deletionToConfirm == t.id },
+                set: { if !$0 { library.cancelDeletion() } })
     }
 
     /// The title, and the status in a word on the right.
@@ -83,13 +111,146 @@ struct TranscriptDetail: View {
     }
 }
 
-/// `TranscriptTextView` in a scroll view of its own, for SwiftUI. It reports
-/// its text selection to the library, so ⌘C in the list copies the selected
-/// words too (Ruling T18-3).
+/// The actions under the text, from mockup D with Delete added: Copy, Paste
+/// again, Play audio, Re-transcribe with…, Pin and Delete, then Revert to raw
+/// for an edit and Use cleaned for a cleanup that came late. They wrap onto
+/// another line in a narrow column. Under them, in muted words: why Play and
+/// Re-transcribe are unavailable, what is being re-transcribed, and what the
+/// last action has to say.
+private struct DetailActions: View {
+    let library: LibraryModel
+    let transcript: Transcript
+    let models: [ModelDescriptor]
+
+    var body: some View {
+        let t = transcript
+        let hasText = !t.text.isEmpty
+        let audioGone = LibraryModel.audioUnavailableReason(t)
+        let choices = LibraryModel.retranscribeChoices(t, models: models)
+        let running = library.retranscribing
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            FlowLayout(spacing: Theme.Space.sm) {
+                Button("Copy") { library.copy(t) }
+                    .prismPrimaryButton()
+                    .unavailable(!hasText)
+                Button("Paste again") { Task { await library.pasteAgain(t) } }
+                    .prismSecondaryButton()
+                    .unavailable(!hasText)
+                Button(library.isPlaying(t) ? "Stop" : "Play audio") { library.togglePlay(t) }
+                    .prismSecondaryButton()
+                    .unavailable(audioGone != nil)
+                Menu {
+                    ForEach(choices) { model in
+                        Button(model.displayName) { Task { await library.retranscribe(t, with: model.id) } }
+                            .disabled(running.contains(model.id))
+                    }
+                } label: {
+                    Text("Re-transcribe with…")
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .prismSecondaryButton()
+                .unavailable(choices.isEmpty)
+                .help(choices.isEmpty ? audioGone ?? "No other model is ready" : "Transcribe the recording again")
+                .accessibilityLabel("Re-transcribe with…")
+                Button(t.pinned ? "Unpin" : "Pin") { library.togglePin(t) }
+                    .prismSecondaryButton()
+                Button("Delete") { library.delete(t) }
+                    .prismSecondaryButton()
+                if LibraryModel.offersRevertToRaw(t) {
+                    Button("Revert to raw") { library.revertToRaw(t) }
+                        .prismSecondaryButton()
+                }
+                if LibraryModel.offersUseCleaned(t) {
+                    Button("Use cleaned") { library.useCleaned(t) }
+                        .prismSecondaryButton()
+                }
+            }
+            ForEach(notes(audioGone: audioGone, running: running), id: \.self) { note in
+                Text(note)
+                    .font(Theme.Font.ui(12))
+                    .foregroundStyle(Theme.Color.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// The muted lines under the actions.
+    private func notes(audioGone: String?, running: Set<ModelID>) -> [String] {
+        var notes: [String] = []
+        if let audioGone { notes.append(audioGone) }
+        if !running.isEmpty {
+            let names = running.map { LibraryModel.modelName($0.storageKey, in: models) }.sorted()
+            notes.append("Re-transcribing with \(ListFormatter.localizedString(byJoining: names))…")
+        }
+        if let message = library.message(for: transcript) { notes.append(message) }
+        return notes
+    }
+}
+
+private extension View {
+    /// An action that cannot be used now: disabled and dimmed as a whole,
+    /// outline included, with no colour.
+    func unavailable(_ isUnavailable: Bool) -> some View {
+        disabled(isUnavailable)
+            .opacity(isUnavailable ? 0.4 : 1)
+    }
+}
+
+/// Lays its views out left to right, starting a new line when the next one
+/// would not fit, as mockup D's actions wrap.
+private struct FlowLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let lines = Self.lines(of: sizes, width: proposal.width ?? .infinity, spacing: spacing)
+        let height = lines.map(\.height).reduce(0, +) + spacing * CGFloat(max(0, lines.count - 1))
+        return CGSize(width: proposal.width ?? lines.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        var index = 0
+        var y = bounds.minY
+        for line in Self.lines(of: sizes, width: bounds.width, spacing: spacing) {
+            var x = bounds.minX
+            for _ in 0..<line.count {
+                let size = sizes[index]
+                // Centred on the line, as the primary and secondary buttons differ a little in height.
+                subviews[index].place(at: CGPoint(x: x, y: y + (line.height - size.height) / 2),
+                                      proposal: ProposedViewSize(size))
+                x += size.width + spacing
+                index += 1
+            }
+            y += line.height + spacing
+        }
+    }
+
+    /// The views each line holds, and the line's width and height.
+    private static func lines(of sizes: [CGSize], width: CGFloat,
+                              spacing: CGFloat) -> [(count: Int, width: CGFloat, height: CGFloat)] {
+        var lines: [(count: Int, width: CGFloat, height: CGFloat)] = []
+        for size in sizes {
+            if let last = lines.last, last.width + spacing + size.width <= width {
+                lines[lines.count - 1] = (last.count + 1, last.width + spacing + size.width, max(last.height, size.height))
+            } else {
+                lines.append((1, size.width, size.height))
+            }
+        }
+        return lines
+    }
+}
+
+/// `TranscriptTextView` in a scroll view of its own, for SwiftUI: the
+/// transcript's text, which Danny can edit. Each change goes to
+/// `LibraryModel.edit`, which saves it shortly after typing stops; the edit
+/// ends at once when the text view stops being edited. It reports its text
+/// selection to the library, so ⌘C in the list copies the selected words too
+/// (Ruling T18-3).
 struct TranscriptText: NSViewRepresentable {
-    /// Whose text it is: showing another transcript clears the selection and
-    /// scrolls to the top, even when the words are the same.
-    let id: Transcript.ID
+    let transcript: Transcript
+    /// What it shows: the edit being typed, or else the main text.
     let text: String
     let library: LibraryModel
 
@@ -97,14 +258,25 @@ struct TranscriptText: NSViewRepresentable {
         Coordinator(library: library)
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    /// The text view: editable, in Prism's face (Work Sans 16, lines 1.65
+    /// apart), with no border, no spelling marks (the spectrum is the only
+    /// colour on the screen) and ⌘Z.
+    static func makeTextView() -> TranscriptTextView {
         let textView = TranscriptTextView(frame: .zero)
-        textView.isEditable = false
+        textView.isEditable = true
         textView.isSelectable = true
         textView.isRichText = false
+        textView.allowsUndo = true
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
         textView.drawsBackground = false
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
+        // What new text is typed in, also once every character is gone.
+        textView.font = Theme.Font.uiFace(TranscriptDetail.textSize) as NSFont
+        textView.textColor = NSColor(Theme.Color.text)
+        textView.defaultParagraphStyle = TranscriptTextView.paragraphStyle
+        textView.typingAttributes = TranscriptTextView.textAttributes
         // Apple's recipe for a text view that wraps to its scroll view's width.
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -114,6 +286,11 @@ struct TranscriptText: NSViewRepresentable {
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         textView.setAccessibilityLabel("Transcript text")
+        return textView
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = Self.makeTextView()
         textView.delegate = context.coordinator
 
         let scrollView = NSScrollView()
@@ -126,32 +303,25 @@ struct TranscriptText: NSViewRepresentable {
         return scrollView
     }
 
+    /// Puts the text in when another transcript is shown, or when the text
+    /// changed other than by typing (an empty edit restored, Use this one,
+    /// Revert to raw). While Danny types, the text is already what he typed.
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.library = library
-        guard let textView = scrollView.documentView as? TranscriptTextView,
-              context.coordinator.shown != id || textView.string != text else { return }
-        context.coordinator.shown = id
-        textView.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: Self.attributes))
-        textView.setSelectedRange(NSRange(location: 0, length: 0))
-        textView.scroll(.zero)
-    }
-
-    /// Work Sans 16 in the text colour, 1.65 lines apart.
-    private static var attributes: [NSAttributedString.Key: Any] {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = TranscriptDetail.textSize * TranscriptDetail.lineHeight
-        paragraph.maximumLineHeight = TranscriptDetail.textSize * TranscriptDetail.lineHeight
-        return [
-            .font: Theme.Font.uiFace(TranscriptDetail.textSize) as NSFont,
-            .foregroundColor: NSColor(Theme.Color.text),
-            .paragraphStyle: paragraph,
-        ]
+        let coordinator = context.coordinator
+        coordinator.library = library
+        coordinator.transcript = transcript
+        guard let textView = scrollView.documentView as? TranscriptTextView else { return }
+        let isAnotherTranscript = coordinator.shown != transcript.id
+        guard isAnotherTranscript || textView.string != text else { return }
+        coordinator.shown = transcript.id
+        textView.show(text, fromTheTop: isAnotherTranscript)
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var library: LibraryModel
         /// The transcript whose text the view holds.
+        var transcript: Transcript?
         var shown: Transcript.ID?
 
         init(library: LibraryModel) {
@@ -162,16 +332,41 @@ struct TranscriptText: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             library.textSelection = textView.selectedRange()
         }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView, let transcript else { return }
+            library.edit(transcript, text: textView.string)
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            library.commitEdit()
+        }
     }
 }
 
-/// The transcript's text: selectable, not editable (Task 19 makes it
-/// editable). ⌘C copies the selected words as plain text, or the whole
-/// transcript when none are selected, so Copy works with nothing selected
-/// and never takes the place of a selection (Ruling T18-3).
+/// The transcript's text, editable. ⌘C copies the selected words as plain
+/// text, or the whole transcript when none are selected, so Copy works with
+/// nothing selected and never takes the place of a selection (Ruling T18-3).
 final class TranscriptTextView: NSTextView {
     /// Where ⌘C puts the text; tests pass their own.
     var pasteboard: NSPasteboard = .general
+
+    /// Work Sans 16 lines, 1.65 apart.
+    static var paragraphStyle: NSParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = TranscriptDetail.textSize * TranscriptDetail.lineHeight
+        paragraph.maximumLineHeight = TranscriptDetail.textSize * TranscriptDetail.lineHeight
+        return paragraph
+    }
+
+    /// Work Sans 16 in the text colour, 1.65 lines apart.
+    static var textAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: Theme.Font.uiFace(TranscriptDetail.textSize) as NSFont,
+            .foregroundColor: NSColor(Theme.Color.text),
+            .paragraphStyle: paragraphStyle,
+        ]
+    }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
@@ -196,6 +391,17 @@ final class TranscriptTextView: NSTextView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not used")
+    }
+
+    /// Shows `text` in place of what is there: from the top for another
+    /// transcript, otherwise with the caret at the end. ⌘Z undoes typing in
+    /// the text it was typed in only, so its undo starts afresh.
+    func show(_ text: String, fromTheTop: Bool) {
+        breakUndoCoalescing()
+        textStorage?.setAttributedString(NSAttributedString(string: text, attributes: Self.textAttributes))
+        undoManager?.removeAllActions()
+        setSelectedRange(NSRange(location: fromTheTop ? 0 : (text as NSString).length, length: 0))
+        if fromTheTop { scroll(.zero) }
     }
 
     /// What ⌘C copies now; nil when there is no text.

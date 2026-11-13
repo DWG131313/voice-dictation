@@ -82,15 +82,19 @@ public final class AppModel {
     /// and preferences kept in memory.
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
          preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
-         onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil) {
+         onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil,
+         pasteAgain: PasteAgainSystem? = nil) {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
         Fonts.registerAll()
         self.service = service
+        // Task 22 adds the vocabulary, for dictation and re-transcription alike.
+        let vocabulary: () -> [String] = { [] }
         // Tasks 21 and 22 add the cleaner and the replacements.
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
-                                          cleaner: nil, replacements: { [] }, vocabulary: { [] })
+                                          cleaner: nil, replacements: { [] }, vocabulary: vocabulary)
         self.store = store
-        self.library = LibraryModel(store: store)
+        self.library = LibraryModel(store: store, service: service, paster: paster, vocabulary: vocabulary,
+                                    system: pasteAgain ?? .live())
         self.permissions = PermissionManager()
         // Tests pass a fake: the live one reads the real HIToolbox settings.
         self.onboardingSystem = onboardingSystem ?? .live(permissions: permissions)

@@ -135,6 +135,23 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.store.search("", scope: .all).count, 1, "kept once")
     }
 
+    /// The window's actions use the app's own parts: Copy goes through the
+    /// paster dictation uses (a fake here, never the clipboard).
+    @MainActor
+    func testTheLibraryCopiesThroughTheAppsPaster() async throws {
+        let model = makeModel([appleEngine()])
+        model.library.windowOpened()
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the transcript is listed") { !model.library.rows.isEmpty }
+        let transcript = try XCTUnwrap(model.library.rows.first)
+
+        model.library.copy(transcript)
+
+        XCTAssertEqual(paster.copied, ["Hello there."])
+        XCTAssertEqual(paster.pasted, ["Hello there."], "only the dictation itself was pasted")
+    }
+
     @MainActor
     func testADictationMadeWithTheWindowClosedIsListedWhenItOpens() async throws {
         let model = makeModel([appleEngine()])
@@ -301,7 +318,8 @@ final class AppModelTests: XCTestCase {
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences,
                  comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
-                 dataDirectory: directory, onboardingSystem: system, indicator: indicator)
+                 dataDirectory: directory, onboardingSystem: system, indicator: indicator,
+                 pasteAgain: FakeApps().system)
     }
 
     /// Whether `line` strays from the centre anywhere a moment from now.

@@ -46,6 +46,25 @@ final class PasteEngineTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "dictated text", "the old clipboard came back over the text")
     }
 
+    /// Copy (Task 19) puts the text on the clipboard and leaves it there: no
+    /// Cmd+V, and the old clipboard does not come back over it. The engine is
+    /// not trusted, so even a paste by mistake could post no keystroke.
+    func testCopyLeavesTheTextOnTheClipboard() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("vd-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("copied earlier", forType: .string)
+        let engine = PasteEngine(pasteboard: pasteboard, isTrusted: { false }, restoreDelay: 0.05)
+
+        engine.copy(text: "transcript text")
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript text")
+
+        let pastRestoreDelay = expectation(description: "past the restore delay")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { pastRestoreDelay.fulfill() }
+        wait(for: [pastRestoreDelay], timeout: 2)
+        XCTAssertEqual(pasteboard.string(forType: .string), "transcript text", "the old clipboard came back over the text")
+    }
+
     /// The Cmd+V the engine posts carries `PasteEngine.eventTag`, so the
     /// hotkey's event tap can tell the app's own paste from a key the user
     /// pressed. The events are only made here, never posted.

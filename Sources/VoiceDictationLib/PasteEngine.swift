@@ -58,6 +58,13 @@ public class PasteEngine: Pasting {
         return true
     }
 
+    /// Puts `text` on the clipboard and leaves it there: no Cmd+V, and
+    /// nothing is put back afterwards.
+    public func copy(text: String) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     // MARK: - Clipboard snapshot
 
     public struct Snapshot {

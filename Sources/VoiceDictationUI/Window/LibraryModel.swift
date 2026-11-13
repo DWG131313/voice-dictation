@@ -1,12 +1,17 @@
+import AppKit
 import Foundation
 import Observation
+import SwiftData
 import VoiceDictationLib
 
 /// The main window's transcripts: the section and search showing, the rows
 /// they list (newest first), the one selected, and the sidebar's counts.
 /// `AppModel` tells it about each transcript it keeps (`noteNewTranscript`),
-/// so the list is current whether or not the window is open. The static
-/// helpers say what a row and the detail show. Use from the main thread.
+/// so the list is current whether or not the window is open. It also does
+/// what the detail's actions ask (Task 19): editing with autosave, Copy,
+/// Paste again, Pin, Delete, Play audio, Re-transcribe with… and "Use this
+/// one". The static helpers say what a row and the detail show. Use from the
+/// main thread.
 @MainActor @Observable
 public final class LibraryModel {
     /// The sidebar's sections. The first three list transcripts. Models,
@@ -51,25 +56,72 @@ public final class LibraryModel {
     public var query = "" {
         didSet { if query != oldValue { listRows() } }
     }
-    /// The transcript the detail shows.
+    /// The transcript the detail shows. Choosing another saves the edit being
+    /// typed and stops the recording playing.
     public var selection: Transcript.ID? {
-        didSet { if selection != oldValue { textSelection = nil } }
+        didSet {
+            guard selection != oldValue else { return }
+            textSelection = nil
+            commitEdit()
+            player.stop()
+            if let message, message.transcript == oldValue { self.message = nil }
+        }
     }
     /// The section's transcripts that match the search, newest first. The
     /// setup sections leave them as the last transcript section listed them.
     public private(set) var rows: [Transcript] = []
     /// How many transcripts each transcript section holds, search aside.
     private var counts: [Section: Int] = [:]
+    /// The pinned transcript whose deletion waits for Danny's yes.
+    public private(set) var deletionToConfirm: Transcript.ID?
+    /// Danny's text for a transcript as he types it, until it is saved.
+    private var draft: Draft?
+    /// The models re-transcribing each transcript now.
+    private var running: [Transcript.ID: Set<ModelID>] = [:]
+    /// The words the latest action left for Danny, and the transcript they
+    /// are about.
+    private var message: (transcript: Transcript.ID, text: String)?
+    /// Plays one transcript's recording at a time.
+    let player = AudioPlayer()
 
     /// The part of the detail's text that is selected, as its text view last
     /// reported it (Ruling T18-3). Only ⌘C reads it, so no view watches it.
     @ObservationIgnored var textSelection: NSRange?
+    /// How long Paste again waits for the previous app to come back to the
+    /// front before it copies instead (Ruling T19-3). Tests shorten it.
+    @ObservationIgnored var pasteAgainWaitLimit: TimeInterval = 1
     @ObservationIgnored private let store: TranscriptStore
     /// Whether the window is open. While it is not, nobody sees the rows.
     @ObservationIgnored private var isWindowOpen = false
+    /// The re-transcription lane, which yields to dictations.
+    @ObservationIgnored private let service: TranscriptionService
+    /// The paster dictation uses: Paste again's tagged Cmd+V, and Copy.
+    @ObservationIgnored private let paster: Pasting
+    /// The words the engines should favour, as dictation passes them.
+    @ObservationIgnored private let vocabulary: () -> [String]
+    /// Which apps are in front, and hiding this one, for Paste again.
+    @ObservationIgnored private let system: PasteAgainSystem
+    /// How long after the last keystroke an edit saves itself.
+    @ObservationIgnored private let editSaveDelay: Duration
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
 
-    public init(store: TranscriptStore) {
+    /// An edit being typed, not yet saved.
+    private struct Draft {
+        let transcript: Transcript
+        var text: String
+    }
+
+    /// `editSaveDelay` is the autosave's wait, about half a second; tests
+    /// pass their own.
+    init(store: TranscriptStore, service: TranscriptionService, paster: Pasting,
+         vocabulary: @escaping () -> [String] = { [] }, system: PasteAgainSystem,
+         editSaveDelay: Duration = .milliseconds(500)) {
         self.store = store
+        self.service = service
+        self.paster = paster
+        self.vocabulary = vocabulary
+        self.system = system
+        self.editSaveDelay = editSaveDelay
     }
 
     // MARK: - Listing
@@ -85,9 +137,12 @@ public final class LibraryModel {
     }
 
     /// The window has closed: dictations are no longer listed or counted
-    /// until it opens again, which does both.
+    /// until it opens again, which does both. The edit being typed is saved,
+    /// and the recording playing stops.
     public func windowClosed() {
         isWindowOpen = false
+        commitEdit()
+        player.stop()
     }
 
     /// Lists the rows and counts again, as when the window opens.
@@ -119,6 +174,18 @@ public final class LibraryModel {
         guard !keepingSelection else { return }
         if let selection, rows.contains(where: { $0.id == selection }) { return }
         selection = rows.first?.id
+    }
+
+    /// Lists the rows and counts again after an action that may take `id`
+    /// out of the list: a deletion, or unpinning on Pinned. If it was
+    /// selected, the row that takes its place is: the next one down, or else
+    /// the one above.
+    private func relist(afterRemoving id: Transcript.ID) {
+        let before = rows.map(\.id)
+        listRows(keepingSelection: true)
+        countTranscripts()
+        guard selection == id, !rows.contains(where: { $0.id == id }) else { return }
+        selection = Self.neighbour(of: id, before: before, after: rows.map(\.id))
     }
 
     private func countTranscripts() {
@@ -156,6 +223,258 @@ public final class LibraryModel {
             return
         }
         self.selection = rows[min(max(index + step, 0), rows.count - 1)].id
+    }
+
+    // MARK: - Editing
+
+    /// Danny's text for `t`, as he types it. It saves itself through
+    /// `store.updateText`, which marks it Edited, `editSaveDelay` after the
+    /// last change, and at once when the edit ends (`commitEdit`).
+    public func edit(_ t: Transcript, text: String) {
+        if let draft, draft.transcript.id != t.id { commitEdit() }
+        draft = Draft(transcript: t, text: text)
+        saveTask?.cancel()
+        let delay = editSaveDelay
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.saveDraft()
+        }
+    }
+
+    /// The text the detail shows for `t`: the edit being typed, or else its
+    /// main text.
+    func shownText(_ t: Transcript) -> String {
+        if let draft, draft.transcript.id == t.id { return draft.text }
+        return t.text
+    }
+
+    /// Ends the edit being typed, as the selection changes, the window
+    /// closes, the text stops being edited, or another action needs the
+    /// text: saves it, or drops an empty one, which cannot be saved, so the
+    /// previous text shows again.
+    public func commitEdit() {
+        saveTask?.cancel()
+        saveTask = nil
+        guard let draft else { return }
+        self.draft = nil
+        if !Self.isBlank(draft.text) { store.updateText(draft.transcript, draft.text) }
+    }
+
+    /// Ends the edit being typed in `t`, before an action on `t` reads or
+    /// replaces its text. An edit of another transcript goes on: a
+    /// re-transcription can finish while Danny types elsewhere.
+    private func commitEdit(of t: Transcript) {
+        if draft?.transcript.id == t.id { commitEdit() }
+    }
+
+    /// The autosave: as `commitEdit`, except that an empty text stays on
+    /// show, since Danny may be about to type over it.
+    private func saveDraft() {
+        guard let draft, !Self.isBlank(draft.text) else { return }
+        self.draft = nil
+        store.updateText(draft.transcript, draft.text)
+    }
+
+    // MARK: - Actions
+
+    /// Copy: the transcript's text on the clipboard.
+    public func copy(_ t: Transcript) {
+        commitEdit(of: t)
+        guard !t.text.isEmpty else { return }
+        paster.copy(text: t.text)
+    }
+
+    /// Paste again, into the app that was in front before this one and only
+    /// there (Ruling T19-3). The window hides, so that app comes back to the
+    /// front, and the text pastes once it is there. If it is not back within
+    /// `pasteAgainWaitLimit`, the text goes on the clipboard instead and the
+    /// window comes back to say so. With no such app, the window stays and
+    /// the text is copied. Without Accessibility nothing can paste, and the
+    /// text is left on the clipboard.
+    public func pasteAgain(_ t: Transcript) async {
+        commitEdit(of: t)
+        let text = t.text
+        let id = t.id
+        guard !text.isEmpty else { return }
+        clearMessage(for: id)
+        let target = system.previousApp()
+        if target != nil { system.hide() }
+        let start = ContinuousClock.now
+        while true {
+            let waited = Self.seconds(start.duration(to: .now))
+            var step = Self.pasteAgainStep(target: target, frontmost: system.frontmostApp(), waited: waited,
+                                           limit: pasteAgainWaitLimit)
+            if step == .wait, (try? await Task.sleep(for: .milliseconds(20))) == nil { step = .copyInstead }
+            switch step {
+            case .wait:
+                continue
+            case .paste:
+                if !paster.paste(text: text) { show(Self.copiedMessage, for: id) }
+            case .copyInstead:
+                paster.copy(text: text)
+                show(Self.copiedMessage, for: id)
+                if target != nil { system.unhide() }
+            }
+            return
+        }
+    }
+
+    /// Pin or unpin. Unpinned on Pinned, it leaves the list.
+    public func togglePin(_ t: Transcript) {
+        store.setPinned(t, !t.pinned)
+        relist(afterRemoving: t.id)
+    }
+
+    /// Delete. An unpinned transcript goes at once; a pinned one waits for
+    /// Danny's yes (`deletionToConfirm`) and goes when asked again with
+    /// `confirmed`. Its edit and its playback go with it.
+    public func delete(_ t: Transcript, confirmed: Bool = false) {
+        guard confirmed || !t.pinned else {
+            deletionToConfirm = t.id
+            return
+        }
+        deletionToConfirm = nil
+        if draft?.transcript.id == t.id {
+            saveTask?.cancel()
+            draft = nil
+        }
+        if isPlaying(t) { player.stop() }
+        let id = t.id
+        store.delete(t)
+        clearMessage(for: id)
+        relist(afterRemoving: id)
+    }
+
+    /// Danny kept the pinned transcript.
+    public func cancelDeletion() {
+        deletionToConfirm = nil
+    }
+
+    /// "Use this one": the alternate becomes the main text. The store deletes
+    /// the alternate, so `t.alternates` must be read again afterwards (Task
+    /// 11). A failed transcript that gets its text this way has it put on the
+    /// clipboard and becomes Copied (Review Focus 1).
+    public func promote(_ alternate: AlternateResult, in t: Transcript) {
+        commitEdit(of: t)
+        let wasFailed = t.status == .failed
+        store.promote(alternate, in: t)
+        guard wasFailed, !t.text.isEmpty else { return }
+        paster.copy(text: t.text)
+        store.setStatus(t, .copied)
+        show(Self.copiedMessage, for: t.id)
+    }
+
+    /// "Use cleaned": a cleanup that came back after the paste becomes the
+    /// main text (`offersUseCleaned`).
+    public func useCleaned(_ t: Transcript) {
+        commitEdit(of: t)
+        store.useCleaned(t)
+    }
+
+    /// "Revert to raw": the dictation's own raw text becomes the main text
+    /// again; the text it replaces is kept.
+    public func revertToRaw(_ t: Transcript) {
+        commitEdit(of: t)
+        store.revertToRaw(t)
+    }
+
+    // MARK: - Re-transcribing
+
+    /// The models re-transcribing the selected transcript now.
+    public var retranscribing: Set<ModelID> {
+        guard let selection else { return [] }
+        return running[selection] ?? []
+    }
+
+    /// Re-transcribes the transcript's kept recording with `model`, in the
+    /// service's re-transcription lane, which yields to dictations. The
+    /// result is kept as an alternate, one per model: another run replaces
+    /// it. A failed transcript takes the result as its main text (`promote`).
+    /// Without a recording, or when the model fails or hears nothing, it says
+    /// why. A transcript deleted meanwhile gets nothing.
+    public func retranscribe(_ t: Transcript, with model: ModelID) async {
+        let id = t.id
+        guard let name = t.audioFileName, let archive = store.audio else {
+            show(Self.audioGone, for: id)
+            return
+        }
+        guard running[id]?.contains(model) != true else { return }
+        clearMessage(for: id)
+        running[id, default: []].insert(model)
+        defer { stopRunning(model, for: id) }
+        let result: TranscriptionResult
+        do {
+            // Reading a long recording takes a moment: off the main thread.
+            let clip = try await Task.detached { try archive.load(name) }.value
+            result = try await service.transcribe(clip, with: model, vocabulary: vocabulary())
+        } catch {
+            show("Could not re-transcribe: \(DictationPipeline.describe(error))", for: id)
+            return
+        }
+        // A deleted transcript has left its store (SwiftData clears its context).
+        guard t.modelContext != nil else { return }
+        guard !Self.isBlank(result.text) else {
+            show("Nothing was heard in the recording.", for: id)
+            return
+        }
+        store.addAlternate(to: t, result)
+        guard t.status == .failed,
+              let alternate = t.alternates.first(where: { !$0.wasMain && $0.modelKey == result.model.storageKey })
+        else { return }
+        promote(alternate, in: t)
+    }
+
+    private func stopRunning(_ model: ModelID, for id: Transcript.ID) {
+        running[id]?.remove(model)
+        if running[id]?.isEmpty == true { running[id] = nil }
+    }
+
+    // MARK: - Playing
+
+    /// Plays the transcript's kept recording, or stops it if it is playing.
+    public func togglePlay(_ t: Transcript) {
+        if isPlaying(t) {
+            player.stop()
+            return
+        }
+        guard let url = recordingURL(t) else {
+            show(Self.audioGone, for: t.id)
+            return
+        }
+        do {
+            try player.play(url)
+        } catch {
+            Log.info("[LIBRARY] Could not play \(url.lastPathComponent): \(error)")
+            show("The recording could not be played.", for: t.id)
+        }
+    }
+
+    /// Whether the transcript's recording is the one playing.
+    func isPlaying(_ t: Transcript) -> Bool {
+        guard let url = recordingURL(t) else { return false }
+        return player.playing == url
+    }
+
+    private func recordingURL(_ t: Transcript) -> URL? {
+        guard let name = t.audioFileName, let archive = store.audio else { return nil }
+        return archive.url(for: name)
+    }
+
+    // MARK: - Messages
+
+    /// The words the latest action left about `t`, if any.
+    func message(for t: Transcript) -> String? {
+        guard let message, message.transcript == t.id else { return nil }
+        return message.text
+    }
+
+    private func show(_ text: String, for id: Transcript.ID) {
+        message = (id, text)
+    }
+
+    private func clearMessage(for id: Transcript.ID) {
+        if message?.transcript == id { message = nil }
     }
 
     // MARK: - What the list says
@@ -265,7 +584,7 @@ public final class LibraryModel {
     }
 
     /// Seconds to a tenth, "14.2s"; "—" when not known.
-    private nonisolated static func tenths(_ seconds: Double) -> String {
+    nonisolated static func tenths(_ seconds: Double) -> String {
         seconds > 0 && seconds.isFinite ? String(format: "%.1fs", seconds) : "—"
     }
 
@@ -274,9 +593,11 @@ public final class LibraryModel {
         models.first { $0.id.storageKey == storageKey }?.displayName ?? storageKey
     }
 
-    /// The status in a word: status is words, never colour (Prism).
+    /// The status in a word: status is words, never colour (Prism). A
+    /// transcript Danny edited reads "Edited", whatever happened at the paste.
     nonisolated static func statusWord(_ t: Transcript) -> String {
-        switch t.status {
+        if t.isEdited { return "Edited" }
+        return switch t.status {
         case .pasted: "Pasted"
         case .copied: "Copied"
         case .failed: "Failed"
@@ -298,5 +619,127 @@ public final class LibraryModel {
             return String(text[range])
         }
         return text.isEmpty ? nil : text
+    }
+
+    // MARK: - What the actions offer
+
+    /// Why Play audio and Re-transcribe with… cannot be used.
+    nonisolated static let audioGone = "Audio no longer kept"
+    /// What Danny is told when a text went on the clipboard, not into an app.
+    nonisolated static let copiedMessage = "Copied — paste with ⌘V"
+
+    /// Why the transcript cannot be played or re-transcribed: its recording
+    /// is no longer kept (pruned, or never kept). Nil when it can.
+    nonisolated static func audioUnavailableReason(_ t: Transcript) -> String? {
+        t.audioFileName == nil ? audioGone : nil
+    }
+
+    /// "Re-transcribe with…": the ready models other than the one behind the
+    /// main text. A failed transcript (its model failed, or the dictation was
+    /// skipped) is offered every ready model, its own included. None without
+    /// a recording.
+    nonisolated static func retranscribeChoices(_ t: Transcript, models: [ModelDescriptor]) -> [ModelDescriptor] {
+        guard audioUnavailableReason(t) == nil else { return [] }
+        return models.filter { $0.state == .ready && (t.status == .failed || $0.id.storageKey != t.modelKey) }
+    }
+
+    /// "Use cleaned" is offered for a cleanup that came back after the paste:
+    /// the main text is still the raw text, and the cleaned text differs.
+    nonisolated static func offersUseCleaned(_ t: Transcript) -> Bool {
+        guard let cleaned = t.cleanedText, !isBlank(cleaned) else { return false }
+        return t.text == t.rawText && cleaned != t.rawText
+    }
+
+    /// An edited transcript keeps "Revert to raw", which brings back the
+    /// dictation's own raw text. (Task 21 adds it for a cleaned one.)
+    nonisolated static func offersRevertToRaw(_ t: Transcript) -> Bool {
+        t.isEdited && !isBlank(t.rawText) && t.text != t.rawText
+    }
+
+    /// One look at the apps while Paste again waits (Ruling T19-3).
+    enum PasteAgainStep: Equatable {
+        /// The app that was in front before this one is in front again.
+        case paste
+        /// It is not yet.
+        case wait
+        /// There is none, or it has not come back in time: copy instead, so
+        /// nothing pastes into the wrong app.
+        case copyInstead
+    }
+
+    /// Whether Paste again may paste now: only into `target`, the app that
+    /// was in front before this one, and only once it is in front again.
+    /// After waiting `limit` seconds for it, Paste again copies instead.
+    nonisolated static func pasteAgainStep(target: pid_t?, frontmost: pid_t?, waited: TimeInterval,
+                                           limit: TimeInterval) -> PasteAgainStep {
+        guard let target else { return .copyInstead }
+        if frontmost == target { return .paste }
+        return waited < limit ? .wait : .copyInstead
+    }
+
+    /// The row that takes the place of `id` when it leaves the list: the next
+    /// one down that is still listed, or else the nearest above.
+    nonisolated static func neighbour(of id: UUID, before: [UUID], after: [UUID]) -> UUID? {
+        let listed = Set(after)
+        guard let index = before.firstIndex(of: id) else { return after.first }
+        return before[(index + 1)...].first(where: listed.contains) ?? before[..<index].last(where: listed.contains)
+    }
+
+    private nonisolated static func isBlank(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private nonisolated static func seconds(_ duration: Duration) -> TimeInterval {
+        let parts = duration.components
+        return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+    }
+}
+
+/// What Paste again needs from macOS, so tests can stand in for it: the app
+/// that was in front before this one, the app in front now, and hiding and
+/// showing this app's windows. Process identifiers name the apps.
+struct PasteAgainSystem {
+    var previousApp: @MainActor () -> pid_t?
+    var frontmostApp: @MainActor () -> pid_t?
+    var hide: @MainActor () -> Void
+    var unhide: @MainActor () -> Void
+
+    /// macOS itself. The previous app is the last other app to become
+    /// active, which macOS announces for every app; one that has quit counts
+    /// as none. Hiding hands the front back to it, as closing the last window
+    /// does (`AppLifecycle.windowDidClose`).
+    @MainActor
+    static func live() -> PasteAgainSystem {
+        let tracker = PreviousAppTracker()
+        return PasteAgainSystem(
+            previousApp: { tracker.previous.flatMap { $0.isTerminated ? nil : $0.processIdentifier } },
+            frontmostApp: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            hide: { NSApp.hide(nil) },
+            unhide: { NSApp.unhide(nil) }
+        )
+    }
+}
+
+/// Remembers the last app other than this one to become active.
+private final class PreviousAppTracker {
+    private(set) var previous: NSRunningApplication?
+    private var observer: NSObjectProtocol?
+
+    init() {
+        let thisApp = NSRunningApplication.current.processIdentifier
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != thisApp {
+            previous = front
+        }
+        observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != thisApp else { return }
+            self?.previous = app
+        }
+    }
+
+    deinit {
+        if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     }
 }
