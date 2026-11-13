@@ -59,11 +59,16 @@ public struct IndicatorView: View {
     }
 
     /// The live line: a 1 pt white polyline with mitred corners, drawn every
-    /// frame; flat with Reduce Motion on.
+    /// frame; flat with Reduce Motion on. Each frame is drawn at the present
+    /// on the mach clock the slices are timed by (`systemUptime`, Task 24A),
+    /// read directly rather than converted from the timeline's wall-clock
+    /// date. A redraw for a new slice between two frames is also drawn at the
+    /// present, not at the last frame's date.
     private var line: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { _ in
+            let now = ProcessInfo.processInfo.systemUptime
             Canvas { context, size in
-                let points = reduceMotion ? Self.flatLine : level.points(at: Self.uptime(at: timeline.date))
+                let points = reduceMotion ? Self.flatLine : level.points(at: now)
                 // The first and last vertices lie just outside the canvas.
                 context.clip(to: Path(CGRect(origin: .zero, size: size)))
                 context.stroke(Path { $0.addLines(points) }, with: .color(.white),
@@ -85,10 +90,4 @@ public struct IndicatorView: View {
 
     private static let flatLine = [CGPoint(x: 0, y: LevelLine.height / 2),
                                    CGPoint(x: LevelLine.width, y: LevelLine.height / 2)]
-
-    /// A frame's date on the clock the line's peaks are timed by
-    /// (`systemUptime`, which changes to the wall clock do not move).
-    private static func uptime(at date: Date) -> TimeInterval {
-        ProcessInfo.processInfo.systemUptime + date.timeIntervalSinceNow
-    }
 }

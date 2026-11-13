@@ -29,6 +29,11 @@ public class AudioRecorder {
     /// silent input, and a muted or absent mic would otherwise paste those.
     /// -40 dBFS is far below any audible speech.
     public static let silenceThreshold: Float = 0.01
+    /// How long a stretch of audio each level covers: one vertex of the
+    /// indicator's line, `LevelLine.interval`. That type lives in
+    /// VoiceDictationUI, which this library cannot see, so a test there keeps
+    /// the two equal (Task 24A).
+    static let levelSlice: TimeInterval = 0.05
 
     /// Too short wins over silent, so an accidental tap reads as a tap.
     public static func verdict(duration: TimeInterval, peak: Float) -> RecordingVerdict {
@@ -80,8 +85,13 @@ public class AudioRecorder {
     /// first microphone buffer arrived. Always before that recording's
     /// delegate call.
     public var onFirstAudio: ((Date) -> Void)?
-    /// The peak (0...1) of each converted buffer while recording, on the main queue.
-    public var onLevel: ((Float) -> Void)?
+    /// The peak (0...1) of each `levelSlice` of the recording, with the time
+    /// its first sample was captured (Task 24A). Called on the main queue, once
+    /// per slice, a buffer's slices in one go. The time is in seconds on the
+    /// mach clock `ProcessInfo.systemUptime` reads, from the buffer's host
+    /// time, so the indicator's line, drawn on that clock, places each slice
+    /// where it was heard however the buffers bunch on their way here.
+    public var onLevel: ((_ peak: Float, _ at: TimeInterval) -> Void)?
     /// The Core Audio UID of the microphone to record from; nil follows the
     /// system default, as does a UID that matches no connected device.
     /// Setting it prepares again (after the current recording, if one is running).
@@ -121,6 +131,8 @@ public class AudioRecorder {
     /// Numbers recordings, so a late callback from one never reaches the next.
     private var recordingID = 0
     private var firstAudioDelivered = false
+    /// Whether the log has said that buffers came without a host time.
+    private var loggedMissingHostTime = false
 
     /// What the tap thread hands over. Only touched under `captureLock`.
     private struct Capture {
@@ -213,8 +225,8 @@ public class AudioRecorder {
         let converter = input.converter
         do {
             try ObjCExceptionCatcher.`try`({
-                input.engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input.format) { [weak self] buffer, _ in
-                    self?.receive(buffer, converter: converter, recordingID: id)
+                input.engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input.format) { [weak self] buffer, when in
+                    self?.receive(buffer, at: when, converter: converter, recordingID: id)
                 }
             })
             tapInstalled = true
@@ -357,35 +369,82 @@ public class AudioRecorder {
         prepared = nil
     }
 
-    /// Runs on the tap's thread for every buffer.
-    private func receive(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, recordingID id: Int) {
+    /// Runs on the tap's thread for every buffer: converts it, adds it to the
+    /// capture, cuts it into the line's slices (Task 24A) and hands them to
+    /// the main queue in one hop. The samples are read where the converter
+    /// put them, so the slices' array takes the place of the copy of the
+    /// samples this made before: no more allocations than one level a buffer.
+    private func receive(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, converter: AVAudioConverter,
+                         recordingID id: Int) {
         let arrived = Date()
-        let samples = Self.convert(buffer, with: converter)
-        let level = samples.reduce(0) { max($0, abs($1)) }
-        let isFirst: Bool? = captureLock.withLock {
-            guard capture.isOpen, capture.recordingID == id else { return nil }
-            capture.samples.append(contentsOf: samples)
-            capture.peak = max(capture.peak, level)
-            guard capture.firstAudio == nil else { return false }
-            capture.firstAudio = arrived
-            return true
-        }
-        guard let isFirst else { return }
+        let start = Self.captureTime(of: when, duration: Double(buffer.frameLength) / buffer.format.sampleRate,
+                                     arrivedAt: AVAudioTime.seconds(forHostTime: mach_absolute_time()))
+        let taken: (isFirst: Bool, slices: [(peak: Float, at: TimeInterval)])? =
+            Self.withSamples(of: Self.convert(buffer, with: converter)) { samples in
+                let slices = Self.slicePeaks(samples, sampleRate: AudioClip.sampleRate, startTime: start)
+                let level = slices.reduce(0) { max($0, $1.peak) }
+                let isFirst: Bool? = captureLock.withLock {
+                    guard capture.isOpen, capture.recordingID == id else { return nil }
+                    capture.samples.append(contentsOf: samples)
+                    capture.peak = max(capture.peak, level)
+                    guard capture.firstAudio == nil else { return false }
+                    capture.firstAudio = arrived
+                    return true
+                }
+                return isFirst.map { ($0, slices) }
+            }
+        guard let taken else { return }
+        let timedByArrival = !when.isHostTimeValid
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isRecording, self.recordingID == id else { return }
-            if isFirst { self.deliverFirstAudio() }
-            self.onLevel?(level)
+            if taken.isFirst { self.deliverFirstAudio() }
+            if timedByArrival, !self.loggedMissingHostTime {
+                self.loggedMissingHostTime = true
+                Log.info("[AUDIO] Microphone buffers came without a host time — the volume line times them by their arrival")
+            }
+            for slice in taken.slices { self.onLevel?(slice.peak, slice.at) }
         }
     }
 
-    /// Converts one tap buffer to 16 kHz mono. The converter keeps its
-    /// resampling state between buffers, so they join seamlessly.
-    static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter) -> [Float] {
+    /// The peak (0...1) of each `slice` of `samples`, oldest first, stamped
+    /// with the time its first sample was captured: `startTime`, then one
+    /// `slice` later for each after it. A buffer that is not a whole number of
+    /// slices ends with a shorter one. Pure, and it allocates nothing but the
+    /// array it returns, so the tap's thread can call it.
+    static func slicePeaks(_ samples: UnsafeBufferPointer<Float>, sampleRate: Double, startTime: TimeInterval,
+                           slice: TimeInterval = levelSlice) -> [(peak: Float, at: TimeInterval)] {
+        guard sampleRate > 0, slice > 0, !samples.isEmpty else { return [] }
+        let length = max(1, Int((slice * sampleRate).rounded()))
+        var peaks: [(peak: Float, at: TimeInterval)] = []
+        peaks.reserveCapacity((samples.count + length - 1) / length)
+        for first in stride(from: 0, to: samples.count, by: length) {
+            let peak = samples[first..<min(first + length, samples.count)].reduce(0) { max($0, abs($1)) }
+            peaks.append((peak: peak, at: startTime + Double(first) / sampleRate))
+        }
+        return peaks
+    }
+
+    /// When a tap buffer's first sample was captured, in seconds on the mach
+    /// clock (Task 24A). The tap's `when` is "the time at which the buffer was
+    /// captured" (AVAudioNode.h), and its host time counts mach_absolute_time()
+    /// ticks (AVAudioTime.h); `seconds(forHostTime:)` turns those into the
+    /// seconds `ProcessInfo.systemUptime` reads. A buffer whose host time is
+    /// not valid is timed by when it `arrived`, on the same clock, less its
+    /// `duration`: its slices then end as it arrived, rather than run ahead of
+    /// the line, which is drawn at the present.
+    static func captureTime(of when: AVAudioTime, duration: TimeInterval, arrivedAt arrived: TimeInterval) -> TimeInterval {
+        when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : arrived - duration
+    }
+
+    /// Converts one tap buffer to 16 kHz mono, or gives nil if the converter
+    /// fails. The converter keeps its resampling state between buffers, so
+    /// they join seamlessly.
+    static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter) -> AVAudioPCMBuffer? {
         let capacity = AVAudioFrameCount(
             (Double(buffer.frameLength) * AudioClip.sampleRate / buffer.format.sampleRate).rounded(.up)
         )
         guard capacity > 0,
-              let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return [] }
+              let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return nil }
 
         var supplied = false
         var error: NSError?
@@ -398,8 +457,19 @@ public class AudioRecorder {
             inputStatus.pointee = .haveData
             return buffer
         }
-        guard status != .error, error == nil, let channel = output.floatChannelData?[0] else { return [] }
-        return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
+        guard status != .error, error == nil else { return nil }
+        return output
+    }
+
+    /// Calls `body` with the samples of a buffer `convert` made, read where
+    /// they are while the buffer lives; with none for nil.
+    static func withSamples<Result>(of buffer: AVAudioPCMBuffer?, _ body: (UnsafeBufferPointer<Float>) -> Result) -> Result {
+        withExtendedLifetime(buffer) {
+            guard let buffer, let channel = buffer.floatChannelData?[0] else {
+                return body(UnsafeBufferPointer(start: nil, count: 0))
+            }
+            return body(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        }
     }
 
     private func deliverFirstAudio() {

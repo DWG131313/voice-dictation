@@ -407,17 +407,22 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.state, .idle)
     }
 
+    /// Each slice's peak goes on with the time it was captured, every one of
+    /// a burst, while recording; none after (Task 24A).
     @MainActor
     func testLevelFollowsTheRecording() {
         let pipeline = makePipeline([FakeEngine(kind: .appleSpeech)])
+        var heard: [(peak: Float, at: TimeInterval)] = []
+        pipeline.onLevel = { heard.append(($0, $1)) }
 
         pipeline.hotkeyDown()
-        recorder.onLevel?(0.4)
-        XCTAssertEqual(pipeline.level, 0.4)
+        recorder.onLevel?(0.4, 100)
+        recorder.onLevel?(0.2, 100.05)
+        XCTAssertEqual(heard.map { $0.peak }, [0.4, 0.2])
+        XCTAssertEqual(heard.map { $0.at }, [100, 100.05])
         pipeline.cancel()
-        XCTAssertEqual(pipeline.level, 0)
-        recorder.onLevel?(0.7)
-        XCTAssertEqual(pipeline.level, 0, "a level that arrives after the recording")
+        recorder.onLevel?(0.7, 100.1)
+        XCTAssertEqual(heard.count, 2, "a level that arrives after the recording")
     }
 
     /// Choosing a model shows `.preparingModel` while it downloads and loads.

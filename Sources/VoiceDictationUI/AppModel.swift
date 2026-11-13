@@ -88,7 +88,8 @@ public final class AppModel {
     @ObservationIgnored private var menuObserver: NSObjectProtocol?
     /// The floating indicator; none in tests that do not ask for one.
     @ObservationIgnored private let indicator: IndicatorPresenting?
-    /// The indicator's volume line, fed from `pipeline.level` while recording.
+    /// The indicator's volume line, fed each slice `pipeline.onLevel` passes
+    /// on while recording.
     @ObservationIgnored private var indicatorLine = LevelLine()
     /// When the recording `indicatorLine` belongs to started.
     @ObservationIgnored private var indicatorRecordingStart: Date?
@@ -168,7 +169,8 @@ public final class AppModel {
         }
         listModelsWhenAMenuOpens()
         observeStateForIndicator()
-        observeLevelForIndicator()
+        // Every slice, each at the time it was captured (Task 24A).
+        pipeline.onLevel = { [weak self] peak, time in self?.updateIndicator(level: (peak, time)) }
     }
 
     /// Starts the app; called once, when launching has finished. Imports the
@@ -386,8 +388,9 @@ public final class AppModel {
     // MARK: - The indicator
 
     // `withObservationTracking` reports a change once, as the value is about
-    // to be set. So each handler reads the new value a turn later on the main
-    // actor, and watches again.
+    // to be set. So the handler reads the new state a turn later on the main
+    // actor, and watches again. Levels come through `pipeline.onLevel`
+    // instead, one call per slice.
 
     private func observeStateForIndicator() {
         withObservationTracking {
@@ -400,26 +403,14 @@ public final class AppModel {
         }
     }
 
-    private func observeLevelForIndicator() {
-        withObservationTracking {
-            _ = pipeline.level
-        } onChange: { [weak self] in
-            // When the level arrived, on the line's monotonic clock: the line
-            // places each peak by its arrival, not by when it is drawn.
-            let arrived = ProcessInfo.processInfo.systemUptime
-            Task { @MainActor [weak self] in
-                self?.observeLevelForIndicator()
-                self?.updateIndicator(levelArrivedAt: arrived)
-            }
-        }
-    }
-
     /// Shows the floating indicator while a dictation is recorded, transcribed
     /// or cleaned up, and hides it otherwise. A new recording starts a new
-    /// line; a level that arrived at `time` while recording goes into it.
-    /// Showing the indicator never activates the app or changes its
-    /// activation policy (`IndicatorPanel`), so it stays out of `WindowPolicy`.
-    private func updateIndicator(levelArrivedAt time: TimeInterval? = nil) {
+    /// line; a `level` heard while recording goes into it at the time its
+    /// slice was captured, never when it got here (Task 24A), so the line
+    /// advances evenly however the slices bunch on the way. Showing the
+    /// indicator never activates the app or changes its activation policy
+    /// (`IndicatorPanel`), so it stays out of `WindowPolicy`.
+    private func updateIndicator(level: (peak: Float, at: TimeInterval)? = nil) {
         let state = pipeline.state
         guard IndicatorView.words(for: state) != nil else {
             indicator?.hide()
@@ -430,8 +421,8 @@ public final class AppModel {
                 indicatorLine.reset()
                 indicatorRecordingStart = since
             }
-            if let time {
-                indicatorLine.add(peak: pipeline.level, at: time)
+            if let level {
+                indicatorLine.add(peak: level.peak, at: level.at)
             }
         }
         indicator?.show(state, line: indicatorLine)

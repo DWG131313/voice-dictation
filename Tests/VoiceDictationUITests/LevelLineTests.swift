@@ -1,4 +1,5 @@
 import XCTest
+@testable import VoiceDictationLib
 @testable import VoiceDictationUI
 
 /// The indicator's volume line, fed made-up peaks at made-up times.
@@ -134,6 +135,63 @@ final class LevelLineTests: XCTestCase {
         XCTAssertEqual(line.points(at: time(1)), fed(0.1, through: 0..<1).points(at: time(1)))
     }
 
+    // MARK: - Task 24A: slices timed by when they were captured
+
+    /// The recorder cuts each buffer into slices one interval long, so each
+    /// vertex has a peak of its own. It cannot see this type (the library it
+    /// lives in comes first), so it keeps the length itself, pinned here.
+    func testTheRecorderSlicesAtTheLinesInterval() {
+        XCTAssertEqual(AudioRecorder.levelSlice, LevelLine.interval)
+    }
+
+    /// Buffers loud for their first 50 ms and quiet for the rest give
+    /// alternating loud and quiet slices, and so a different height on each
+    /// vertex: no plateau where one buffer's peak stood for two vertices.
+    func testSlicedPeaksLeaveNoPlateaus() {
+        var line = LevelLine()
+        for n in 0..<20 {   // 2 s of 100 ms buffers: sound across the whole line
+            feed(slices(of: buffer(first: 0.1, second: 0.02), from: time(2 * n)), to: &line)
+        }
+
+        let heights = line.points(at: time(40)).map { abs($0.y - mid) }
+        XCTAssertTrue(heights.allSatisfy { $0 > 0 }, "\(heights)")
+        for (left, right) in zip(heights, heights.dropFirst()) {
+            XCTAssertGreaterThan(abs(left - right), 0.5, "\(heights)")
+        }
+    }
+
+    /// The recorder hands over a buffer's slices together, 130 ms after the
+    /// buffer began, and sometimes two buffers' at once. Each slice keeps the
+    /// time it was captured, so what was said keeps its spacing and every
+    /// vertex moves left exactly `step` per interval, however the bursts fall.
+    func testBunchedArrivalsStillScrollEvenly() {
+        // 100 ms buffers, silent but for two loud slices: the first half of
+        // buffer 5 (interval 10) and the second half of buffer 6 (interval 13).
+        let buffers = (0..<12).map { n in buffer(first: n == 5 ? 0.1 : 0, second: n == 6 ? 0.1 : 0) }
+        // Buffer 6 is late, and comes with buffer 7.
+        let arrivals = (0..<12).map { n in time(2 * (n == 6 ? 7 : n)) + 0.13 }
+
+        var line = LevelLine()
+        var delivered = 0
+        var start: (time: TimeInterval, x: [CGFloat])?
+        for frame in stride(from: arrivals[7], to: arrivals[11], by: 0.01) {   // a frame every 10 ms
+            while delivered < buffers.count, arrivals[delivered] <= frame {
+                feed(slices(of: buffers[delivered], from: time(2 * delivered)), to: &line)
+                delivered += 1
+            }
+            let loud = twoLoudest(line.points(at: frame))
+            XCTAssertEqual(loud[1] - loud[0], 3 * LevelLine.step, accuracy: 1e-9, "three intervals apart, at \(frame)")
+            guard let start else {
+                start = (frame, loud)
+                continue
+            }
+            let moved = CGFloat((frame - start.time) / LevelLine.interval) * LevelLine.step
+            XCTAssertEqual(loud[0], start.x[0] - moved, accuracy: 1e-9, "at \(frame)")
+            XCTAssertEqual(loud[1], start.x[1] - moved, accuracy: 1e-9, "at \(frame)")
+        }
+        XCTAssertEqual(delivered, 11, "bursts landed between the frames")
+    }
+
     // MARK: - Helpers
 
     /// Halfway through interval `n`, clear of its boundaries.
@@ -161,5 +219,27 @@ final class LevelLineTests: XCTestCase {
     /// The point furthest from the centre.
     private func loudest(_ points: [CGPoint]) -> CGPoint {
         points.max { abs($0.y - mid) < abs($1.y - mid) } ?? CGPoint(x: -1, y: mid)
+    }
+
+    /// The x of the two points furthest from the centre, left first.
+    private func twoLoudest(_ points: [CGPoint]) -> [CGFloat] {
+        points.sorted { abs($0.y - mid) > abs($1.y - mid) }.prefix(2).map { $0.x }.sorted()
+    }
+
+    /// A 100 ms buffer at 16 kHz: 50 ms peaking at `first`, then 50 ms
+    /// peaking at `second`, the sign alternating as in sound.
+    private func buffer(first: Float, second: Float) -> [Float] {
+        (0..<1_600).map { i in (i < 800 ? first : second) * (i.isMultiple(of: 2) ? 1 : -1) }
+    }
+
+    /// `samples` cut into slices as the recorder cuts each buffer, the first
+    /// captured at `start`.
+    private func slices(of samples: [Float], from start: TimeInterval) -> [(peak: Float, at: TimeInterval)] {
+        samples.withUnsafeBufferPointer { AudioRecorder.slicePeaks($0, sampleRate: AudioClip.sampleRate, startTime: start) }
+    }
+
+    /// Gives `line` each slice at its own time, as the app does.
+    private func feed(_ slices: [(peak: Float, at: TimeInterval)], to line: inout LevelLine) {
+        for slice in slices { line.add(peak: slice.peak, at: slice.at) }
     }
 }

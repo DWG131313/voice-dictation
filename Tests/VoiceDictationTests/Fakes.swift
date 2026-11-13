@@ -247,7 +247,7 @@ final class FakeCleaner: TextCleaner, @unchecked Sendable {
 /// a microphone. Use from the main thread, as the real one.
 final class FakeRecorder: Recording {
     weak var delegate: AudioRecorderDelegate?
-    var onLevel: ((Float) -> Void)?
+    var onLevel: ((_ peak: Float, _ at: TimeInterval) -> Void)?
     var onFirstAudio: ((Date) -> Void)?
     var inputDeviceUID: String?
 

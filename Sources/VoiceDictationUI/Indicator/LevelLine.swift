@@ -10,7 +10,9 @@ import Foundation
 /// flicker, and a curve keeps quiet speech visible. Silence is a flat line.
 ///
 /// A value with no clock of its own: the caller passes every time, all from one
-/// monotonic clock (the app uses `ProcessInfo.systemUptime`).
+/// monotonic clock. The app uses the mach clock `ProcessInfo.systemUptime`
+/// reads: the recorder times each 50 ms slice from its buffer's host time on
+/// it, and the indicator draws each frame at the present on it (Task 24A).
 public struct LevelLine {
     public static let step: CGFloat = 5, interval: TimeInterval = 0.05, width: CGFloat = 170, height: CGFloat = 26
     public static let gain: Float = 5, floor: Float = 0.03, attack: Float = 0.75, release: Float = 0.35, exponent: Float = 0.7
@@ -34,11 +36,13 @@ public struct LevelLine {
 
     public init() {}
 
-    /// Hears a peak (0...1) that arrived at `time`. The interval keeps the
-    /// loudest peak it hears and becomes one vertex once it is over. An
-    /// interval that hears none repeats the most recent peak (Ruling T17-1:
-    /// the microphone sends a peak about every 100 ms, two intervals). A time
-    /// before the current interval counts in it.
+    /// Hears a peak (0...1) of audio captured at `time`: a slice's own time,
+    /// never when it got here, so the vertices advance evenly however the
+    /// slices bunch on the way (Task 24A). The interval keeps the loudest peak
+    /// it hears and becomes one vertex once it is over. An interval that hears
+    /// none repeats the most recent peak (Ruling T17-1); with a slice for every
+    /// interval, that is one whose slice was lost, as with a dropped buffer. A
+    /// time before the current interval counts in it.
     public mutating func add(peak: Float, at time: TimeInterval) {
         let index = max(Self.intervalIndex(at: time), current ?? .min)
         advance(to: index)
@@ -50,7 +54,9 @@ public struct LevelLine {
     /// The line at `time`: one point per vertex, oldest first, joined by
     /// straight segments. The newest is just off the right edge, and the whole
     /// line has moved left by the part of the current interval already gone.
-    /// Intervals over by `time` are finished here as `add` would finish them.
+    /// Intervals over by `time` are finished here as `add` would finish them,
+    /// so the newest few, whose slices are still on their way, hold the latest
+    /// peak until those arrive.
     public func points(at time: TimeInterval) -> [CGPoint] {
         var line = self
         let index = Self.intervalIndex(at: time)

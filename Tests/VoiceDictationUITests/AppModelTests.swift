@@ -476,7 +476,7 @@ final class AppModelTests: XCTestCase {
         let model = makeModel([appleEngine()], indicator: indicator)
 
         model.hotkeyDidStartPress()
-        recorder.onLevel?(0.5)
+        recorder.onLevel?(0.5, ProcessInfo.processInfo.systemUptime)
         try await waitUntil("the line rises") { self.isRaised(indicator.line) }
         let first = indicator.state
         model.hotkeyDidEndPress()
@@ -485,6 +485,29 @@ final class AppModelTests: XCTestCase {
         model.hotkeyDidStartPress()
         try await waitUntil("the second recording shows") { indicator.showsListening && indicator.state != first }
         XCTAssertFalse(isRaised(indicator.line))
+    }
+
+    /// Task 24A: the recorder hands over a buffer's slices together. Each goes
+    /// into the line at the time it was captured: none is lost to the one
+    /// after it, and none is moved to when it arrived.
+    @MainActor
+    func testEachSliceGoesIntoTheLineAtItsOwnTime() async throws {
+        let indicator = FakeIndicator()
+        let model = makeModel([appleEngine()], indicator: indicator)
+        let captured = ProcessInfo.processInfo.systemUptime - 0.3
+
+        model.hotkeyDidStartPress()
+        recorder.onLevel?(0.1, captured)
+        recorder.onLevel?(0.02, captured + LevelLine.interval)
+
+        var expected = LevelLine()
+        expected.add(peak: 0.1, at: captured)
+        expected.add(peak: 0.02, at: captured + LevelLine.interval)
+        let drawn = captured + 3 * LevelLine.interval
+        try await waitUntil("both slices are in the line, each at its own time") {
+            indicator.line.points(at: drawn) == expected.points(at: drawn)
+        }
+        XCTAssertTrue(indicator.showsListening)
     }
 
     // MARK: - The app

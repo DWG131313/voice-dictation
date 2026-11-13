@@ -5,8 +5,10 @@ import Observation
 /// Every call and callback happens on the main thread.
 public protocol Recording: AnyObject {
     var delegate: AudioRecorderDelegate? { get set }
-    /// The peak (0...1) of each stretch of audio while recording.
-    var onLevel: ((Float) -> Void)? { get set }
+    /// The peak (0...1) of each 50 ms slice of audio while recording, with
+    /// the time it was captured, in seconds on the clock
+    /// `ProcessInfo.systemUptime` reads (Task 24A).
+    var onLevel: ((_ peak: Float, _ at: TimeInterval) -> Void)? { get set }
     /// When a recording's first audio arrived: at most once per recording,
     /// always before that recording's delegate call.
     var onFirstAudio: ((Date) -> Void)? { get set }
@@ -79,8 +81,12 @@ public final class DictationPipeline {
     /// What the app is doing. An error shows for `errorDisplaySeconds`, then
     /// the state returns to the true one.
     public private(set) var state: DictationState = .idle
-    /// The latest input peak while recording (0...1), for the indicator.
-    public private(set) var level: Float = 0
+    /// Each peak (0...1) heard while recording, with the time its slice was
+    /// captured, for the indicator's line: once per slice, on the main
+    /// thread, and nothing between recordings (Task 24A). A callback, not an
+    /// observed value: a buffer's slices come together, and observation would
+    /// report them as one.
+    @ObservationIgnored public var onLevel: ((_ peak: Float, _ at: TimeInterval) -> Void)?
     /// Called once for every finished dictation: pasted, left on the
     /// clipboard, failed or skipped. A cancelled one has none, and so has
     /// one whose text came back empty, or that replacements emptied: it
@@ -151,9 +157,9 @@ public final class DictationPipeline {
         self.vocabulary = vocabulary
         self.latestText = latestText
         recorder.delegate = self
-        recorder.onLevel = { [weak self] level in
+        recorder.onLevel = { [weak self] peak, time in
             guard let self, self.capture != nil else { return }
-            self.level = level
+            self.onLevel?(peak, time)
         }
         recorder.onFirstAudio = { [weak self] time in
             self?.capture?.timer.mark(.firstAudio, at: time)
@@ -280,7 +286,6 @@ public final class DictationPipeline {
         guard let capture else { return }
         self.capture = nil
         if capture.startedAt != nil { recorder.cancelRecording() }
-        level = 0
         settle()
     }
 
@@ -718,7 +723,6 @@ extension DictationPipeline: @preconcurrency AudioRecorderDelegate {
     public func recordingDidFinish(clip: AudioClip) {
         guard var capture else { return }
         self.capture = nil
-        level = 0
         // A recording the recorder ended by itself is timed from its end.
         capture.timer.mark(.keyUp, at: capture.keyUpAt ?? Date())
         let id = enqueue(clip, timer: capture.timer)
@@ -729,14 +733,12 @@ extension DictationPipeline: @preconcurrency AudioRecorderDelegate {
 
     public func recordingDidFail(error: String) {
         capture = nil
-        level = 0
         Log.info("[PIPELINE] Recording failed: \(error)")
         show(error)
     }
 
     public func recordingDiscarded() {
         capture = nil
-        level = 0
         settle()
     }
 }

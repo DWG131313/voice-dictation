@@ -71,7 +71,7 @@ final class AudioRecorderLogicTests: XCTestCase {
             for i in 0..<4_800 {
                 channel[i] = Float(0.5 * sin(2 * Double.pi * 440 * Double(start + i) / 48_000))
             }
-            samples += AudioRecorder.convert(buffer, with: converter)
+            AudioRecorder.withSamples(of: AudioRecorder.convert(buffer, with: converter)) { samples += $0 }
         }
 
         // 5 s is 80 000 samples, less the resampler's one-off delay (15 ms
@@ -79,6 +79,64 @@ final class AudioRecorderLogicTests: XCTestCase {
         XCTAssertLessThanOrEqual(samples.count, 80_000)
         XCTAssertGreaterThan(samples.count, 80_000 - 480)
         XCTAssertEqual(AudioClip(samples: samples).peak, 0.5, accuracy: 0.02)
+    }
+
+    // Task 24A: the indicator's volume line gets one peak per 50 ms slice of
+    // each buffer, timed by when the slice was captured.
+
+    /// A 100 ms buffer, loud for its first 50 ms and quiet for the rest,
+    /// gives two peaks, loud then quiet, each stamped with the time its first
+    /// sample was captured: the buffer's start, then 50 ms later.
+    func testSlicesBufferIntoFiftyMillisecondPeaks() {
+        // 800 samples a slice at 16 kHz. The sign alternates: a peak is a magnitude.
+        let samples = (0..<1_600).map { i -> Float in (i < 800 ? 0.6 : 0.05) * (i.isMultiple(of: 2) ? 1 : -1) }
+
+        let slices = samples.withUnsafeBufferPointer {
+            AudioRecorder.slicePeaks($0, sampleRate: AudioClip.sampleRate, startTime: 1_000)
+        }
+
+        XCTAssertEqual(slices.map { $0.peak }, [0.6, 0.05])
+        guard slices.count == 2 else { return }
+        XCTAssertEqual(slices[0].at, 1_000, accuracy: 1e-9)
+        XCTAssertEqual(slices[1].at - slices[0].at, 0.05, accuracy: 1e-9)
+    }
+
+    /// A buffer that is not a whole number of slices ends with a shorter one,
+    /// with its own peak and time (the converter's first buffer is short by
+    /// its delay). An empty buffer gives none.
+    func testAShortLastSliceKeepsItsOwnPeak() {
+        let samples = [Float](repeating: 0.1, count: 800) + [Float](repeating: -0.3, count: 560)
+
+        let slices = samples.withUnsafeBufferPointer {
+            AudioRecorder.slicePeaks($0, sampleRate: AudioClip.sampleRate, startTime: 5)
+        }
+
+        XCTAssertEqual(slices.map { $0.peak }, [0.1, 0.3])
+        XCTAssertEqual(slices.last?.at ?? 0, 5.05, accuracy: 1e-9)
+        XCTAssertTrue(AudioRecorder.slicePeaks(UnsafeBufferPointer(start: nil, count: 0),
+                                               sampleRate: AudioClip.sampleRate, startTime: 5).isEmpty)
+    }
+
+    /// The line's clock: a buffer's slices are timed from its host time,
+    /// which AVAudioTime keeps in mach_absolute_time() ticks. In seconds that
+    /// is the clock `ProcessInfo.systemUptime` reads, which the line is drawn by.
+    func testABufferIsTimedByItsHostTime() {
+        let captured = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1_234.5))
+        XCTAssertEqual(AudioRecorder.captureTime(of: captured, duration: 0.1, arrivedAt: 2_000), 1_234.5, accuracy: 1e-6)
+
+        let now = AVAudioTime(hostTime: mach_absolute_time())
+        XCTAssertEqual(AudioRecorder.captureTime(of: now, duration: 0.1, arrivedAt: 0),
+                       ProcessInfo.processInfo.systemUptime, accuracy: 0.05)
+    }
+
+    /// A buffer without a host time is timed by its arrival less its length,
+    /// so its slices end when it arrived instead of running ahead of the line.
+    func testABufferWithoutHostTimeIsTimedByItsArrival() {
+        let sampleTimeOnly = AVAudioTime(sampleTime: 4_800, atRate: 48_000)
+        XCTAssertFalse(sampleTimeOnly.isHostTimeValid)
+
+        XCTAssertEqual(AudioRecorder.captureTime(of: sampleTimeOnly, duration: 0.1, arrivedAt: 2_000), 1_999.9,
+                       accuracy: 1e-9)
     }
 
     /// `inputDeviceUID` resolves through this; an unknown UID must fall back
