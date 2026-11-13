@@ -1,7 +1,7 @@
 # VoiceDictation
 
 ## Project Overview
-A native macOS menu bar app for push-to-talk dictation. Hold the hotkey, speak, let go: the words paste into the app in front. The speech becomes text on the Mac, with whisper.cpp built into the app (base.en by default), and Apple Intelligence's on-device model can tidy the text before it pastes. Nothing leaves the machine except a speech model Danny chooses to download.
+A native macOS menu bar app for push-to-talk dictation. Hold the hotkey, speak, let go: the words paste into the app in front. The speech becomes text on the Mac, with whisper.cpp built into the app (base.en by default), and Apple Intelligence's on-device model can tidy the text before it pastes. It goes online only when Danny asks: to download a speech model he chose, or to check for updates from the menu (Sparkle, automatic checks off).
 
 The repo folder is `voice-dictation/` on the Mac mini and `Voice Dictation/` on the laptop. Write paths with `~/`, never `/Users/<name>/`: the two Macs have different user names.
 
@@ -13,12 +13,13 @@ Danny (daniel.gross85@gmail.com) — personal use, MacMini.
 - Swift Package Manager holds all the code; XcodeGen (`project.yml`) makes the thin app target in `App/`
 - SwiftUI and AppKit, AVFoundation, SwiftData, Speech (`SpeechAnalyzer`), FoundationModels (`SystemLanguageModel`)
 - whisper.cpp v1.9.5, upstream's XCFramework (release b5454) pinned by checksum in `Package.swift`; WhisperKit 1.1.1 (Argmax)
+- Sparkle 2.10.1 for updates, app target only (`exactVersion` in `project.yml`); it checks only from "Check for Updates…"
 
 ## Key Commands
 ```bash
 ./scripts/run-dev.sh                                  # Builds the app into .build/xcode and opens it; needs Xcode and XcodeGen (brew install xcodegen)
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # Runs the tests; xcode-select points at Command Line Tools, which has no XCTest
-./scripts/release.sh                                  # Signed, notarised zip in dist/; one-time setup in docs/release.md
+./scripts/release.sh                                  # Signed, notarised zip and its Sparkle appcast in dist/; one-time setup in docs/release.md
 tail -f ~/Library/Logs/VoiceDictation.log             # Watch the app log
 ```
 

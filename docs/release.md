@@ -43,7 +43,7 @@ run.
    `generate_keys -f <file>` and delete the file. Do not make a second key.
 2. **The public key.** In `project.yml`, replace the `SUPublicEDKey`
    placeholder with the key it printed (the text between `<string>` and
-   `</string>`).
+   `</string>`). Keep the value in double quotes, as the placeholder is.
 3. **The feed.** In `project.yml`, set `SUFeedURL` to
    `https://github.com/DWG131313/voice-dictation/releases/latest/download/appcast.xml`,
    the newest release of this repository. Sparkle can read it only if the

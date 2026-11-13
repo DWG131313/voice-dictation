@@ -120,7 +120,7 @@ None. No shadows, no glows. Regions are separated by `bg-elevated` and a 1px `ha
 
 ## Shapes
 
-Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square.
+Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square. The app icon's rounded square is macOS's icon shape, not a Prism radius.
 
 ## Components
 

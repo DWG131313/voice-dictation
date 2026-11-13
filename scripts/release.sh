@@ -55,8 +55,8 @@ fi
 
 # Sparkle. A copy built with the placeholder feed or key could never take an
 # update, so stop until both are real.
-FEED_URL="$(sed -n 's/^ *SUFeedURL: *"\(.*\)"/\1/p' project.yml)"
-PUBLIC_ED_KEY="$(sed -n 's/^ *SUPublicEDKey: *"\(.*\)"/\1/p' project.yml)"
+FEED_URL="$(sed -n 's/^ *SUFeedURL: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' project.yml)"
+PUBLIC_ED_KEY="$(sed -n 's/^ *SUPublicEDKey: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' project.yml)"
 if [ -z "$FEED_URL" ] || [ -z "$PUBLIC_ED_KEY" ] || grep -qi placeholder <<<"$FEED_URL $PUBLIC_ED_KEY"; then
     cat >&2 <<MSG
 SUFeedURL or SUPublicEDKey in project.yml is still a placeholder (or missing), and a
@@ -113,7 +113,8 @@ xcodebuild archive \
 # the public key of the key already in the keychain (the keychain may ask
 # whether it may use it).
 ARCHIVED_KEY="$(plutil -extract SUPublicEDKey raw -o - "$ARCHIVE/Products/Applications/VoiceDictation.app/Contents/Info.plist")"
-if [ "$("$SPARKLE_BIN/generate_keys" -p)" != "$ARCHIVED_KEY" ]; then
+KEYCHAIN_KEY="$("$SPARKLE_BIN/generate_keys" -p)" || { echo "generate_keys -p failed: $KEYCHAIN_KEY" >&2; exit 1; }
+if [ "$KEYCHAIN_KEY" != "$ARCHIVED_KEY" ]; then
     echo "The app's SUPublicEDKey is not the public half of the Sparkle key in this keychain (generate_keys -p prints that; docs/release.md, \"Sparkle\"). Nothing was sent to Apple." >&2
     exit 1
 fi

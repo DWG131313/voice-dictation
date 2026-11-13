@@ -118,6 +118,30 @@ final class AppIconTests: XCTestCase {
                       "the base is \(master.pixel(column, base - 4)), not spectrum-6")
     }
 
+    /// Drift guard: the committed master is drawn in the colours DESIGN.md
+    /// has now. If a token changes, this fails until `scripts/make-icon.swift`
+    /// is run again.
+    func testTheCommittedMasterMatchesTheCurrentTokens() throws {
+        let design = try String(contentsOf: Self.repo.appendingPathComponent("DESIGN.md"), encoding: .utf8)
+        func token(_ name: String) throws -> (r: Int, g: Int, b: Int) {
+            let line = try XCTUnwrap(design.split(separator: "\n").first { $0.hasPrefix("  \(name): \"#") }, name)
+            let hex = try XCTUnwrap(line.split(separator: "\"").dropFirst().first?.dropFirst(), name)
+            let value = try XCTUnwrap(Int(hex, radix: 16), name)
+            return (value >> 16, (value >> 8) & 0xFF, value & 0xFF)
+        }
+        let (bg, first, sixth) = (try token("bg"), try token("spectrum-1"), try token("spectrum-6"))
+        let master = try Bitmap(contentsOf: Self.iconSet.appendingPathComponent(Self.masterFile()))
+
+        XCTAssertTrue(master.pixel(150, 512).isOpaque(bg), "bg: \(master.pixel(150, 512))")
+        let column = 512
+        let headTop = try XCTUnwrap((100..<512).first { !master.pixel(column, $0).isOpaque(bg) })
+        XCTAssertTrue(master.pixel(column, headTop + 4).isNear(r: first.r, g: first.g, b: first.b),
+                      "the head's top is \(master.pixel(column, headTop + 4)), not spectrum-1")
+        let base = try XCTUnwrap((512..<924).reversed().first { !master.pixel(column, $0).isOpaque(bg) })
+        XCTAssertTrue(master.pixel(column, base - 4).isNear(r: sixth.r, g: sixth.g, b: sixth.b),
+                      "the base is \(master.pixel(column, base - 4)), not spectrum-6")
+    }
+
     /// Any of the seven colours missing, or not a colour: the script names
     /// each one it cannot find and writes nothing.
     func testTheScriptStopsNamingEveryTokenItCannotFind() throws {
