@@ -92,7 +92,9 @@ public final class LibraryModel {
     @ObservationIgnored private let store: TranscriptStore
     /// Whether the window is open. While it is not, nobody sees the rows.
     @ObservationIgnored private(set) var isWindowOpen = false
-    /// True while Paste again has the window hidden (Ruling T19-5).
+    /// True for the whole Paste again run whenever there is a target app (Ruling T19-5), including after
+    /// Danny brings the app back mid-run. It does NOT mean the app is hidden: `AppLifecycle` also checks
+    /// `isHidden` before treating a window close as the run's hide, so keep both checks.
     @ObservationIgnored private(set) var isPastingAgain = false
     /// The re-transcription lane, which yields to dictations.
     @ObservationIgnored private let service: TranscriptionService

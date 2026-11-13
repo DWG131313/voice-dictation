@@ -406,6 +406,7 @@ final class AppModelTests: XCTestCase {
         let run = Task { @MainActor in await library.pasteAgain(older) }
         try await waitUntil("the app is hidden") { activation.isHidden }
         activation.isHidden = false
+        XCTAssertTrue(library.isPastingAgain, "the close must land during the run, or this test proves nothing")
         lifecycle.windowDidClose(AppModel.mainWindowID)
         await run.value
 
