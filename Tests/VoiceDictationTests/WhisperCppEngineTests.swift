@@ -208,20 +208,55 @@ final class WhisperCppEngineTests: XCTestCase {
     func testCancellationStopsPromptly() async throws {
         let engine = try await engineWithBase()
         let sample = try Self.sample()
-        // Two minutes of speech in four windows: far more than base.en gets through in 100 ms.
+        // Two minutes of speech in four windows.
         let twoMinutes = AudioClip(samples: Array(Array(repeating: sample.samples, count: 45).joined()))
         try await engine.prepare(base)
 
+        // How long this Mac takes to decode the clip uncancelled. A cancel
+        // that is not honoured only shows when that is clearly longer than
+        // the bound below.
+        let started = ContinuousClock.now
+        _ = try await engine.transcribe(twoMinutes, model: base, vocabulary: [])
+        let full = started.duration(to: .now).seconds
+        guard full >= 0.5 else {
+            throw XCTSkip("an uncancelled decode takes only \(full) s here, too fast to tell a cancel from a finish")
+        }
+
         let task = Task { try await engine.transcribe(twoMinutes, model: base, vocabulary: []) }
         try await Task.sleep(nanoseconds: 100_000_000)
+        let cancelled = ContinuousClock.now
         task.cancel()
 
-        await assertCancelled(task, within: 1)
+        await assertCancelled(task, within: min(1, full / 2))
+        XCTAssertLessThan(cancelled.duration(to: .now).seconds, full / 2, "cancel took as long as the decode")
         // A decode that failed to stop would still hold the context, and two
         // decodes on one context crash whisper.cpp; so wait it out first.
         _ = await task.result
         let after = try await engine.transcribe(sample, model: base, vocabulary: [])
         XCTAssertEqual(OutputFilter.clean(after), try Self.golden("whisper-cli-base.en-sample.txt"))
+    }
+
+    /// The engine alone, with no service to hold its slot: a second call
+    /// waits for the context instead of crashing whisper.cpp.
+    func testConcurrentTranscribesOnOneEngineBothFinish() async throws {
+        let engine = try await engineWithBase()
+        let sample = try Self.sample()
+        try await engine.prepare(base)
+
+        async let first = engine.transcribe(sample, model: base, vocabulary: [])
+        async let second = engine.transcribe(sample, model: base, vocabulary: [])
+        let texts = try await [first, second]
+
+        let golden = try Self.golden("whisper-cli-base.en-sample.txt")
+        XCTAssertEqual(texts.map(OutputFilter.clean), [golden, golden])
+    }
+
+    /// whisper-cli printed the segments' bytes as they were and the app
+    /// decoded them once, so a character split across two segments is whole.
+    func testSegmentsJoinBeforeDecoding() {
+        XCTAssertEqual(WhisperContext.join([[0x63, 0x61, 0x66, 0xC3], [0xA9, 0x21]]), "café!")
+        XCTAssertEqual(WhisperContext.join([]), "")
+        XCTAssertEqual(WhisperContext.join([[0x61, 0xFF, 0x62]]), "a\u{FFFD}b")
     }
 
     func testUnloadDuringTranscriptionIsSafe() async throws {
@@ -423,4 +458,8 @@ final class WhisperCppEngineTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Resources/golden"))
         return try String(contentsOf: url, encoding: .utf8)
     }
+}
+
+private extension Duration {
+    var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
 }
