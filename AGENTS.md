@@ -52,7 +52,7 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
 - macOS 26 or later, English only
 - Cleanup needs Apple Intelligence switched on; without it the raw text pastes. Use only `SystemLanguageModel.default`, never the cloud model (`PrivateCloudComputeLanguageModel`), which sends text off the Mac
 - Never start the microphone's engine while idle. Preparing it is fine; starting it lights the orange mic indicator
-- whisper.cpp is pinned at v1.9.5. Its golden tests (`WhisperCppEngineTests`) check that it gives whisper-cli's text exactly, so record new golden text before any bump
+- whisper.cpp is pinned at v1.9.5. Its golden tests (`WhisperCppEngineTests`) check that it gives whisper-cli's text exactly. A bump must keep them passing. To record new golden text on purpose, restore `WhisperCLIGoldenRecorder.swift` and the whisper-cli engine from commit `a604041`, and run Homebrew's whisper-cli at the target version
 - The ggml models live in `~/Library/Application Support/VoiceDictation/models/`. They download only when Danny presses Download, and only a file matching the catalog's size and SHA-256 (`GGMLModel`) is kept
 - Globe as the hotkey needs "Press Globe key to: Do Nothing" in System Settings
 - Taps under 0.5 s and near-silent recordings (peak < 0.01) are discarded; a recording stops at 5 minutes or on an audio device change
@@ -64,7 +64,7 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
 
 ## Codex Knowledge Base
 
-When you need to leverage Codex's advanced capabilities — hooks, custom agents, skills, permission patterns, multi-agent orchestration, or SDK usage — reference the central learnings at:
+When you need to leverage Codex's advanced capabilities — hooks, custom agents, skills, permission patterns, multi-agent orchestration, or SDK usage — reference the central learnings, on the Mac mini, at:
 
 - **Architecture & capabilities (99 flags, 41 tools, 27 hooks, 100+ env vars):** `~/CodingProjects/Codex codebase/learnings/CLAUDE_CODE_DEEP_DIVE.md`
 - **Hook recipes & reference (all 27 events with I/O schemas):** `~/CodingProjects/Codex codebase/learnings/HOOKS_REFERENCE.md`
