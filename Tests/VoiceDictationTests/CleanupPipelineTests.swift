@@ -47,6 +47,57 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertTrue(lateCleanups.isEmpty, "a cleanup in time is no late cleanup")
     }
 
+    /// Ruling T22-1: Danny's rules apply to the engine's text first; that is
+    /// the raw text the cleaner gets, the guard compares against, and the
+    /// transcript keeps.
+    @MainActor
+    func testReplacementsMakeTheRawText() async throws {
+        let engineText = "um so i think we should ship my gv seventy"
+        let replaced = "um so i think we should ship my GV70"
+        let pipeline = makePipeline(engineText: engineText, replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
+        cleaner.reply = { _ in "I think we should ship my GV70." }
+
+        dictate(on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(cleaner.given, [replaced], "the cleaner gets the replaced text")
+        let outcome = try XCTUnwrap(outcomes.first)
+        XCTAssertEqual(outcome.rawText, replaced, "the replaced text is the raw text")
+        XCTAssertEqual(outcome.cleanedText, "I think we should ship my GV70.")
+        XCTAssertEqual(paster.pasted, ["I think we should ship my GV70."])
+    }
+
+    /// A cleanup that puts back what a rule replaced is a changed word to
+    /// the guard, which compares against the replaced text: raw is pasted.
+    @MainActor
+    func testGuardComparesAgainstTheReplacedText() async throws {
+        let pipeline = makePipeline(engineText: "um so i think we should ship my gv seventy",
+                                    replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
+        cleaner.reply = { _ in "I think we should ship my gv seventy." }
+
+        dictate(on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+
+        let outcome = try XCTUnwrap(outcomes.first)
+        XCTAssertNil(outcome.cleanedText)
+        XCTAssertEqual(outcome.rawText, "um so i think we should ship my GV70")
+        XCTAssertEqual(paster.pasted, ["um so i think we should ship my GV70"])
+    }
+
+    /// Short texts skip cleanup but still get the rules.
+    @MainActor
+    func testReplacementsApplyWithoutCleanup() async throws {
+        cleanupOn = false
+        let pipeline = makePipeline(engineText: "my gv seventy", replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
+
+        dictate(on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(paster.pasted, ["my GV70"])
+        XCTAssertEqual(outcomes.first?.rawText, "my GV70")
+        XCTAssertTrue(cleaner.given.isEmpty)
+    }
+
     /// A cleanup that changes a word, explains itself, refuses in words or
     /// adds a word is rejected: the raw text is pasted and nothing is shown.
     @MainActor
@@ -506,10 +557,11 @@ final class CleanupPipelineTests: XCTestCase {
     // MARK: - Helpers
 
     @MainActor
-    private func makePipeline(engineText: String) -> DictationPipeline {
+    private func makePipeline(engineText: String,
+                              replacements: @escaping () -> [Replacement] = { [] }) -> DictationPipeline {
         let apple = FakeEngine(kind: .appleSpeech)
         apple.result = engineText
-        return makePipeline(apple)
+        return makePipeline(apple, replacements: replacements)
     }
 
     @MainActor

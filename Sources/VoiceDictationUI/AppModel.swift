@@ -19,6 +19,8 @@ public final class AppModel {
     public let store: TranscriptStore
     /// The main window's transcripts: what is listed and selected.
     public let library: LibraryModel
+    /// Danny's own words and replacement rules, edited in the Vocabulary section.
+    public let vocabulary: VocabularyStore
     public let permissions: PermissionManager
     public let hotkeys: HotkeyManager
     /// Every model, as last listed by `refreshModels()`.
@@ -100,14 +102,17 @@ public final class AppModel {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
         Fonts.registerAll()
         self.service = service
-        // Task 22 adds the vocabulary, for dictation and re-transcription alike.
-        let vocabulary: () -> [String] = { [] }
-        // Task 22 adds the replacements.
+        // One vocabulary for dictation and re-transcription alike (Ruling T22-2).
+        let vocabulary = VocabularyStore(fileURL: dataDirectory.appendingPathComponent("vocabulary.json"))
+        self.vocabulary = vocabulary
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
-                                          cleaner: cleaner, replacements: { [] }, vocabulary: vocabulary,
+                                          cleaner: cleaner, replacements: { vocabulary.activeReplacements },
+                                          vocabulary: { vocabulary.activeWords },
                                           cleanupEnabled: { preferences.cleanupEnabled })
         self.store = store
-        self.library = LibraryModel(store: store, service: service, paster: paster, vocabulary: vocabulary,
+        self.library = LibraryModel(store: store, service: service, paster: paster,
+                                    vocabulary: { vocabulary.activeWords },
+                                    replacements: { vocabulary.activeReplacements },
                                     system: pasteAgain ?? .live())
         self.permissions = PermissionManager()
         // Tests pass a fake: the live one reads the real HIToolbox settings.

@@ -36,6 +36,8 @@ public struct MainWindow: View {
                 TranscriptDetail(library: library, models: model.models)
             } else if library.section == .models {
                 ModelsView(model: model)
+            } else if library.section == .vocabulary {
+                VocabularyView(store: model.vocabulary)
             } else {
                 SetupPlaceholder(section: library.section)
             }
@@ -68,7 +70,7 @@ public struct MainWindow: View {
     }
 }
 
-/// Vocabulary and Settings until Tasks 22 and 24 fill them.
+/// Settings until Task 24 fills it.
 private struct SetupPlaceholder: View {
     let section: LibraryModel.Section
 

@@ -29,6 +29,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     private var _delay: TimeInterval = 0
     private var _unloadable: Set<ModelID> = []
     private var _calls: [Call] = []
+    private var _vocabularies: [[String]] = []
     private var _onDownload: (@Sendable (ModelID, @escaping @Sendable (Double) -> Void) async throws -> Void)?
 
     init(kind: EngineKind, models: [ModelDescriptor] = []) {
@@ -60,6 +61,8 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         set { lock.withLock { _unloadable = newValue } }
     }
     var calls: [Call] { lock.withLock { _calls } }
+    /// The vocabulary each `transcribe` was given.
+    var vocabularies: [[String]] { lock.withLock { _vocabularies } }
     /// Replaces the download: it reports progress through the closure it is
     /// given, and throws (`CancellationError` when cancelled) like an engine.
     var onDownload: (@Sendable (ModelID, @escaping @Sendable (Double) -> Void) async throws -> Void)? {
@@ -78,6 +81,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
 
     func transcribe(_ clip: AudioClip, model: ModelID, vocabulary: [String]) async throws -> String {
         record(.transcribe(model))
+        lock.withLock { _vocabularies.append(vocabulary) }
         while isHeld { try await Task.sleep(nanoseconds: 2_000_000) }
         if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
         return result

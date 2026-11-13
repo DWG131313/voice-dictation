@@ -110,7 +110,7 @@ public final class DictationPipeline {
     @ObservationIgnored private let cleaner: TextCleaner?
     /// Read for each dictation: the app's "Clean up transcripts" setting.
     @ObservationIgnored private let cleanupEnabled: () -> Bool
-    // Task 22 adds the rules that apply the replacements.
+    /// Read for each dictation: Danny's replacement rules and his words.
     @ObservationIgnored private let replacements: () -> [Replacement]
     @ObservationIgnored private let vocabulary: () -> [String]
 
@@ -481,13 +481,7 @@ public final class DictationPipeline {
     /// on the service's text. What it returns is the dictation's raw text,
     /// which the cleaner gets and the guard compares against.
     private func applyingReplacements(to text: String) -> String {
-        Self.apply(replacements(), to: text)
-    }
-
-    /// An identity step until Task 22, which adds `Replacements.apply` and
-    /// calls it here.
-    private static func apply(_ rules: [Replacement], to text: String) -> String {
-        text
+        Replacements.apply(replacements(), to: text)
     }
 
     /// The cleaner, when `text` is to be cleaned up: cleanup is on, the text

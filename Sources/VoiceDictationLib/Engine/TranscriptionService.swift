@@ -8,6 +8,12 @@ public struct TranscriptionResult: Sendable, Equatable {
     /// Seconds the engine spent on the clip. Waiting in line, preparing the
     /// model, and an attempt a dictation stopped are not counted.
     public let elapsed: TimeInterval
+
+    public init(text: String, model: ModelID, elapsed: TimeInterval) {
+        self.text = text
+        self.model = model
+        self.elapsed = elapsed
+    }
 }
 
 /// Owns the engines and the model chosen for dictation, keeps that model

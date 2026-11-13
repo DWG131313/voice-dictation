@@ -21,6 +21,12 @@ Subagent-driven development, Danny's choice on 2026-11-11: a fresh implementer p
 
 Implementers do not launch the app (controller ruling P2), so checks that need the running app, a microphone, permissions or a human are listed here for Danny.
 
+- Task 22 (vocabulary and replacements; not performed because it needs the running app, dictation and you). With the app running (`./scripts/run-dev.sh`), open the window and choose Vocabulary in the sidebar:
+  1. Under Words, type "Tailscale" and press Return. It appears as a row; quit and start the app again and it is still there (it lives in `~/Library/Application Support/VoiceDictation/vocabulary.json`).
+  2. Dictate "set up tail scale on the Mac mini" with Apple Speech selected (the default). Expect the words alone NOT to change the text: Apple Speech ignores them, so it may still paste "tail scale".
+  3. Under Replacements, add "tail scale" then "Tailscale". Dictate the same sentence again: it pastes "Tailscale". The transcript's Raw view also shows "Tailscale" (the rules belong to the raw text; Raw/Cleaned switches only cleanup).
+  4. Choose a WhisperKit model in Models ("Use for dictation") and dictate "Tailscale" in a sentence. With the word listed, the model should favour the spelling; remove the replacement first to see the word's effect alone.
+  5. On a transcript with a kept recording, Re-transcribe with another model: the new alternate carries the rules too, and "Use this one" keeps them.
 - Task 21 (on-device cleanup; not performed because it needs the running app, dictation and you). With the app running (`./scripts/run-dev.sh`) and Apple Intelligence on:
   1. In TextEdit, dictate a sentence with fillers, such as "um so I think we should uh ship it on Friday". The indicator reads "Transcribing", then "Cleaning up" for about half a second, then the cleaned text pastes: "I think we should ship it on Friday." (the model may keep "So"). The log shows `[TIMING] keyDown→firstAudio=…ms keyUp→text=…ms text→pasted=…ms text→cleaned=…ms` (the first three as before; `text→pasted` now includes the cleanup) and `[PIPELINE] Pasted … chars from … in … s, cleaned up in … s`.
   2. Dictate three words ("ship it now"): no "Cleaning up", it pastes as transcribed, and the `[TIMING]` line has no `text→cleaned`.

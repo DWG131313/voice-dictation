@@ -173,6 +173,26 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.store.search("", scope: .all).count, 1, "kept once")
     }
 
+    /// Task 22: the app's vocabulary store feeds dictation. Its words reach
+    /// the engine, its rules change the text, and it lives in the data folder.
+    @MainActor
+    func testTheVocabularyReachesDictation() async throws {
+        let apple = appleEngine()
+        apple.result = "set up tail scale"
+        let model = makeModel([apple])
+        model.vocabulary.words = ["Tailscale", " "]
+        model.vocabulary.replacements = [Replacement(from: "tail scale", to: "Tailscale")]
+        model.vocabulary.save()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("vocabulary.json").path))
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("it is pasted") { !paster.pasted.isEmpty }
+
+        XCTAssertEqual(apple.vocabularies, [["Tailscale"]])
+        XCTAssertEqual(paster.pasted, ["set up Tailscale"])
+    }
+
     /// The window's actions use the app's own parts: Copy goes through the
     /// paster dictation uses (a fake here, never the clipboard).
     @MainActor

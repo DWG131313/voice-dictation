@@ -106,6 +106,8 @@ public final class LibraryModel {
     @ObservationIgnored private let paster: Pasting
     /// The words the engines should favour, as dictation passes them.
     @ObservationIgnored private let vocabulary: () -> [String]
+    /// Danny's rules, which a re-transcription's text gets as a dictation's does.
+    @ObservationIgnored private let replacements: () -> [Replacement]
     /// Which apps are in front, and hiding this one, for Paste again.
     @ObservationIgnored private let system: PasteAgainSystem
     /// How long after the last keystroke an edit saves itself.
@@ -121,12 +123,14 @@ public final class LibraryModel {
     /// `editSaveDelay` is the autosave's wait, about half a second; tests
     /// pass their own.
     init(store: TranscriptStore, service: TranscriptionService, paster: Pasting,
-         vocabulary: @escaping () -> [String] = { [] }, system: PasteAgainSystem,
+         vocabulary: @escaping () -> [String] = { [] }, replacements: @escaping () -> [Replacement] = { [] },
+         system: PasteAgainSystem,
          editSaveDelay: Duration = .milliseconds(500)) {
         self.store = store
         self.service = service
         self.paster = paster
         self.vocabulary = vocabulary
+        self.replacements = replacements
         self.system = system
         self.editSaveDelay = editSaveDelay
     }
@@ -208,7 +212,7 @@ public final class LibraryModel {
 
     /// The number beside a section in the sidebar: its transcripts, search
     /// aside; for Models, the models ready to use, once they are listed.
-    /// Vocabulary (until Task 22) and Settings have none.
+    /// Vocabulary and Settings have none.
     func count(of section: Section, models: [ModelDescriptor]) -> Int? {
         switch section {
         case .all, .today, .pinned: counts[section]
@@ -493,7 +497,10 @@ public final class LibraryModel {
         do {
             // Reading a long recording takes a moment: off the main thread.
             let clip = try await Task.detached { try archive.load(name) }.value
-            result = try await service.transcribe(clip, with: model, vocabulary: vocabulary())
+            let transcribed = try await service.transcribe(clip, with: model, vocabulary: vocabulary())
+            // Ruling T22-1: the rules apply here too, so "Use this one" keeps them.
+            result = TranscriptionResult(text: Replacements.apply(replacements(), to: transcribed.text),
+                                         model: transcribed.model, elapsed: transcribed.elapsed)
         } catch {
             show("Could not re-transcribe: \(DictationPipeline.describe(error))", for: id)
             return

@@ -56,6 +56,37 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertNil(library.message(for: t))
     }
 
+    /// Rulings T22-1 and T22-2: a re-transcription gets Danny's words as
+    /// the hint and his rules on its text, so "Use this one" keeps the rules.
+    @MainActor
+    func testRetranscribeUsesTheVocabularyAndAppliesTheReplacements() async throws {
+        let whisper = FakeEngine(kind: .whisperKit, models: [ready(baseEn)])
+        whisper.result = "Set up tail scale on the Mac mini."
+        let (library, store) = try rig([appleEngine(), whisper], vocabulary: { ["Tailscale"] },
+                                       replacements: { [Replacement(from: "tail scale", to: "Tailscale")] })
+        let t = try XCTUnwrap(store.add(outcome("Set up Tailscale on the Mac mini.")))
+        library.windowOpened()
+
+        await library.retranscribe(t, with: baseEn)
+
+        XCTAssertEqual(whisper.vocabularies, [["Tailscale"]])
+        XCTAssertEqual(t.alternates.first?.text, "Set up Tailscale on the Mac mini.")
+    }
+
+    @MainActor
+    func testRetranscribingAFailedTranscriptPromotesTheReplacedText() async throws {
+        let apple = appleEngine()
+        apple.result = "my gv seventy"
+        let (library, store) = try rig([apple], replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
+        let failed = try XCTUnwrap(store.add(failedOutcome("Apple Speech language files are not installed")))
+        library.windowOpened()
+
+        await library.retranscribe(failed, with: .appleSpeech)
+
+        XCTAssertEqual(failed.text, "my GV70")
+        XCTAssertEqual(paster.copied, ["my GV70"])
+    }
+
     @MainActor
     func testRetranscribeSameModelTwiceReplacesNotDuplicates() async throws {
         let whisper = FakeEngine(kind: .whisperKit, models: [ready(baseEn)])
@@ -793,13 +824,15 @@ final class DetailActionsTests: XCTestCase {
     /// this test's own.
     @MainActor
     private func rig(_ engines: [FakeEngine] = [], apps: FakeApps? = nil,
-                     editSaveDelay: Duration = .seconds(30)) throws -> (LibraryModel, TranscriptStore) {
+                     editSaveDelay: Duration = .seconds(30), vocabulary: @escaping () -> [String] = { [] },
+                     replacements: @escaping () -> [Replacement] = { [] }) throws -> (LibraryModel, TranscriptStore) {
         let directory = try makeDirectory()
         let store = TranscriptStore(directory: directory, inMemory: true,
                                     audio: AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true)))
         XCTAssertEqual(store.health, .ok)
         let library = LibraryModel(store: store, service: TranscriptionService(engines: engines, selected: .appleSpeech),
-                                   paster: paster, system: (apps ?? FakeApps()).system, editSaveDelay: editSaveDelay)
+                                   paster: paster, vocabulary: vocabulary, replacements: replacements,
+                                   system: (apps ?? FakeApps()).system, editSaveDelay: editSaveDelay)
         return (library, store)
     }
 
