@@ -76,17 +76,17 @@ public enum HotkeyChoice: String, Codable, CaseIterable, Sendable {
 /// What a press or release of the hotkey does to the dictation.
 public enum HotkeyAction: Equatable {
     /// Nothing: a down while the key is already down, a release after a
-    /// cancel, the release of the second tap that locked a hands-free
-    /// recording, or any press or release while hands-free is locked but the
-    /// release that stops it.
+    /// cancel, the release of the second tap that locked a double-tap
+    /// recording, or any press or release while a double tap has it locked
+    /// but the release that stops it.
     case none
     /// A recording starts.
     case start
     /// The recording stops and is transcribed: a hold let go, or a double
-    /// tap while hands-free is locked, as its second tap is let go.
+    /// tap while a double tap has it locked, as its second tap is let go.
     case stop
-    /// The press was a tap with hands-free on, maybe the first of a double
-    /// tap: its recording is thrown away.
+    /// The press was a tap with double-tap dictation on, maybe the first of
+    /// a double tap: its recording is thrown away.
     case discardTap
 }
 
@@ -94,9 +94,10 @@ public enum HotkeyAction: Equatable {
 /// dictation (Task 23), kept apart from the event tap so the rules can be
 /// tested.
 ///
-/// Hands-free off, every press records and its release stops, as before: a
-/// quick tap makes a recording too short to keep, which the recorder's
-/// 0.5 s rule throws away. Hands-free on, a hold dictates the same way. A
+/// Double-tap dictation off, every press records and its release stops, as
+/// before: a quick tap makes a recording too short to keep, which the
+/// recorder's 0.5 s rule throws away. Double-tap dictation on, a hold
+/// dictates the same way. A
 /// tap, a press let go within `tapMaximum`, is no dictation: its recording
 /// is thrown away (`.discardTap`). A second tap that goes down within
 /// `doubleTapWindow` of the first one's release locks instead: its recording
@@ -109,8 +110,8 @@ public enum HotkeyAction: Equatable {
 /// known to be a tap, and the next quick tap is a first tap again. A press
 /// that is no tap does nothing, and clears a pending first tap. The tap that
 /// locked is no first tap toward stopping: only taps made while locked
-/// count. This holds whether hands-free is on or not, so a lock outlives the
-/// setting.
+/// count. This holds whether double-tap dictation is on or not, so a lock
+/// outlives the setting.
 ///
 /// A press with another key or a mouse button going down during it is no
 /// tap, whatever the hotkey (Ruling T23-2): it is the hotkey used as a
@@ -128,15 +129,16 @@ public struct TapTracker {
         case none
         /// Down for the dictation its press started.
         case held
-        /// A hands-free recording running until a double tap stops it. The
+        /// A double-tap recording running until a double tap stops it. The
         /// key may be down, for a press that does nothing, or nothing yet: a
         /// double tap's second, which stops the recording when let go.
         case locked
     }
 
-    /// Read at each release. The event tap sets it from the preference at
-    /// each press and release, so a change takes effect at once.
-    public var handsFreeEnabled: Bool
+    /// Whether double-tap dictation is on; read at each release. The event
+    /// tap sets it from the preference at each press and release, so a
+    /// change takes effect at once.
+    public var doubleTapEnabled: Bool
     /// Whether the key is down, as last reported.
     private var isDown = false
     /// When the press under way went down, while it holds the dictation it
@@ -154,8 +156,8 @@ public struct TapTracker {
     /// under way (Ruling T23-2): the hotkey used as a modifier, so no tap.
     private var pressIsChorded = false
 
-    public init(handsFreeEnabled: Bool = false) {
-        self.handsFreeEnabled = handsFreeEnabled
+    public init(doubleTapEnabled: Bool = false) {
+        self.doubleTapEnabled = doubleTapEnabled
     }
 
     var hold: Hold {
@@ -202,7 +204,7 @@ public struct TapTracker {
         }
         guard let start = heldSince else { return .none }
         heldSince = nil
-        guard handsFreeEnabled, isTap(from: start, to: time) else {
+        guard doubleTapEnabled, isTap(from: start, to: time) else {
             lastTapEnd = nil
             return .stop
         }
@@ -230,7 +232,7 @@ public struct TapTracker {
     }
 
     /// The dictation the hotkey held or locked is over: a key cancelled the
-    /// hold, Escape cancelled everything, or the hands-free recording ended
+    /// hold, Escape cancelled everything, or the double-tap recording ended
     /// by itself. The key's release, or its next press, starts from nothing.
     mutating func cancel() {
         heldSince = nil
@@ -243,7 +245,7 @@ public struct TapTracker {
     /// rebuilt by the health check, and `down` is where the key is now, read
     /// from the live modifier state. A held dictation whose key is still down
     /// carries on; one whose release was missed stops now, and a late release
-    /// does nothing. A hands-free lock carries on either way, since a press
+    /// does nothing. A double-tap lock carries on either way, since a press
     /// while locked does nothing. A press or release that went by unseen
     /// makes no tap: a press under way then, of unknown length, is no first
     /// tap, nor a second one. A press missed while nothing was under way
@@ -277,7 +279,7 @@ public struct TapTracker {
 public enum KeyAction: Equatable, Sendable {
     /// Nothing happens and the event goes through untouched. That is any key
     /// or click while the hotkey is up and the app is not working; any key
-    /// but a plain Escape, and any click, while hands-free is locked; a click
+    /// but a plain Escape, and any click, while a double tap has it locked; a click
     /// with Globe held, which is no shortcut (Ruling T23-3); Escape with
     /// Command, Control or Option (⌘⎋ and the like are other apps'
     /// shortcuts) while the hotkey is not held; Control-Option-V with its
@@ -368,14 +370,14 @@ struct PasteLastWait {
 extension ModifierKeyStrategy {
     /// How the tap answers a modifier change: nothing unless it is about the
     /// chosen key (`HotkeyChoice.isDown`), then the tracker's answer. A
-    /// hands-free recording that ended by itself (five minutes, an input
+    /// double-tap recording that ended by itself (five minutes, an input
     /// change, a failure) leaves no lock: the press after it dictates,
     /// rather than counting toward a double tap that would stop a recording
     /// that is already over.
     static func action(forFlagsChanged keyCode: Int64, flags: CGEventFlags, at time: TimeInterval, choice: HotkeyChoice,
-                       tracker: inout TapTracker, handsFree: Bool = false, state: DictationState) -> HotkeyAction {
+                       tracker: inout TapTracker, doubleTap: Bool = false, state: DictationState) -> HotkeyAction {
         guard let isDown = choice.isDown(flagsChangedKeyCode: keyCode, flags: flags) else { return .none }
-        tracker.handsFreeEnabled = handsFree
+        tracker.doubleTapEnabled = doubleTap
         guard isDown else { return tracker.up(at: time) }
         if tracker.hold == .locked, !isRecording(state) { tracker.cancel() }
         return tracker.down(at: time)
@@ -455,7 +457,7 @@ extension ModifierKeyStrategy {
     }
 
     /// The same, applied to `tracker`: a cancel ends the hotkey's hold or
-    /// its hands-free lock, so the key's release, or its next press, starts
+    /// its double-tap lock, so the key's release, or its next press, starts
     /// from nothing. Any key the user presses during a press of the hotkey
     /// makes that press no tap (Ruling T23-2); the app's own paste, which
     /// goes through first, touches nothing.
@@ -481,7 +483,7 @@ extension ModifierKeyStrategy {
     /// recorder's 0.5 s for a click, would otherwise record, and paste into
     /// the app clicked. A click with Globe held cancels nothing (Ruling
     /// T23-3): the dictation goes on, and pastes where the click put the
-    /// cursor. While hands-free is locked a click cancels nothing. A click
+    /// cursor. While a double tap has it locked a click cancels nothing. A click
     /// tagged as the app's own changes nothing, though the app posts none.
     static func action(forMouseDownWithUserData sourceUserData: Int64, choice: HotkeyChoice,
                        hold: TapTracker.Hold) -> KeyAction {

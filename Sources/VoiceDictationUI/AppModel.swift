@@ -22,7 +22,9 @@ public final class AppModel {
     /// Danny's own words and replacement rules, edited in the Vocabulary section.
     public let vocabulary: VocabularyStore
     public let permissions: PermissionManager
-    public let hotkeys: HotkeyManager
+    /// The hotkey's event tap: `HotkeyManager` in the app, a stand-in in
+    /// tests, which never makes a tap.
+    let hotkeys: HotkeyListening
     /// Every model, as last listed by `refreshModels()`.
     public private(set) var models: [ModelDescriptor] = []
     /// The model dictation uses, as last listed; nil until then.
@@ -37,8 +39,8 @@ public final class AppModel {
     /// tap took it when it started (`makeHotkeyStrategy`).
     public var hotkey: HotkeyChoice { preferences.hotkey }
     /// Whether a double tap of the hotkey locks a recording, until another
-    /// stops it, as saved.
-    public var handsFreeEnabled: Bool { preferences.handsFreeEnabled }
+    /// stops it, as saved ("Double-tap to dictate").
+    public var doubleTapEnabled: Bool { preferences.doubleTapEnabled }
     /// The downloads under way, which Cancel cancels.
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
     /// The state each row's note was made in.
@@ -52,6 +54,16 @@ public final class AppModel {
         refreshModels: { [unowned self] in await refreshModels() },
         preferences: preferences
     )
+    /// The Settings section's rows (Task 24), in the window and the Settings
+    /// scene alike.
+    @ObservationIgnored private(set) lazy var settings = SettingsModel(
+        preferences: preferences,
+        store: store,
+        dataDirectory: dataDirectory,
+        system: settingsSystem,
+        chooseMicrophone: { [recorder] uid in recorder.inputDeviceUID = uid },
+        hotkeyChanged: { [unowned self] in hotkeyChanged() }
+    )
     /// Counts the times the app has asked for the Welcome window to open at
     /// launch; the menu bar icon, which has the `openWindow` action, opens it
     /// and takes the request (`takeWelcomeRequest`).
@@ -60,7 +72,13 @@ public final class AppModel {
     @ObservationIgnored private let onboardingSystem: OnboardingSystem
 
     @ObservationIgnored private let preferences: PreferencesManager
-    @ObservationIgnored private let comparisonRecordings: ComparisonRecordings
+    /// The microphone; the pipeline records with it, and Settings moves it.
+    @ObservationIgnored private let recorder: Recording
+    /// What Settings asks of the Mac.
+    @ObservationIgnored private let settingsSystem: SettingsModel.System
+    /// Whether Accessibility is granted, which listening needs: the
+    /// permission manager's answer in the app, the test's in tests.
+    @ObservationIgnored private let accessibilityGranted: () -> Bool
     /// Where the store is, and where the old app kept `history.json`.
     @ObservationIgnored private let dataDirectory: URL
     /// True while the hotkey tap is armed. Tracked explicitly so that losing
@@ -76,14 +94,16 @@ public final class AppModel {
     @ObservationIgnored private var indicatorRecordingStart: Date?
 
     /// The app's parts: the three engines with the model saved for dictation,
-    /// the microphone, the paste, the on-device cleaner, and the store with
-    /// its kept recordings in `~/Library/Application Support/VoiceDictation/`.
+    /// the microphone saved in Settings, the paste, the on-device cleaner,
+    /// the hotkey's event tap, and the store with its kept recordings in
+    /// `~/Library/Application Support/VoiceDictation/`.
     public convenience init() {
         let directory = Self.dataDirectory
         let preferences = PreferencesManager.shared
         self.init(
             service: TranscriptionService(engines: Self.engines(), selected: preferences.selectedModelID),
-            recorder: AudioRecorder(),
+            recorder: AudioRecorder(inputDeviceUID: preferences.inputDeviceUID,
+                                    soundsEnabled: { preferences.soundsEnabled }),
             paster: PasteEngine(),
             store: TranscriptStore(
                 directory: directory,
@@ -91,7 +111,7 @@ public final class AppModel {
                 keptRecordings: { preferences.keptRecordings }
             ),
             preferences: preferences,
-            comparison: ComparisonRecordings(),
+            hotkeys: HotkeyManager(),
             dataDirectory: directory,
             indicator: IndicatorPanel(),
             cleaner: FoundationModelCleaner()
@@ -99,10 +119,13 @@ public final class AppModel {
     }
 
     /// Connects the parts, with no side effects: `start()` asks for
-    /// permissions and arms the hotkey. Tests pass fakes, an in-memory store
-    /// and preferences kept in memory; with no cleaner, nothing is cleaned up.
+    /// permissions and arms the hotkey. Tests pass fakes (the hotkey manager
+    /// among them, so no event tap is made), an in-memory store and
+    /// preferences kept in memory; with no cleaner, nothing is cleaned up.
+    /// `accessibilityGranted` stands in for the permission manager's check.
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
-         preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
+         preferences: PreferencesManager, hotkeys: HotkeyListening, settingsSystem: SettingsModel.System? = nil,
+         accessibilityGranted: (() -> Bool)? = nil, dataDirectory: URL,
          onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil,
          pasteAgain: PasteAgainSystem? = nil, cleaner: TextCleaner? = nil) {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
@@ -124,12 +147,15 @@ public final class AppModel {
                                     replacements: { vocabulary.activeReplacements },
                                     hotkey: { preferences.hotkey },
                                     system: pasteAgain ?? .live())
-        self.permissions = PermissionManager()
+        let permissions = PermissionManager()
+        self.permissions = permissions
         // Tests pass a fake: the live one reads the real HIToolbox settings.
         self.onboardingSystem = onboardingSystem ?? .live(permissions: permissions)
-        self.hotkeys = HotkeyManager()
+        self.accessibilityGranted = accessibilityGranted ?? { permissions.isAccessibilityGranted }
+        self.hotkeys = hotkeys
         self.preferences = preferences
-        self.comparisonRecordings = comparison
+        self.recorder = recorder
+        self.settingsSystem = settingsSystem ?? .live()
         self.dataDirectory = dataDirectory
         self.indicator = indicator
 
@@ -139,10 +165,6 @@ public final class AppModel {
         // A cleanup that came back after its raw text pasted: kept beside it.
         pipeline.onLateCleanup = { [weak self] id, cleanedText, seconds in
             self?.store.setLateCleanup(id: id, cleanedText: cleanedText, seconds: seconds)
-        }
-        // No outcome, but the engine did transcribe the clip (Ruling T9-2).
-        pipeline.onNothingHeard = { [weak self] clip, endedAt, engineText in
-            self?.comparisonRecordings.keep(clip, rawText: engineText, date: endedAt)
         }
         listModelsWhenAMenuOpens()
         observeStateForIndicator()
@@ -451,11 +473,10 @@ public final class AppModel {
         }
     }
 
-    /// After each dictation: keep its recording for the engine comparison
-    /// when that is on, and keep its transcript, a failed one too (Review
-    /// Focus 4), which the window's list then shows, open or not.
+    /// After each dictation: keep its transcript, a failed one too (Review
+    /// Focus 4), with its recording as "Recordings to keep" allows, which
+    /// the window's list then shows, open or not.
     private func finished(_ outcome: DictationOutcome) {
-        comparisonRecordings.keep(outcome)
         let transcript = store.add(outcome)
         onboarding.recordOutcome(outcome)
         if let transcript { library.noteNewTranscript(transcript) }
@@ -476,24 +497,40 @@ public final class AppModel {
 
     private func startListening() {
         guard !isListening else { return }
-        guard permissions.isAccessibilityGranted else {
+        guard accessibilityGranted() else {
             Log.info("[START] Waiting for Accessibility")
             return
         }
+        listenForTheChosenKey()
+        isListening = true
+    }
+
+    /// Another hotkey was chosen in Settings (Task 24). While listening, the
+    /// tap's strategy is replaced at once with one for the new key:
+    /// `HotkeyManager.start` stops the running one first, and a dictation
+    /// its key held or locked ends as if the key had been let go. Not
+    /// listening, there is nothing to replace: listening starts with the
+    /// key saved.
+    func hotkeyChanged() {
+        guard isListening else { return }
+        listenForTheChosenKey()
+    }
+
+    private func listenForTheChosenKey() {
         let strategy = makeHotkeyStrategy()
         hotkeys.start(strategy: strategy)
-        isListening = true
         Log.info("[START] Listening for \(strategy.choice.displayName) key")
     }
 
     /// The hotkey's event tap, as the preferences have it. The key is read
     /// now, so another choice takes a new tap (`HotkeyManager.start` again);
-    /// hands-free and the Paste last shortcut are read at each press, and
-    /// what the pipeline is doing at each key. No tap exists until it starts.
+    /// double-tap dictation and the Paste last shortcut are read at each
+    /// press, and what the pipeline is doing at each key. No tap exists until
+    /// it starts.
     func makeHotkeyStrategy() -> ModifierKeyStrategy {
         let preferences = preferences
         return ModifierKeyStrategy(choice: preferences.hotkey,
-                                   handsFree: { preferences.handsFreeEnabled },
+                                   doubleTap: { preferences.doubleTapEnabled },
                                    pasteLastShortcut: { preferences.pasteLastHotkeyEnabled },
                                    appState: { [weak self] in self?.pipeline.state ?? .idle })
     }
@@ -540,7 +577,7 @@ extension AppModel: @preconcurrency HotkeyDelegate {
         pipeline.cancelHold()
     }
 
-    /// A lone tap with hands-free on is no dictation.
+    /// A lone tap with double-tap dictation on is no dictation.
     public func hotkeyDidTap() {
         pipeline.discardTap()
     }

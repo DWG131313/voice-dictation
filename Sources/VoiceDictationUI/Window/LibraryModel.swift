@@ -13,8 +13,8 @@ import VoiceDictationLib
 /// main thread.
 @MainActor @Observable
 public final class LibraryModel {
-    /// The sidebar's sections. The first three list transcripts. Models,
-    /// Vocabulary and Settings are placeholders until Tasks 20, 22 and 24.
+    /// The sidebar's sections. The first three list transcripts; Models,
+    /// Vocabulary and Settings show their own views (Tasks 20, 22 and 24).
     public enum Section: String, CaseIterable, Identifiable, Sendable {
         case all, today, pinned, models, vocabulary, settings
 

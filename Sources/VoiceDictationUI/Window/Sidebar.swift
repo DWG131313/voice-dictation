@@ -12,7 +12,7 @@ struct Sidebar: View {
     let selectedModel: ModelID?
     /// The key that dictates, and whether a double tap locks it, as saved.
     let hotkey: HotkeyChoice
-    let handsFree: Bool
+    let doubleTap: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -80,7 +80,7 @@ struct Sidebar: View {
                     .font(Theme.Font.ui(12, medium: true))
                     .foregroundStyle(Theme.Color.text)
             }
-            Text(Self.hotkeyReminder(for: hotkey, handsFree: handsFree))
+            Text(Self.hotkeyReminder(for: hotkey, doubleTap: doubleTap))
                 .font(Theme.Font.ui(12))
                 .foregroundStyle(Theme.Color.textMuted)
         }
@@ -91,10 +91,10 @@ struct Sidebar: View {
     }
 
     /// "Hold Right Option to dictate", or with double-tap dictation on
-    /// (`handsFree`) "Hold or double-tap Right Option to dictate": a double
+    /// (`doubleTap`) "Hold or double-tap Right Option to dictate": a double
     /// tap locks a recording, and another stops it. Danny's wording: the
-    /// window never says "hands-free".
-    static func hotkeyReminder(for hotkey: HotkeyChoice, handsFree: Bool) -> String {
-        "Hold \(handsFree ? "or double-tap " : "")\(hotkey.displayName) to dictate"
+    /// window names the feature by the double tap only.
+    static func hotkeyReminder(for hotkey: HotkeyChoice, doubleTap: Bool) -> String {
+        "Hold \(doubleTap ? "or double-tap " : "")\(hotkey.displayName) to dictate"
     }
 }

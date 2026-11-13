@@ -98,32 +98,19 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertTrue(cleaner.given.isEmpty)
     }
 
-    /// Ruling T22-3: the outcome carries the engine's own text beside the replaced raw text.
-    @MainActor
-    func testOutcomeKeepsTheEngineText() async throws {
-        cleanupOn = false
-        let pipeline = makePipeline(engineText: "my gv seventy", replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
-
-        dictate(on: pipeline)
-        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
-
-        XCTAssertEqual(outcomes.first?.engineText, "my gv seventy")
-        XCTAssertEqual(outcomes.first?.rawText, "my GV70")
-    }
-
     /// A rule that empties the text leaves nothing to paste or keep: it is
-    /// nothing heard, and the comparison archive still gets the engine's text.
+    /// nothing heard, with no outcome.
     @MainActor
     func testARuleThatEmptiesTheTextIsNothingHeard() async throws {
         cleanupOn = false
-        let pipeline = makePipeline(engineText: "um", replacements: { [Replacement(from: "um", to: "")] })
-        var heard: [String] = []
-        pipeline.onNothingHeard = { _, _, engineText in heard.append(engineText) }
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.result = "um"
+        let pipeline = makePipeline(apple, replacements: { [Replacement(from: "um", to: "")] })
 
         dictate(on: pipeline)
-        try await waitUntil("it is reported") { heard.count == 1 }
+        try await waitUntil("the engine transcribes it") { apple.transcribedClips.count == 1 }
+        try await waitUntil("the dictation finishes") { pipeline.state == .idle }
 
-        XCTAssertEqual(heard, ["um"])
         XCTAssertTrue(outcomes.isEmpty)
         XCTAssertTrue(paster.pasted.isEmpty)
         XCTAssertEqual(pipeline.state, .idle)

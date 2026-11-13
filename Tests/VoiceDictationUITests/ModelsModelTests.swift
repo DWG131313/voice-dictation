@@ -341,9 +341,7 @@ final class ModelsModelTests: XCTestCase {
         return AppModel(service: TranscriptionService(engines: [apple, whisperKit], selected: selected),
                         recorder: recorder, paster: paster,
                         store: TranscriptStore(directory: directory, inMemory: true),
-                        preferences: preferences,
-                        comparison: ComparisonRecordings(directory: directory.appendingPathComponent("c"), preferences: preferences,
-                                                         queue: DispatchQueue(label: "ModelsModelTests")),
+                        preferences: preferences, hotkeys: FakeHotkeys(), settingsSystem: FakeSettingsSystem().system,
                         dataDirectory: directory, onboardingSystem: .fake(), indicator: nil,
                         pasteAgain: FakeApps().system)
     }

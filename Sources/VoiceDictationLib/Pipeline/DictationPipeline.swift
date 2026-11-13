@@ -10,6 +10,10 @@ public protocol Recording: AnyObject {
     /// When a recording's first audio arrived: at most once per recording,
     /// always before that recording's delegate call.
     var onFirstAudio: ((Date) -> Void)? { get set }
+    /// The microphone to record from, by Core Audio UID; nil follows the
+    /// system default, as does a UID whose device is not connected. Settings
+    /// sets it (Task 24).
+    var inputDeviceUID: String? { get set }
     /// Readies the microphone so the next recording starts at once, without
     /// starting it.
     func prepare()
@@ -43,9 +47,9 @@ public protocol Pasting {
 /// Runs each dictation from key press to paste. It records while the hotkey
 /// is held, has the service transcribe each recording with the selected
 /// model, in the order they were made, cleans the text up, and pastes it into
-/// the frontmost app. Every dictation that is not cancelled is reported once:
-/// through `onOutcome`, or through `onNothingHeard` when its text came back
-/// empty. Use from the main thread.
+/// the frontmost app. Every dictation that is not cancelled, and whose text
+/// is not empty, is reported once, through `onOutcome`. Use from the main
+/// thread.
 ///
 /// At most `maximumWaiting` recordings wait behind the one being transcribed.
 /// When another arrives, the oldest waiting one is skipped: not pasted, and
@@ -78,17 +82,10 @@ public final class DictationPipeline {
     /// The latest input peak while recording (0...1), for the indicator.
     public private(set) var level: Float = 0
     /// Called once for every finished dictation: pasted, left on the
-    /// clipboard, failed or skipped. A cancelled one has none, and one whose
-    /// text came back empty, or that replacements emptied, goes to
-    /// `onNothingHeard` instead.
+    /// clipboard, failed or skipped. A cancelled one has none, and so has
+    /// one whose text came back empty, or that replacements emptied: it
+    /// pastes nothing, and the log says so.
     @ObservationIgnored public var onOutcome: ((DictationOutcome) -> Void)?
-    /// Called once for every dictation whose text came back empty, with its
-    /// clip and when its recording ended. It pastes nothing and has no
-    /// outcome, but the engine did transcribe the clip, so the comparison
-    /// recordings keep it (Ruling T9-2).
-    /// The third value is the engine's text: empty when it heard nothing, or
-    /// what a replacement rule then emptied.
-    @ObservationIgnored public var onNothingHeard: ((_ clip: AudioClip, _ endedAt: Date, _ engineText: String) -> Void)?
     /// Called at most once for a dictation whose raw text pasted at the time
     /// limit, when its cleanup comes back afterwards and the guard accepts
     /// it: with the outcome's id, the cleaned text and the cleanup's seconds.
@@ -214,8 +211,8 @@ public final class DictationPipeline {
         cancelThisHold(because: "a key was pressed while the hotkey was held")
     }
 
-    /// The hotkey was tapped, not held, with hands-free on: maybe the first
-    /// tap of a double tap, never a dictation. The recording the press
+    /// The hotkey was tapped, not held, with double-tap dictation on: maybe
+    /// the first tap of a double tap, never a dictation. The recording the press
     /// started is thrown away as `cancelHold()` would, leaving no trace, and
     /// nothing made before it is touched.
     public func discardTap() {
@@ -242,7 +239,7 @@ public final class DictationPipeline {
     }
 
     /// Escape's cancel (Task 23): Escape while the app is recording,
-    /// transcribing or cleaning up, hands-free locked or not. It cancels what
+    /// transcribing or cleaning up, locked by a double tap or not. It cancels what
     /// the pipeline is doing, not just the current hold's dictation. While
     /// recording, it cancels the recording only, so dictations already in
     /// line still paste. Otherwise it cancels the dictation being cleaned up
@@ -426,7 +423,6 @@ public final class DictationPipeline {
         case .success(let result):
             guard !result.text.isEmpty else {
                 Log.info("[PIPELINE] \(result.model.storageKey) heard nothing; nothing pasted")
-                onNothingHeard?(dictation.clip, dictation.date, "")
                 return
             }
             // The service's text has been through OutputFilter (Ruling P3).
@@ -434,7 +430,6 @@ public final class DictationPipeline {
             // A rule can empty the text: then there is nothing to paste or keep.
             guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 Log.info("[PIPELINE] \(result.model.storageKey): replacements left no text; nothing pasted")
-                onNothingHeard?(dictation.clip, dictation.date, result.text)
                 return
             }
             var cleanedText: String?
@@ -464,7 +459,7 @@ public final class DictationPipeline {
             Log.info("[PIPELINE] \(pasted ? "Pasted" : "Could not paste, left on the clipboard:") \(text.count) chars from \(result.model.storageKey) in \(String(format: "%.2f", result.elapsed)) s\(cleanup)")
             onOutcome?(DictationOutcome(
                 id: dictation.id, date: dictation.date, clip: dictation.clip,
-                rawText: rawText, engineText: result.text, cleanedText: cleanedText, text: text, model: result.model,
+                rawText: rawText, cleanedText: cleanedText, text: text, model: result.model,
                 transcribeSeconds: result.elapsed, cleanupSeconds: cleanupSeconds,
                 appName: appName, status: pasted ? .pasted : .copied
             ))

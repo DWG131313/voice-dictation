@@ -2,44 +2,46 @@ import Foundation
 import Speech
 import VoiceDictationLib
 
-// vd-bench [dir] [--output file]
-// Runs every ready speech model over the WAV files in `dir` (default: the
-// comparison folder the app fills) and writes docs/engine-comparison.md.
+// vd-bench [dir] [--from-archive] [--output file]
+// Runs every ready speech model over the clips and writes
+// docs/engine-comparison.md. With --from-archive the clips are the app's
+// kept recordings (`<uuid>.m4a` in its audio folder); without it, the WAV
+// files in `dir` (default: the comparison folder Task 2's switch filled).
 // It records nothing, pastes nothing and downloads nothing.
 
-var arguments = Array(CommandLine.arguments.dropFirst())
 let fileManager = FileManager.default
 let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("VoiceDictation", isDirectory: true)
 
-var outputPath = "docs/engine-comparison.md"
-if let flag = arguments.firstIndex(of: "--output") {
-    guard flag + 1 < arguments.count else {
-        print("Usage: vd-bench [dir] [--output file]\n--output needs a file path.")
-        exit(2)
-    }
-    outputPath = arguments[flag + 1]
-    arguments.removeSubrange(flag...flag + 1)
+let options: BenchOptions
+do {
+    options = try BenchOptions.parse(Array(CommandLine.arguments.dropFirst()), support: support)
+} catch {
+    print("\(BenchOptions.usage)\n\(error.localizedDescription)")
+    exit(2)
 }
-let directory = arguments.first.map { URL(fileURLWithPath: $0, isDirectory: true) }
-    ?? support.appendingPathComponent("comparison", isDirectory: true)
+let outputPath = options.outputPath
+// With `~` for the home folder.
+let folderName = (options.folder.path as NSString).abbreviatingWithTildeInPath
+let kind: String
+switch options.source {
+case .wavs: kind = "WAV files"
+case .archive: kind = "kept recordings"
+}
 
-let wavs = ((try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-    .filter { $0.pathExtension.lowercased() == "wav" }
-    .sorted { $0.lastPathComponent < $1.lastPathComponent }
-guard !wavs.isEmpty else {
-    print("No WAV files in \(directory.path). Nothing to compare.")
+let files = options.clipFiles()
+guard !files.isEmpty else {
+    print("No \(kind) in \(folderName). Nothing to compare.")
     exit(1)
 }
-var clips: [(name: String, clip: AudioClip)] = []
-for url in wavs {
-    do { clips.append((url.lastPathComponent, try AudioClip(contentsOf: url))) } catch {
-        print("Skipping \(url.lastPathComponent): \(error.localizedDescription)")
-    }
+let loaded = BenchOptions.loadClips(files)
+for (name, reason) in loaded.skipped {
+    print("Skipping \(name): \(reason)")
 }
+let clips = loaded.clips.map { (name: $0.name, clip: $0.clip) }
 
 guard !clips.isEmpty else {
-    print("No readable WAV file in \(directory.path). Nothing to compare.")
+    print("None of the \(kind) in \(folderName) could be read. Nothing to compare.")
     exit(1)
 }
 

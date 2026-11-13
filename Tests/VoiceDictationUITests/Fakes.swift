@@ -125,6 +125,8 @@ final class FakeRecorder: Recording {
     weak var delegate: AudioRecorderDelegate?
     var onLevel: ((Float) -> Void)?
     var onFirstAudio: ((Date) -> Void)?
+    /// The microphone Settings chose, as the real recorder keeps it.
+    var inputDeviceUID: String?
 
     /// What the next stop hands over.
     var nextClip = AudioClip(samples: [Float](repeating: 0.2, count: 16_000))
@@ -270,6 +272,86 @@ final class FakeIndicator: IndicatorPresenting {
     var showsListening: Bool {
         guard isShowing, case .recording? = state else { return false }
         return true
+    }
+}
+
+/// Stands in for `HotkeyManager`: keeps each strategy it is asked to start
+/// and never starts one, so no event tap is ever made.
+final class FakeHotkeys: HotkeyListening {
+    weak var delegate: HotkeyDelegate?
+    private(set) var started: [HotkeyStrategy] = []
+    private(set) var stops = 0
+
+    /// The key of each strategy started, in order.
+    var startedChoices: [HotkeyChoice] { started.compactMap { ($0 as? ModifierKeyStrategy)?.choice } }
+
+    func start(strategy: HotkeyStrategy?) {
+        started.append(strategy ?? ModifierKeyStrategy(choice: .globe))
+    }
+
+    func stop() { stops += 1 }
+}
+
+/// What Settings asks of the Mac, kept here: no Core Audio listener, no
+/// login item, no Finder. The size it reports is measured where it is asked.
+final class FakeSettingsSystem {
+    var cleanup = CleanerAvailability.available
+    var microphones: [AudioInputDevice] = []
+    var canOpenAtLogin = false
+    /// What registering the login item reports; true is success.
+    var loginItemSucceeds = true
+    private(set) var loginItemCalls: [Bool] = []
+    private(set) var revealed: [URL] = []
+    /// How many times the microphones were watched.
+    private(set) var observers = 0
+    private var onMicrophonesChanged: (@MainActor () -> Void)?
+    /// The data folder's size, and whether it was measured on the main thread.
+    let size = SizeProbe()
+
+    /// A microphone came or went, as Core Audio would report it, on the main queue.
+    @MainActor
+    func microphonesChanged() { onMicrophonesChanged?() }
+
+    var system: SettingsModel.System {
+        let size = size
+        return SettingsModel.System(
+            cleanupAvailability: { self.cleanup },
+            microphones: { self.microphones },
+            observeMicrophones: { onChange in
+                self.observers += 1
+                self.onMicrophonesChanged = onChange
+            },
+            canOpenAtLogin: { self.canOpenAtLogin },
+            setOpenAtLogin: { isOn in
+                self.loginItemCalls.append(isOn)
+                return self.loginItemSucceeds
+            },
+            reveal: { self.revealed.append($0) },
+            folderSize: { size.measure($0) })
+    }
+
+    /// Answers `bytes` for any folder, and notes the folder and the thread.
+    final class SizeProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _bytes: Int64 = 0
+        private var _folders: [URL] = []
+        private var _onMainThread: [Bool] = []
+
+        var bytes: Int64 {
+            get { lock.withLock { _bytes } }
+            set { lock.withLock { _bytes = newValue } }
+        }
+        var folders: [URL] { lock.withLock { _folders } }
+        var onMainThread: [Bool] { lock.withLock { _onMainThread } }
+
+        func measure(_ folder: URL) -> Int64 {
+            let isMain = Thread.isMainThread
+            return lock.withLock {
+                _folders.append(folder)
+                _onMainThread.append(isMain)
+                return _bytes
+            }
+        }
     }
 }
 

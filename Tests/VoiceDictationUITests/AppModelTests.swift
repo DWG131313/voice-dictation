@@ -5,15 +5,16 @@ import XCTest
 
 /// The wiring `AppModel` took over from `AppDelegate`, built from fakes: no
 /// microphone, no event tap, an in-memory store, preferences in memory and
-/// comparison recordings in a temporary folder. `start()` is never called
-/// here: it asks for permissions and arms the Globe key.
+/// a temporary data folder. `start()` is never called here: it asks for
+/// permissions and arms the Globe key.
 final class AppModelTests: XCTestCase {
     private let recorder = FakeRecorder()
     private let paster = FakePaster()
-    private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
-    private let queue = DispatchQueue(label: "AppModelTests.comparison")
+    private let defaults = MemoryPreferenceStore()
+    private lazy var preferences = PreferencesManager(defaults: defaults)
     private let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("vd-appmodel-\(UUID().uuidString)", isDirectory: true)
+    /// Where Task 2's comparison switch kept its clips, in the data folder.
     private var comparisonDirectory: URL { directory.appendingPathComponent("comparison", isDirectory: true) }
     private let tiny = ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en")
 
@@ -94,11 +95,9 @@ final class AppModelTests: XCTestCase {
 
     // MARK: - Dictations
 
-    /// Every finished dictation reaches the store (Task 11) and, while the
-    /// setting is on, the comparison recordings (Ruling T9-1).
+    /// Every finished dictation reaches the store (Task 11).
     @MainActor
-    func testEveryDictationIsKeptAndRecordedForComparison() async throws {
-        preferences.keepComparisonRecordings = true
+    func testEveryDictationIsKept() async throws {
         let model = makeModel([appleEngine()])
 
         model.hotkeyDidStartPress()
@@ -109,12 +108,29 @@ final class AppModelTests: XCTestCase {
         let transcript = try XCTUnwrap(model.store.search("", scope: .all).first)
         XCTAssertEqual(transcript.text, "Hello there.")
         XCTAssertEqual(transcript.status, .pasted)
-        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
-        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
-        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8),
-                       "Hello there.")
         // The first pasted dictation completes the Welcome window's last step.
         XCTAssertEqual(model.onboarding.state(of: .tryIt), .done)
+    }
+
+    /// Task 24: kept recordings replace the comparison switch, so the switch,
+    /// still set from before, writes nothing. The clips already in the
+    /// comparison folder stay where they are: `vd-bench` still reads them.
+    @MainActor
+    func testTheOldComparisonSwitchKeepsNothingAndLeavesTheFolderAlone() async throws {
+        defaults.set(true, forKey: "keepComparisonRecordings")
+        try FileManager.default.createDirectory(at: comparisonDirectory, withIntermediateDirectories: true)
+        let oldClip = comparisonDirectory.appendingPathComponent("1762900000000.wav")
+        try AudioClip(samples: [Float](repeating: 0.2, count: 1_600)).writeWAV(to: oldClip)
+        let before = try Data(contentsOf: oldClip)
+        let model = makeModel([appleEngine()])
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the transcript is kept") { !model.store.search("", scope: .all).isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(comparisonFiles(), ["1762900000000.wav"], "the switch wrote a clip")
+        XCTAssertEqual(try Data(contentsOf: oldClip), before)
     }
 
     /// Task 21: a cleanup in time is kept with the raw text it replaced; one
@@ -193,11 +209,9 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(paster.pasted, ["set up Tailscale"])
     }
 
-    /// Ruling T22-3: the transcript keeps the replaced text as its raw text;
-    /// the comparison archive keeps what the engine said.
+    /// Ruling T22-3: the transcript keeps the replaced text as its raw text.
     @MainActor
-    func testComparisonArchiveKeepsTheEngineTextWhileTheTranscriptKeepsTheReplacedText() async throws {
-        preferences.keepComparisonRecordings = true
+    func testTheTranscriptKeepsTheReplacedText() async throws {
         let apple = appleEngine()
         apple.result = "my gv seventy"
         let model = makeModel([apple])
@@ -208,9 +222,6 @@ final class AppModelTests: XCTestCase {
 
         try await waitUntil("the transcript is kept") { !model.store.search("", scope: .all).isEmpty }
         XCTAssertEqual(try XCTUnwrap(model.store.search("", scope: .all).first).rawText, "my GV70")
-        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
-        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
-        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8), "my gv seventy")
     }
 
     /// The window's actions use the app's own parts: Copy goes through the
@@ -294,11 +305,11 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.takeWelcomeRequest())
     }
 
-    /// Ruling T9-2: a dictation whose text came back empty pastes nothing and
-    /// is no transcript, but its clip is kept for comparison, with empty text.
+    /// A dictation whose text came back empty pastes nothing and is no
+    /// transcript. Since Task 24 nothing else keeps it either: Ruling T9-2's
+    /// comparison clip went with the comparison switch.
     @MainActor
-    func testAnEmptyTextIsKeptForComparisonOnly() async throws {
-        preferences.keepComparisonRecordings = true
+    func testAnEmptyTextIsNotKept() async throws {
         let apple = appleEngine()
         apple.result = ""
         let model = makeModel([apple])
@@ -306,11 +317,11 @@ final class AppModelTests: XCTestCase {
         model.hotkeyDidStartPress()
         model.hotkeyDidEndPress()
 
-        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
-        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
-        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8), "")
+        try await waitUntil("the dictation is transcribed") { apple.calls.contains(.transcribe(.appleSpeech)) }
+        try await waitUntil("the app is idle") { model.pipeline.state == .idle }
         XCTAssertTrue(model.store.search("", scope: .all).isEmpty)
         XCTAssertTrue(paster.pasted.isEmpty)
+        XCTAssertEqual(comparisonFiles(), [])
     }
 
     /// A key pressed with the Globe key cancels only that hold's dictation
@@ -355,8 +366,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.store.search("", scope: .all).isEmpty, "a cancelled dictation is not kept")
     }
 
-    /// A lone tap with hands-free on is no dictation: its recording is
-    /// thrown away, and nothing is pasted or kept.
+    /// A lone tap with double-tap dictation on is no dictation: its
+    /// recording is thrown away, and nothing is pasted or kept.
     @MainActor
     func testATapThrowsItsRecordingAway() async throws {
         let model = makeModel([appleEngine()])
@@ -386,9 +397,9 @@ final class AppModelTests: XCTestCase {
     }
 
     /// The tap the app arms follows the preferences: the key saved when it is
-    /// made, and hands-free and the Paste last shortcut as they are at each
-    /// press. It reads what the pipeline is doing at each key. Making one
-    /// creates no event tap; only `start()` does.
+    /// made, and double-tap dictation and the Paste last shortcut as they are
+    /// at each press. It reads what the pipeline is doing at each key. Making
+    /// one creates no event tap; only `start()` does.
     @MainActor
     func testTheHotkeyFollowsThePreferences() {
         preferences.hotkey = .rightCommand
@@ -397,11 +408,11 @@ final class AppModelTests: XCTestCase {
         let strategy = model.makeHotkeyStrategy()
 
         XCTAssertEqual(strategy.choice, .rightCommand)
-        XCTAssertFalse(strategy.handsFree())
+        XCTAssertFalse(strategy.doubleTap())
         XCTAssertFalse(strategy.pasteLastShortcut())
-        preferences.handsFreeEnabled = true
+        preferences.doubleTapEnabled = true
         preferences.pasteLastHotkeyEnabled = true
-        XCTAssertTrue(strategy.handsFree())
+        XCTAssertTrue(strategy.doubleTap())
         XCTAssertTrue(strategy.pasteLastShortcut())
         XCTAssertEqual(strategy.appState(), .idle)
         model.pipeline.missingPermission = "Microphone"
@@ -669,8 +680,7 @@ final class AppModelTests: XCTestCase {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
-                 preferences: preferences,
-                 comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
+                 preferences: preferences, hotkeys: FakeHotkeys(), settingsSystem: FakeSettingsSystem().system,
                  dataDirectory: directory, onboardingSystem: system, indicator: indicator,
                  pasteAgain: (apps ?? FakeApps()).system, cleaner: cleaner)
     }
@@ -688,10 +698,9 @@ final class AppModelTests: XCTestCase {
         ModelDescriptor(id: id, displayName: id.name, detail: "", state: state)
     }
 
-    /// The comparison folder's files, once every write handed over so far is done.
+    /// The comparison folder's files, by name.
     private func comparisonFiles() -> [String] {
-        queue.sync {}
-        return (try? FileManager.default.contentsOfDirectory(atPath: comparisonDirectory.path)) ?? []
+        ((try? FileManager.default.contentsOfDirectory(atPath: comparisonDirectory.path)) ?? []).sorted()
     }
 
     private struct Timeout: Error {}

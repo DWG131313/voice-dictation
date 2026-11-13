@@ -249,6 +249,7 @@ final class FakeRecorder: Recording {
     weak var delegate: AudioRecorderDelegate?
     var onLevel: ((Float) -> Void)?
     var onFirstAudio: ((Date) -> Void)?
+    var inputDeviceUID: String?
 
     /// What the next stop hands over; nil makes the recording too short to keep.
     var nextClip: AudioClip?

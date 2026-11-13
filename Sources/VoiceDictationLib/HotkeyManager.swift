@@ -8,7 +8,7 @@ public protocol HotkeyDelegate: AnyObject {
     /// The hotkey went down: a dictation starts recording.
     func hotkeyDidStartPress()
     /// The hotkey was let go after a hold, or double-tapped to stop a
-    /// hands-free recording, or its release went by while the tap was off,
+    /// double-tap recording, or its release went by while the tap was off,
     /// or its tap was taken down mid-press: the recording stops and is
     /// transcribed.
     func hotkeyDidEndPress()
@@ -16,12 +16,12 @@ public protocol HotkeyDelegate: AnyObject {
     /// Right Option or Right Command was, the hotkey used as a modifier:
     /// cancel this hold's dictation, and only that one.
     func hotkeyCancelled()
-    /// With hands-free on, the hotkey was tapped rather than held, maybe the
-    /// first tap of a double tap: throw away the recording it started.
+    /// With double-tap dictation on, the hotkey was tapped rather than held,
+    /// maybe the first tap of a double tap: throw away the recording it started.
     func hotkeyDidTap()
     /// A plain Escape, with neither Command, Control nor Option, while the
-    /// app was recording, transcribing or cleaning up, hands-free locked or
-    /// not: cancel everything, not just a hold.
+    /// app was recording, transcribing or cleaning up, locked by a double
+    /// tap or not: cancel everything, not just a hold.
     func escapePressedWhileWorking()
     /// Control-Option-V with its shortcut on, once Control and Option are
     /// let go (or a second later, if they stay down): paste the last
@@ -48,8 +48,9 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
     public weak var delegate: HotkeyDelegate?
     /// The key that dictates. Another choice takes another strategy.
     public let choice: HotkeyChoice
-    /// Read at each press and release of the hotkey: whether hands-free is on.
-    let handsFree: () -> Bool
+    /// Read at each press and release of the hotkey: whether double-tap
+    /// dictation is on.
+    let doubleTap: () -> Bool
     /// Read at each key-down: whether Control-Option-V pastes the last transcript.
     let pasteLastShortcut: () -> Bool
     /// Read at each event: what the app is doing (`DictationPipeline.state`).
@@ -74,11 +75,11 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
     }
 
     /// The closures are called on the main thread, where the tap runs.
-    public init(choice: HotkeyChoice, handsFree: @escaping () -> Bool = { false },
+    public init(choice: HotkeyChoice, doubleTap: @escaping () -> Bool = { false },
                 pasteLastShortcut: @escaping () -> Bool = { false },
                 appState: @escaping () -> DictationState = { .idle }) {
         self.choice = choice
-        self.handsFree = handsFree
+        self.doubleTap = doubleTap
         self.pasteLastShortcut = pasteLastShortcut
         self.appState = appState
     }
@@ -197,7 +198,7 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
             let flags = event.flags
             tell(Self.action(forFlagsChanged: event.getIntegerValueField(.keyboardEventKeycode), flags: flags,
                              at: time(of: event), choice: choice, tracker: &tracker,
-                             handsFree: handsFree(), state: appState()))
+                             doubleTap: doubleTap(), state: appState()))
             if pasteLastWait.modifiersChanged(to: flags) {
                 deliver { $0.pasteLastShortcutPressed() }
             }
@@ -284,6 +285,19 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         DispatchQueue.main.async { message(delegate) }
     }
 }
+
+/// What the app asks of `HotkeyManager`: listen with a strategy, which
+/// replaces one already running, and stop. The app takes it through this, so
+/// tests stand in for it and no event tap is ever made (Task 24).
+public protocol HotkeyListening: AnyObject {
+    var delegate: HotkeyDelegate? { get set }
+    /// Starts listening with `strategy`; called again, it replaces the one
+    /// running.
+    func start(strategy: HotkeyStrategy?)
+    func stop()
+}
+
+extension HotkeyManager: HotkeyListening {}
 
 public class HotkeyManager {
     public weak var delegate: HotkeyDelegate? {

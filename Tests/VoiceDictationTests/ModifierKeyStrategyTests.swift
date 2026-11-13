@@ -79,8 +79,8 @@ final class ModifierKeyStrategyTests: XCTestCase {
 
     /// Right Command held, then a click (Right Command+click opens a link
     /// in a new tab): the click goes through untouched, whichever button,
-    /// and cancels that hold's dictation. While hands-free is locked a click
-    /// cancels nothing.
+    /// and cancels that hold's dictation. While a double tap has it locked a
+    /// click cancels nothing.
     func testAClickWithRightCommandHeldGoesThroughAndCancelsTheHold() throws {
         for button in [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown] {
             let (strategy, delegate) = make(.rightCommand, state: recording)
@@ -90,7 +90,7 @@ final class ModifierKeyStrategyTests: XCTestCase {
             XCTAssertEqual(delegate.calls, ["hotkeyDidStartPress", "hotkeyCancelled"], "\(button.rawValue)")
         }
 
-        let (strategy, delegate) = make(.rightCommand, handsFree: true, state: recording)
+        let (strategy, delegate) = make(.rightCommand, doubleTap: true, state: recording)
         let now = ProcessInfo.processInfo.systemUptime
         for (time, flags) in [(now - 0.4, rightCommandDown), (now - 0.3, []), (now - 0.2, rightCommandDown), (now - 0.1, [])] {
             XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_RightCommand, flags: flags, at: time)))
@@ -128,7 +128,7 @@ final class ModifierKeyStrategyTests: XCTestCase {
     /// plain tap at once after it stops nothing, and the tap after that stops
     /// the recording.
     func testTwoShortcutsMadeWithTheHotkeyWhileLockedDoNotStopIt() throws {
-        let (strategy, delegate) = make(.rightCommand, handsFree: true, state: recording)
+        let (strategy, delegate) = make(.rightCommand, doubleTap: true, state: recording)
         let now = ProcessInfo.processInfo.systemUptime
         func hotkey(down: Bool, secondsAgo: TimeInterval) throws {
             XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_RightCommand,
@@ -189,12 +189,12 @@ final class ModifierKeyStrategyTests: XCTestCase {
 
     // MARK: - Timing
 
-    /// The tap times a press by its events' own timestamps. With hands-free
-    /// on, Right Option held for 1.1 s whose down and up are handled together,
+    /// The tap times a press by its events' own timestamps. With double-tap
+    /// dictation on, Right Option held for 1.1 s whose down and up are handled together,
     /// late (the main thread stalled), is still a hold: it dictates, and is
     /// not thrown away as a tap.
     func testALongPressWhoseEventsArriveLateIsStillAHold() throws {
-        let (strategy, delegate) = make(.rightOption, handsFree: true, state: recording)
+        let (strategy, delegate) = make(.rightOption, doubleTap: true, state: recording)
         let now = ProcessInfo.processInfo.systemUptime
         let down = try event(.flagsChanged, key: kVK_RightOption, flags: rightOptionDown, at: now - 1.2)
         let up = try event(.flagsChanged, key: kVK_RightOption, flags: [], at: now - 0.1)
@@ -220,9 +220,9 @@ final class ModifierKeyStrategyTests: XCTestCase {
     /// A strategy that is never started, so it has no tap, telling a
     /// recording delegate. The delegate is returned too: the strategy holds
     /// it weakly.
-    private func make(_ choice: HotkeyChoice, handsFree: Bool = false, pasteLastShortcut: Bool = false,
+    private func make(_ choice: HotkeyChoice, doubleTap: Bool = false, pasteLastShortcut: Bool = false,
                       state: DictationState = .idle) -> (ModifierKeyStrategy, RecordingDelegate) {
-        let strategy = ModifierKeyStrategy(choice: choice, handsFree: { handsFree },
+        let strategy = ModifierKeyStrategy(choice: choice, doubleTap: { doubleTap },
                                            pasteLastShortcut: { pasteLastShortcut }, appState: { state })
         let delegate = RecordingDelegate()
         strategy.delegate = delegate

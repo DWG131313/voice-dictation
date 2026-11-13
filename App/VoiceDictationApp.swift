@@ -62,35 +62,18 @@ struct VoiceDictationApp: App {
         .restorationBehavior(.disabled)
         .windowResizability(.contentSize)
 
+        // ⌘, and the menu's "Settings…": the same view as the window's
+        // Settings section (Task 24), black and dark only, as the window is.
         Settings {
-            // Task 24 puts the settings here.
-            SettingsPlaceholder()
+            SettingsView(model: lifecycle.model)
+                .frame(width: 560, height: 680)
+                .background(Theme.Color.bg)
+                .foregroundStyle(Theme.Color.text)
+                .preferredColorScheme(.dark)
                 .onAppear { lifecycle.windowDidOpen(AppModel.settingsWindowID) }
                 .onDisappear { lifecycle.windowDidClose(AppModel.settingsWindowID) }
         }
         // Like the window, never brought back at the next launch.
         .restorationBehavior(.disabled)
-    }
-}
-
-/// Stands in until Task 24. D1 needs the one switch to record comparison clips,
-/// and the Welcome window is reachable from here.
-private struct SettingsPlaceholder: View {
-    @State private var keepComparison = PreferencesManager.shared.keepComparisonRecordings
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Settings will appear here.")
-            Toggle("Keep recordings for comparison", isOn: $keepComparison)
-                .onChange(of: keepComparison) { _, newValue in
-                    PreferencesManager.shared.keepComparisonRecordings = newValue
-                }
-            Button("Show Welcome…") {
-                NSApp.activate()
-                openWindow(id: AppModel.welcomeWindowID)
-            }
-        }
-        .padding(40)
     }
 }

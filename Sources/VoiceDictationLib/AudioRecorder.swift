@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Cocoa
 import CoreAudio
@@ -87,6 +88,9 @@ public class AudioRecorder {
     public var inputDeviceUID: String? {
         didSet { if inputDeviceUID != oldValue { prepare() } }
     }
+    /// Read at each start and stop: whether the start and stop sounds play
+    /// ("Start and stop sounds" in Settings).
+    private let soundsEnabled: () -> Bool
 
     /// Safety net: if the key-up event is ever lost, stop on our own rather
     /// than recording forever.
@@ -102,6 +106,9 @@ public class AudioRecorder {
         let format: AVAudioFormat
         /// The system's default input when the engine was built.
         let defaultDevice: AudioDeviceID?
+        /// The chosen microphone, set on the engine's input unit; nil when the
+        /// engine follows the system default.
+        let device: AudioDeviceID?
     }
 
     private var prepared: PreparedInput?
@@ -127,11 +134,19 @@ public class AudioRecorder {
     private let captureLock = NSLock()
     private var capture = Capture()
 
-    private let tickOnSound = NSSound(named: .init("Tink"))
-    private let tickOffSound = NSSound(named: .init("Pop"))
+    /// The system's Tink and Pop, played through System Sound Services
+    /// (Task 24): its play call returns in well under a millisecond, where
+    /// `NSSound.play()` held its caller 16 to 73 ms (measured on this Mac).
+    private let tickOnSound = SystemSound(named: "Tink")
+    private let tickOffSound = SystemSound(named: "Pop")
 
-    public init() {
+    /// `inputDeviceUID` is the microphone to record from (nil: the system
+    /// default); `soundsEnabled` is read at each start and stop.
+    public init(inputDeviceUID: String? = nil, soundsEnabled: @escaping () -> Bool = { true }) {
+        self.inputDeviceUID = inputDeviceUID
+        self.soundsEnabled = soundsEnabled
         observeDefaultInputDevice()
+        observeDevices()
     }
 
     deinit {
@@ -209,6 +224,12 @@ public class AudioRecorder {
             return
         }
 
+        // The start sound first, then the capture (Task 24): the old tick,
+        // played once the capture had started, began inside the recording.
+        // The system sound server plays it; the call returns in well under a
+        // millisecond, so it holds up neither the engine's start nor the
+        // first audio.
+        if soundsEnabled() { tickOnSound?.play() }
         do {
             try input.engine.start()
         } catch {
@@ -225,7 +246,6 @@ public class AudioRecorder {
             Log.info("[AUDIO] Maximum recording duration reached — stopping automatically")
             self?.stopRecording()
         }
-        tickOnSound?.play()
         delegate?.recordingDidStart()
     }
 
@@ -234,7 +254,8 @@ public class AudioRecorder {
         guard isRecording else { return }
         let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
         let captured = endCapture()
-        tickOffSound?.play()
+        // Only once the capture has stopped, so the stop sound is not recorded.
+        if soundsEnabled() { tickOffSound?.play() }
 
         switch Self.verdict(duration: duration, peak: captured.peak) {
         case .tooShort:
@@ -286,11 +307,10 @@ public class AudioRecorder {
         discardEngine()
         // Read before the engine picks its device: if the default changes in
         // between, the listener rebuilds once more rather than not at all.
-        let defaultDevice = Self.defaultInputDevice()
+        let defaultDevice = AudioDevices.defaultInputDevice()
         let engine = AVAudioEngine()
-        if let uid = inputDeviceUID {
-            select(microphone: uid, on: engine.inputNode)
-        }
+        // On the input unit before anything reads its format or prepares it.
+        let device = selectMicrophone(on: engine.inputNode)
 
         // 0 channels means no mic access or no device
         let format = engine.inputNode.outputFormat(forBus: 0)
@@ -306,7 +326,8 @@ public class AudioRecorder {
             throw RecorderError("Cannot access microphone: \(error.localizedDescription)")
         }
 
-        let input = PreparedInput(engine: engine, converter: converter, format: format, defaultDevice: defaultDevice)
+        let input = PreparedInput(engine: engine, converter: converter, format: format, defaultDevice: defaultDevice,
+                                  device: device)
         prepared = input
         observeConfigurationChanges(of: engine)
         Log.info("[AUDIO] Prepared input: channels=\(format.channelCount) sampleRate=\(format.sampleRate)")
@@ -451,7 +472,7 @@ public class AudioRecorder {
         )
         let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
             guard let self, !self.isRecording else { return }
-            if let input = self.prepared, input.defaultDevice == Self.defaultInputDevice() { return }
+            if let input = self.prepared, input.defaultDevice == AudioDevices.defaultInputDevice() { return }
             Log.info("[AUDIO] Default input device changed — preparing again")
             self.prepare()
         }
@@ -460,52 +481,88 @@ public class AudioRecorder {
         }
     }
 
-    /// The system's default input device, or nil when there is none.
-    static func defaultInputDevice() -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var device = AudioDeviceID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
-        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
-        return device
+    /// The chosen microphone came or went while idle (Task 24): a fresh
+    /// engine, on it or on the system default, before the next key press.
+    /// Following the system default, the default-device listener does that
+    /// instead, and this does nothing. During a recording there is nothing to
+    /// do: `prepare()` runs when it ends. Registered once (`AudioDevices`).
+    private func observeDevices() {
+        AudioDevices.observeDevices { [weak self] in
+            guard let self, !self.isRecording else { return }
+            let current = Self.microphone(forUID: self.inputDeviceUID, lookup: AudioDevices.deviceID(forUID:))
+            guard Self.needsRebuild(forChosen: self.inputDeviceUID, isPrepared: self.prepared != nil,
+                                    preparedDevice: self.prepared?.device, current: current) else { return }
+            Log.info(current == nil ? "[AUDIO] The chosen microphone is gone — preparing the system default"
+                                    : "[AUDIO] The chosen microphone is connected — preparing it")
+            self.prepare()
+        }
     }
 
-    /// Points the engine's input at the microphone with this UID, if it is
-    /// connected; otherwise the engine keeps the system default.
-    private func select(microphone uid: String, on inputNode: AVAudioInputNode) {
-        guard let device = Self.deviceID(forUID: uid) else {
+    /// Whether a change in the connected devices calls for a new engine:
+    /// only while a microphone is chosen (`uid`), and only when the device it
+    /// now maps to (`current`, nil when it is not connected) is not the one
+    /// the prepared engine records from (`preparedDevice`, nil for the system
+    /// default), or nothing is prepared.
+    static func needsRebuild(forChosen uid: String?, isPrepared: Bool, preparedDevice: AudioDeviceID?,
+                             current: AudioDeviceID?) -> Bool {
+        guard uid != nil else { return false }
+        return !isPrepared || preparedDevice != current
+    }
+
+    /// The microphone to record from: the device with `uid`, as `lookup`
+    /// (Core Audio) finds it while it is connected; nil, the system default,
+    /// when none is chosen or the chosen one is not connected.
+    static func microphone(forUID uid: String?, lookup: (String) -> AudioDeviceID?) -> AudioDeviceID? {
+        uid.flatMap(lookup)
+    }
+
+    /// Sets the chosen microphone on the engine's input unit, if one is
+    /// chosen and connected, and returns it; otherwise the engine keeps the
+    /// system default, and this returns nil.
+    private func selectMicrophone(on inputNode: AVAudioInputNode) -> AudioDeviceID? {
+        guard let uid = inputDeviceUID else { return nil }
+        guard let device = Self.microphone(forUID: uid, lookup: AudioDevices.deviceID(forUID:)) else {
             Log.info("[AUDIO] Microphone \(uid) is not connected — using the system default")
-            return
+            return nil
         }
         do {
             try inputNode.auAudioUnit.setDeviceID(device)
+            return device
         } catch {
             Log.info("[AUDIO] Cannot select microphone \(uid): \(error.localizedDescription) — using the system default")
+            return nil
         }
     }
+}
 
-    /// The Core Audio device with this UID, or nil when none is connected.
-    static func deviceID(forUID uid: String) -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var qualifier = uid as CFString
-        var device = AudioDeviceID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = withUnsafePointer(to: &qualifier) { qualifierPointer in
-            AudioObjectGetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject), &address,
-                UInt32(MemoryLayout<CFString>.size), qualifierPointer, &size, &device
-            )
+/// A short sound from `/System/Library/Sounds`, played by System Sound
+/// Services (AudioServices.h): `play()` hands it to the system sound server
+/// and returns at once. It is heard whatever "Play user interface sound
+/// effects" says (`kAudioServicesPropertyIsUISound` 0), as the `NSSound` it
+/// replaces was; Settings has its own switch. Nil when the file is missing.
+final class SystemSound {
+    private let id: SystemSoundID
+
+    init?(named name: String) {
+        let url = URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff")
+        var id: SystemSoundID = 0
+        // A missing file is an error here (-1500 on this Mac), not a silent sound.
+        guard AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr else {
+            Log.info("[AUDIO] The \(name) sound is not available")
+            return nil
         }
-        guard status == noErr, device != AudioDeviceID(kAudioObjectUnknown) else { return nil }
-        return device
+        var isUISound: UInt32 = 0
+        AudioServicesSetProperty(kAudioServicesPropertyIsUISound, UInt32(MemoryLayout<SystemSoundID>.size), &id,
+                                 UInt32(MemoryLayout<UInt32>.size), &isUISound)
+        self.id = id
+    }
+
+    deinit {
+        AudioServicesDisposeSystemSoundID(id)
+    }
+
+    func play() {
+        AudioServicesPlaySystemSoundWithCompletion(id, nil)
     }
 }
 

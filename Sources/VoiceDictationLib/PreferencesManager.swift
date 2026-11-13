@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Where `PreferencesManager` keeps its values: `UserDefaults` in the app.
 /// Tests pass one kept in memory, since every `UserDefaults` suite leaves a
@@ -13,6 +14,12 @@ protocol PreferenceStore: AnyObject {
 
 extension UserDefaults: PreferenceStore {}
 
+/// The app's settings, kept in its defaults domain and read from there each
+/// time, so nothing is cached. Observable (Task 24): the values live in the
+/// store rather than in stored properties, so each one reports its own reads
+/// and writes (`access` and `withMutation`, which `@Observable` provides),
+/// and a view showing a setting is drawn again when anything changes it.
+@Observable
 public class PreferencesManager {
     public static let shared = PreferencesManager()
 
@@ -22,17 +29,16 @@ public class PreferencesManager {
     private enum Keys {
         static let selectedModel = "selectedModel"
         static let selectedModelID = "selectedModelID"
-        static let historyEnabled = "historyEnabled"
-        static let maxHistoryItems = "maxHistoryItems"
         static let launchAtLogin = "launchAtLogin"
-        static let keepComparisonRecordings = "keepComparisonRecordings"
         static let keptRecordings = "keptRecordings"
         static let hasLaunchedBefore = "hasLaunchedBefore"
         static let onboardingTriedIt = "onboardingTriedIt"
         static let cleanupEnabled = "cleanupEnabled"
         static let hotkey = "hotkey"
-        static let handsFreeEnabled = "handsFreeEnabled"
+        static let doubleTapEnabled = "doubleTapEnabled"
         static let pasteLastHotkeyEnabled = "pasteLastHotkeyEnabled"
+        static let inputDeviceUID = "inputDeviceUID"
+        static let soundsEnabled = "soundsEnabled"
     }
 
     // MARK: - Available Models
@@ -70,8 +76,11 @@ public class PreferencesManager {
 
     // MARK: - Properties
     public var selectedModelId: String {
-        get { defaults.string(forKey: Keys.selectedModel) ?? "base.en" }
-        set { defaults.set(newValue, forKey: Keys.selectedModel) }
+        get {
+            access(keyPath: \.selectedModelId)
+            return defaults.string(forKey: Keys.selectedModel) ?? "base.en"
+        }
+        set { withMutation(keyPath: \.selectedModelId) { defaults.set(newValue, forKey: Keys.selectedModel) } }
     }
 
     public var selectedModel: WhisperModel {
@@ -82,10 +91,11 @@ public class PreferencesManager {
     /// saved, a whisper-cli model chosen in the old app carries over.
     public var selectedModelID: ModelID {
         get {
-            Self.selectedModelID(saved: defaults.string(forKey: Keys.selectedModelID),
-                                 legacy: defaults.string(forKey: Keys.selectedModel))
+            access(keyPath: \.selectedModelID)
+            return Self.selectedModelID(saved: defaults.string(forKey: Keys.selectedModelID),
+                                        legacy: defaults.string(forKey: Keys.selectedModel))
         }
-        set { defaults.set(newValue.storageKey, forKey: Keys.selectedModelID) }
+        set { withMutation(keyPath: \.selectedModelID) { defaults.set(newValue.storageKey, forKey: Keys.selectedModelID) } }
     }
 
     /// A saved choice wins. Otherwise the old app's `selectedModel` becomes
@@ -99,36 +109,15 @@ public class PreferencesManager {
         return .appleSpeech
     }
 
-    public var historyEnabled: Bool {
-        get {
-            if defaults.object(forKey: Keys.historyEnabled) == nil { return true }
-            return defaults.bool(forKey: Keys.historyEnabled)
-        }
-        set { defaults.set(newValue, forKey: Keys.historyEnabled) }
-    }
-
-    public var maxHistoryItems: Int {
-        get {
-            let val = defaults.integer(forKey: Keys.maxHistoryItems)
-            return val > 0 ? val : 20
-        }
-        set { defaults.set(newValue, forKey: Keys.maxHistoryItems) }
-    }
-
     /// Whether the user wants the app to open at login. Defaults to off; the
-    /// user opts in from the menu bar. Only takes effect for an installed
-    /// `.app` bundle (see `LoginItemManager`).
+    /// user opts in from Settings. Only takes effect for an installed `.app`
+    /// bundle (see `LoginItemManager`).
     public var launchAtLogin: Bool {
-        get { defaults.bool(forKey: Keys.launchAtLogin) }
-        set { defaults.set(newValue, forKey: Keys.launchAtLogin) }
-    }
-
-    /// Keep each recording and the text the engine produced for it in
-    /// `~/Library/Application Support/VoiceDictation/comparison/`, for the
-    /// engine comparison. Defaults to off.
-    public var keepComparisonRecordings: Bool {
-        get { defaults.bool(forKey: Keys.keepComparisonRecordings) }
-        set { defaults.set(newValue, forKey: Keys.keepComparisonRecordings) }
+        get {
+            access(keyPath: \.launchAtLogin)
+            return defaults.bool(forKey: Keys.launchAtLogin)
+        }
+        set { withMutation(keyPath: \.launchAtLogin) { defaults.set(newValue, forKey: Keys.launchAtLogin) } }
     }
 
     /// How many recent recordings the app keeps for replay and
@@ -138,23 +127,30 @@ public class PreferencesManager {
 
     public var keptRecordings: Int {
         get {
+            access(keyPath: \.keptRecordings)
             guard defaults.object(forKey: Keys.keptRecordings) != nil else { return Self.defaultKeptRecordings }
             return max(0, defaults.integer(forKey: Keys.keptRecordings))
         }
-        set { defaults.set(max(0, newValue), forKey: Keys.keptRecordings) }
+        set { withMutation(keyPath: \.keptRecordings) { defaults.set(max(0, newValue), forKey: Keys.keptRecordings) } }
     }
 
     /// True once the app has been started before; the Welcome window shows
     /// itself on the first launch whatever else is set up.
     public var hasLaunchedBefore: Bool {
-        get { defaults.bool(forKey: Keys.hasLaunchedBefore) }
-        set { defaults.set(newValue, forKey: Keys.hasLaunchedBefore) }
+        get {
+            access(keyPath: \.hasLaunchedBefore)
+            return defaults.bool(forKey: Keys.hasLaunchedBefore)
+        }
+        set { withMutation(keyPath: \.hasLaunchedBefore) { defaults.set(newValue, forKey: Keys.hasLaunchedBefore) } }
     }
 
     /// True once a dictation has pasted: the Welcome window's last step.
     public var onboardingTriedIt: Bool {
-        get { defaults.bool(forKey: Keys.onboardingTriedIt) }
-        set { defaults.set(newValue, forKey: Keys.onboardingTriedIt) }
+        get {
+            access(keyPath: \.onboardingTriedIt)
+            return defaults.bool(forKey: Keys.onboardingTriedIt)
+        }
+        set { withMutation(keyPath: \.onboardingTriedIt) { defaults.set(newValue, forKey: Keys.onboardingTriedIt) } }
     }
 
     /// "Clean up transcripts": dictations are cleaned up on the Mac before
@@ -162,33 +158,71 @@ public class PreferencesManager {
     /// is unavailable the cleaner is skipped whatever this says.
     public var cleanupEnabled: Bool {
         get {
+            access(keyPath: \.cleanupEnabled)
             guard defaults.object(forKey: Keys.cleanupEnabled) != nil else { return true }
             return defaults.bool(forKey: Keys.cleanupEnabled)
         }
-        set { defaults.set(newValue, forKey: Keys.cleanupEnabled) }
+        set { withMutation(keyPath: \.cleanupEnabled) { defaults.set(newValue, forKey: Keys.cleanupEnabled) } }
     }
 
     /// The key held to dictate (Task 23), saved by its raw value. Globe
     /// until another is chosen; a saved value this version does not know
     /// reads as Globe. The event tap reads it when it starts.
     public var hotkey: HotkeyChoice {
-        get { defaults.string(forKey: Keys.hotkey).flatMap(HotkeyChoice.init(rawValue:)) ?? .globe }
-        set { defaults.set(newValue.rawValue, forKey: Keys.hotkey) }
+        get {
+            access(keyPath: \.hotkey)
+            return defaults.string(forKey: Keys.hotkey).flatMap(HotkeyChoice.init(rawValue:)) ?? .globe
+        }
+        set { withMutation(keyPath: \.hotkey) { defaults.set(newValue.rawValue, forKey: Keys.hotkey) } }
     }
 
-    /// Hands-free lock: a quick double tap of the hotkey records until
-    /// another double tap stops it (Task 23; the window calls it double-tap
-    /// dictation). Off until switched on; read at each press.
-    public var handsFreeEnabled: Bool {
-        get { defaults.bool(forKey: Keys.handsFreeEnabled) }
-        set { defaults.set(newValue, forKey: Keys.handsFreeEnabled) }
+    /// "Double-tap to dictate": a quick double tap of the hotkey records
+    /// until another double tap stops it (Task 23). Off until switched on;
+    /// read at each press. Saved as `doubleTapEnabled` since Task 24, with
+    /// no migration: the setting was in no window before.
+    public var doubleTapEnabled: Bool {
+        get {
+            access(keyPath: \.doubleTapEnabled)
+            return defaults.bool(forKey: Keys.doubleTapEnabled)
+        }
+        set { withMutation(keyPath: \.doubleTapEnabled) { defaults.set(newValue, forKey: Keys.doubleTapEnabled) } }
     }
 
     /// Control-Option-V pastes the last transcript, as the menu's Paste Last
     /// Transcript does (Task 23). Off until switched on; read at each key.
     public var pasteLastHotkeyEnabled: Bool {
-        get { defaults.bool(forKey: Keys.pasteLastHotkeyEnabled) }
-        set { defaults.set(newValue, forKey: Keys.pasteLastHotkeyEnabled) }
+        get {
+            access(keyPath: \.pasteLastHotkeyEnabled)
+            return defaults.bool(forKey: Keys.pasteLastHotkeyEnabled)
+        }
+        set {
+            withMutation(keyPath: \.pasteLastHotkeyEnabled) {
+                defaults.set(newValue, forKey: Keys.pasteLastHotkeyEnabled)
+            }
+        }
+    }
+
+    /// The Core Audio UID of the microphone to record from (Task 24); nil,
+    /// the default, follows the system's default input. A UID whose device
+    /// is not connected is kept, and the recorder uses the default until it
+    /// comes back. Setting nil removes the saved UID.
+    public var inputDeviceUID: String? {
+        get {
+            access(keyPath: \.inputDeviceUID)
+            return defaults.string(forKey: Keys.inputDeviceUID)
+        }
+        set { withMutation(keyPath: \.inputDeviceUID) { defaults.set(newValue, forKey: Keys.inputDeviceUID) } }
+    }
+
+    /// "Start and stop sounds": the recorder plays the system's Tink when a
+    /// recording starts and Pop when it ends (Task 24). On until switched off.
+    public var soundsEnabled: Bool {
+        get {
+            access(keyPath: \.soundsEnabled)
+            guard defaults.object(forKey: Keys.soundsEnabled) != nil else { return true }
+            return defaults.bool(forKey: Keys.soundsEnabled)
+        }
+        set { withMutation(keyPath: \.soundsEnabled) { defaults.set(newValue, forKey: Keys.soundsEnabled) } }
     }
 
     /// The app uses `shared`, on the standard defaults.

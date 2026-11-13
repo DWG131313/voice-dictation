@@ -58,7 +58,9 @@ final class PreferencesMigratorTests: XCTestCase {
     }
 
     /// Every key of the old domain is copied, not only the five above
-    /// (Ruling P6): a setting such as the comparison recordings carries over.
+    /// (Ruling P6): a setting such as the kept recordings carries over. So
+    /// does one no version reads any more, such as Task 2's comparison
+    /// switch, which Task 24 removed; it is harmless.
     func testCopiesKeysBeyondTheFive() {
         let copied = PreferencesMigrator.migrateIfNeeded(
             legacy: ["keepComparisonRecordings": true, "keptRecordings": 20,
@@ -68,7 +70,7 @@ final class PreferencesMigratorTests: XCTestCase {
         XCTAssertEqual(Set(copied), ["keepComparisonRecordings", "keptRecordings", "selectedModelID",
                                      "didImportLegacyHistory"])
         let preferences = PreferencesManager(defaults: target)
-        XCTAssertTrue(preferences.keepComparisonRecordings)
+        XCTAssertTrue(target.bool(forKey: "keepComparisonRecordings"))
         XCTAssertEqual(preferences.keptRecordings, 20)
         XCTAssertEqual(preferences.selectedModelID, ModelID(engine: .whisperKit, name: "openai_whisper-base.en"))
         XCTAssertTrue(target.bool(forKey: "didImportLegacyHistory"))

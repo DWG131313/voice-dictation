@@ -68,30 +68,25 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.dictationsInFlight, 0)
     }
 
-    /// Ruling T9-2: a dictation whose text came back empty reports its clip
-    /// and when its recording ended, for the comparison recordings, without
-    /// an outcome. A dictation with text does not; its outcome has the clip.
+    /// A dictation whose text came back empty has no outcome and pastes
+    /// nothing; the dictation after it pastes as usual, and its outcome has
+    /// the clip. (Ruling T9-2's report of the empty one's clip went with the
+    /// comparison recordings in Task 24.)
     @MainActor
-    func testEmptyTextReportsItsClipWithoutAnOutcome() async throws {
+    func testEmptyTextHasNoOutcome() async throws {
         let apple = FakeEngine(kind: .appleSpeech)
         let pipeline = makePipeline([apple])
-        var heard: [(clip: AudioClip, date: Date)] = []
-        pipeline.onNothingHeard = { clip, date, _ in heard.append((clip, date)) }
 
         apple.result = ""
-        let before = Date()
         dictate(clip, on: pipeline)
-        try await waitUntil("the clip is reported") { heard.count == 1 }
-        let after = Date()
+        try await waitUntil("the first dictation finishes") { pipeline.state == .idle }
         apple.result = "hello"
         dictate(clip, on: pipeline)
         try await waitUntil("the second dictation finishes") { outcomes.count == 1 }
 
-        XCTAssertEqual(heard.count, 1, "a dictation with text was reported as heard nothing")
-        XCTAssertEqual(heard.first?.clip, clip)
-        let endedAt = try XCTUnwrap(heard.first?.date)
-        XCTAssertTrue((before...after).contains(endedAt), "\(endedAt) is not when the recording ended")
+        XCTAssertEqual(apple.transcribedClips.count, 2)
         XCTAssertEqual(outcomes.map(\.status), [.pasted])
+        XCTAssertEqual(outcomes.first?.clip, clip)
         XCTAssertEqual(paster.pasted, ["hello"])
     }
 
@@ -537,7 +532,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.canPasteLast, "an empty text is nothing to paste")
     }
 
-    // MARK: - A tap with hands-free on (Task 23)
+    // MARK: - A tap with double-tap dictation on (Task 23)
 
     /// A tap is no dictation: the recording the press started is thrown
     /// away and leaves no trace, and a dictation made before it still pastes.

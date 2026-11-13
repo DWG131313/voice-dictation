@@ -27,7 +27,7 @@ public struct MainWindow: View {
         let library = model.library
         HStack(spacing: 0) {
             Sidebar(library: library, models: model.models, selectedModel: model.selectedModel,
-                    hotkey: model.hotkey, handsFree: model.handsFreeEnabled)
+                    hotkey: model.hotkey, doubleTap: model.doubleTapEnabled)
                 .frame(width: Self.sidebarWidth)
             column
             if library.section.scope != nil {
@@ -40,7 +40,7 @@ public struct MainWindow: View {
             } else if library.section == .vocabulary {
                 VocabularyView(store: model.vocabulary)
             } else {
-                SetupPlaceholder(section: library.section)
+                SettingsView(model: model)
             }
         }
         .frame(minWidth: Self.minimumWidth, maxWidth: .infinity, minHeight: Self.minimumHeight, maxHeight: .infinity)
@@ -68,25 +68,5 @@ public struct MainWindow: View {
         .opacity(0)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-}
-
-/// Settings until Task 24 fills it.
-private struct SetupPlaceholder: View {
-    let section: LibraryModel.Section
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            Text(section.title)
-                .font(Theme.Font.title())
-                .foregroundStyle(Theme.Color.text)
-                .accessibilityAddTraits(.isHeader)
-            Text("\(section.title) will appear here.")
-                .font(Theme.Font.ui(14))
-                .foregroundStyle(Theme.Color.textMuted)
-        }
-        .padding(.horizontal, Theme.Space.lg + Theme.Space.xs)
-        .padding(.vertical, Theme.Space.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

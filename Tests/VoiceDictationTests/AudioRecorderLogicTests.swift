@@ -84,7 +84,7 @@ final class AudioRecorderLogicTests: XCTestCase {
     /// `inputDeviceUID` resolves through this; an unknown UID must fall back
     /// to the system default rather than fail. Reads device properties only.
     func testFindsMicrophoneByUID() throws {
-        XCTAssertNil(AudioRecorder.deviceID(forUID: "no-such-microphone"))
+        XCTAssertNil(AudioDevices.deviceID(forUID: "no-such-microphone"))
 
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -105,7 +105,63 @@ final class AudioRecorderLogicTests: XCTestCase {
         XCTAssertEqual(status, noErr)
         let defaultUID = try XCTUnwrap(uid?.takeRetainedValue() as String?)
 
-        XCTAssertEqual(AudioRecorder.deviceID(forUID: defaultUID), device)
+        XCTAssertEqual(AudioDevices.deviceID(forUID: defaultUID), device)
+        XCTAssertTrue(AudioDevices.inputDevices().contains { $0.uid == defaultUID },
+                      "the default input is among the microphones Settings lists")
+    }
+
+    /// Settings' list: every device with an input, each with a UID that
+    /// leads back to it and a name to show, sorted by name.
+    func testListsTheMicrophonesWithNamesAndUIDs() {
+        let devices = AudioDevices.inputDevices()
+        for device in devices {
+            XCTAssertFalse(device.uid.isEmpty)
+            XCTAssertFalse(device.name.isEmpty, device.uid)
+            XCTAssertNotNil(AudioDevices.deviceID(forUID: device.uid), device.uid)
+        }
+        XCTAssertEqual(devices.map(\.name), devices.map(\.name).sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        XCTAssertEqual(Set(devices.map(\.uid)).count, devices.count, "one row per device")
+    }
+
+    // Task 24: a chosen microphone that comes or goes while idle.
+
+    /// Following the system default, the device list changes nothing: the
+    /// default-device listener rebuilds when the default moves.
+    func testNoMicrophoneChosenIgnoresTheDeviceList() {
+        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: nil, isPrepared: true, preparedDevice: nil, current: nil))
+        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: nil, isPrepared: false, preparedDevice: nil, current: nil))
+    }
+
+    /// The chosen microphone unplugged: the engine built on it records
+    /// nothing, so a new one on the system default. Plugged back in: a new
+    /// one on it. Unchanged: the prepared engine is kept.
+    func testAChosenMicrophoneThatComesOrGoesRebuilds() {
+        let uid = "AppleUSBAudioEngine:Blue:Yeti:1"
+        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: nil), "gone")
+        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: 81), "back")
+        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: 81))
+        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: nil),
+                       "still gone: the engine on the system default stays")
+        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: false, preparedDevice: nil, current: 81),
+                      "nothing prepared: try again")
+    }
+
+    /// The device the recorder sets on the engine's input unit: the chosen
+    /// one while connected, otherwise none, which leaves the system default.
+    func testTheChosenMicrophoneOrTheSystemDefault() {
+        let connected: (String) -> AudioDeviceID? = { $0 == "BuiltInMicrophoneDevice" ? 73 : nil }
+        XCTAssertEqual(AudioRecorder.microphone(forUID: "BuiltInMicrophoneDevice", lookup: connected), 73)
+        XCTAssertNil(AudioRecorder.microphone(forUID: "AppleUSBAudioEngine:Blue:Yeti:1", lookup: connected))
+        XCTAssertNil(AudioRecorder.microphone(forUID: nil, lookup: connected))
+    }
+
+    /// The start and stop sounds are the system's Tink and Pop, through
+    /// System Sound Services. Loading one plays nothing; a sound that is not
+    /// there is none, and the recorder then plays nothing.
+    func testTheStartAndStopSoundsLoad() {
+        XCTAssertNotNil(SystemSound(named: "Tink"))
+        XCTAssertNotNil(SystemSound(named: "Pop"))
+        XCTAssertNil(SystemSound(named: "NoSuchSound"))
     }
 
     func testVerdictTooShort() {

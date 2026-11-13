@@ -12,9 +12,9 @@ public enum DictationState: Equatable, Sendable {
 }
 
 /// One finished dictation. A cancelled dictation produces none, and so does
-/// one whose text came back empty (the pipeline reports its clip through
-/// `onNothingHeard`). Every other one, including one that failed or was
-/// skipped, produces exactly one.
+/// one whose text came back empty, or that replacement rules emptied: it
+/// pastes nothing and is not kept. Every other one, including one that
+/// failed or was skipped, produces exactly one.
 public struct DictationOutcome: Sendable {
     public enum Status: String, Codable, Sendable {
         /// Pasted into the frontmost app.
@@ -30,12 +30,9 @@ public struct DictationOutcome: Sendable {
     public let date: Date
     /// The recording, kept so a failed dictation can be transcribed again.
     public let clip: AudioClip?
-    /// The model's text; empty for a failure.
+    /// The model's text, with Danny's replacement rules applied; empty for
+    /// a failure.
     public let rawText: String
-    /// What the engine said (after `OutputFilter`), before Danny's
-    /// replacement rules; the comparison archive keeps this (Ruling T22-3).
-    /// Nil where there were no rules to apply: `rawText` then.
-    public let engineText: String?
     public let cleanedText: String?
     /// What was pasted (or left on the clipboard); empty for a failure.
     public var text: String
@@ -50,17 +47,13 @@ public struct DictationOutcome: Sendable {
     /// Why it failed, for `.failed`.
     public let failure: String?
 
-    /// What the comparison archive keeps: the engine's own text.
-    public var comparisonText: String { engineText ?? rawText }
-
-    public init(id: UUID = UUID(), date: Date, clip: AudioClip?, rawText: String, engineText: String? = nil, cleanedText: String? = nil,
+    public init(id: UUID = UUID(), date: Date, clip: AudioClip?, rawText: String, cleanedText: String? = nil,
                 text: String, model: ModelID, transcribeSeconds: Double, cleanupSeconds: Double? = nil,
                 appName: String?, status: Status, failure: String? = nil) {
         self.id = id
         self.date = date
         self.clip = clip
         self.rawText = rawText
-        self.engineText = engineText
         self.cleanedText = cleanedText
         self.text = text
         self.model = model
