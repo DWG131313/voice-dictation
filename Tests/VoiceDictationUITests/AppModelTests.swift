@@ -322,7 +322,84 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(t.isEdited)
     }
 
+    // MARK: - Windows and Paste again (Ruling T19-5)
+
+    /// A real opening of the main window activates the app and opens the
+    /// library on the newest transcript (Ruling T18-4).
+    @MainActor
+    func testARealOpeningActivatesAndSelectsTheNewest() throws {
+        let activation = FakeActivation()
+        let model = makeModel([appleEngine()])
+        let lifecycle = AppLifecycle(model: model, activation: activation.activation)
+        _ = try XCTUnwrap(model.store.add(pasteAgainOutcome("Older.", at: 0)))
+        let newer = try XCTUnwrap(model.store.add(pasteAgainOutcome("Newer.", at: 60)))
+
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+
+        XCTAssertEqual(activation.calls, [.regularPolicy, .activate])
+        XCTAssertEqual(model.library.selection, newer.id)
+    }
+
+    /// Paste again hides every window and shows them again. However SwiftUI
+    /// reports that, as closes during the run and opens during or after it,
+    /// none of it is a real opening: no policy change, no activation (which
+    /// would send the pasted-for Cmd+V to this app), and the library keeps
+    /// the transcript pasted and its message. A real close and reopen
+    /// afterwards works as ever.
+    @MainActor
+    func testPasteAgainsReturnNeverActivates() async throws {
+        for returnsDuringTheRun in [true, false] {
+            let apps = FakeApps()
+            apps.frontmostAfterHide = nil
+            let activation = FakeActivation()
+            let model = makeModel([appleEngine()], apps: apps)
+            let lifecycle = AppLifecycle(model: model, activation: activation.activation)
+            let ids = [AppModel.mainWindowID, AppModel.welcomeWindowID, AppModel.settingsWindowID]
+            let library = model.library
+            library.pasteAgainWaitLimit = 0.1
+            let older = try XCTUnwrap(model.store.add(pasteAgainOutcome("Older.", at: 0)))
+            _ = try XCTUnwrap(model.store.add(pasteAgainOutcome("Newer.", at: 60)))
+            for id in ids { lifecycle.windowDidOpen(id) }
+            library.selection = older.id
+            activation.reset()
+
+            apps.onHide = { for id in ids { lifecycle.windowDidClose(id) } }
+            if returnsDuringTheRun { apps.onUnhide = { for id in ids { lifecycle.windowDidOpen(id) } } }
+            await library.pasteAgain(older)
+            if !returnsDuringTheRun { for id in ids { lifecycle.windowDidOpen(id) } }
+
+            XCTAssertEqual(apps.unhides, 1)
+            XCTAssertEqual(activation.calls, [], "the return is no opening (during the run: \(returnsDuringTheRun))")
+            XCTAssertEqual(library.selection, older.id)
+            XCTAssertEqual(library.message(for: older), "Copied — paste with ⌘V")
+
+            // The next appearance is a real one.
+            apps.onHide = nil
+            apps.onUnhide = nil
+            lifecycle.windowDidOpen(AppModel.welcomeWindowID)
+            XCTAssertEqual(activation.calls, [.regularPolicy, .activate])
+        }
+    }
+
+    /// Closing the last window outside Paste again returns to the menu bar
+    /// and hides.
+    @MainActor
+    func testARealCloseLeavesAndHides() async throws {
+        let activation = FakeActivation()
+        let model = makeModel([appleEngine()])
+        let lifecycle = AppLifecycle(model: model, activation: activation.activation)
+
+        lifecycle.windowDidClose(AppModel.mainWindowID)
+        try await waitUntil("the app hides") { activation.calls == [.accessoryPolicy, .hide] }
+    }
+
     // MARK: - Helpers
+
+    @MainActor
+    private func pasteAgainOutcome(_ text: String, at offset: TimeInterval) -> DictationOutcome {
+        DictationOutcome(date: Date(timeIntervalSince1970: 1_762_900_000 + offset), clip: nil, rawText: text, text: text,
+                         model: .appleSpeech, transcribeSeconds: 0.2, appName: "TextEdit", status: .pasted)
+    }
 
     @MainActor
     func testCreatingTheModelRegistersTheFontsOnce() {
@@ -333,14 +410,15 @@ final class AppModelTests: XCTestCase {
 
     @MainActor
     private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
-                           system: OnboardingSystem = .fake(), indicator: FakeIndicator? = nil) -> AppModel {
+                           system: OnboardingSystem = .fake(), indicator: FakeIndicator? = nil,
+                           apps: FakeApps? = nil) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences,
                  comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
                  dataDirectory: directory, onboardingSystem: system, indicator: indicator,
-                 pasteAgain: FakeApps().system)
+                 pasteAgain: (apps ?? FakeApps()).system)
     }
 
     /// Whether `line` strays from the centre anywhere a moment from now.

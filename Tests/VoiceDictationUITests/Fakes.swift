@@ -188,6 +188,28 @@ final class FakeApplication: AppHiding {
     func unhideWithoutActivation() { calls.append(.unhideWithoutActivation) }
 }
 
+/// Stands in for the app's calls on `NSApp` (`AppActivation`): each is
+/// recorded and nothing is activated, hidden or switched.
+@MainActor
+final class FakeActivation {
+    enum Call: Equatable { case regularPolicy, accessoryPolicy, activate, hide }
+
+    private(set) var calls: [Call] = []
+    /// What `NSApp.windows` would report: none, by default.
+    var windows: [WindowSnapshot] = []
+
+    func reset() { calls = [] }
+
+    var activation: AppActivation {
+        AppActivation(
+            setRegularPolicy: { self.calls.append(.regularPolicy) },
+            setAccessoryPolicy: { self.calls.append(.accessoryPolicy) },
+            activate: { self.calls.append(.activate) },
+            hide: { self.calls.append(.hide) },
+            windows: { self.windows })
+    }
+}
+
 /// An indicator that keeps what it was asked to show instead of showing it.
 @MainActor
 final class FakeIndicator: IndicatorPresenting {

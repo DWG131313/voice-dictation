@@ -11,6 +11,8 @@ public final class AppModel {
     public static let mainWindowID = "main"
     /// The Welcome window's scene.
     public static let welcomeWindowID = "onboarding"
+    /// The Settings scene, which has no id of its own: the name its hooks use.
+    public static let settingsWindowID = "settings"
 
     public let pipeline: DictationPipeline
     public let service: TranscriptionService
@@ -397,11 +399,19 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
 
     /// SwiftUI makes the delegate, maybe before `VoiceDictationApp.init` runs.
     public nonisolated override init() {
+        activation = .live
         super.init()
     }
 
-    /// Tests pass a model built from fakes.
-    init(model: AppModel) {
+    /// What the app does to its activation policy and focus; tests stand in.
+    let activation: AppActivation
+    /// The windows that Paste again hid, reported closed, and whose return
+    /// has not yet been reported (Ruling T19-5).
+    private var hiddenByPasteAgain: Set<String> = []
+
+    /// Tests pass a model built from fakes, and a stand-in for AppKit.
+    init(model: AppModel, activation: AppActivation = .live) {
+        self.activation = activation
         super.init()
         self.model = model
     }
@@ -428,24 +438,59 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
         false
     }
 
-    /// A window (the main one or Welcome) has opened: a Dock icon and the
-    /// app's own menu bar, as for any app with a window.
-    public func windowDidOpen() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
+    /// A window (the main one, Welcome or Settings) has opened: a Dock icon
+    /// and the app's own menu bar, as for any app with a window. One decision
+    /// for every window: the return of a window Paste again hid is no
+    /// opening, and asks for neither the policy change nor the activation
+    /// (Ruling T19-5), which would take the keyboard from the app just
+    /// pasted into. The main window's library hears of real openings only.
+    public func windowDidOpen(_ id: String) {
+        guard hiddenByPasteAgain.remove(id) == nil else { return }
+        if id == AppModel.mainWindowID { model.library.windowOpened() }
+        activation.setRegularPolicy()
+        activation.activate()
     }
 
-    /// A window has closed. Inside `onDisappear` the closing window may still
-    /// report itself visible, so the windows are counted a turn later. With
-    /// none left the app returns to the menu bar only and hides, handing
+    /// A window has closed. While Paste again has the app hidden that is only
+    /// the hide, remembered so the window's return is recognised, and nothing
+    /// else happens. Otherwise: inside `onDisappear` the closing window may
+    /// still report itself visible, so the windows are counted a turn later.
+    /// With none left the app returns to the menu bar only and hides, handing
     /// focus back to the app that was in front: a dictation made while this
     /// app was active with no window would paste nowhere.
-    public func windowDidClose() {
+    public func windowDidClose(_ id: String) {
+        guard !model.library.isPastingAgain else {
+            hiddenByPasteAgain.insert(id)
+            return
+        }
+        hiddenByPasteAgain.remove(id)
+        if id == AppModel.mainWindowID { model.library.windowClosed() }
+        let activation = activation
         DispatchQueue.main.async {
-            let windows = NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, isMiniaturized: $0.isMiniaturized, canBecomeMain: $0.canBecomeMain) }
-            guard WindowPolicy.afterClose(windows: windows) == .leaveAndHide else { return }
-            NSApp.setActivationPolicy(.accessory)
-            NSApp.hide(nil)
+            guard WindowPolicy.afterClose(windows: activation.windows()) == .leaveAndHide else { return }
+            activation.setAccessoryPolicy()
+            activation.hide()
         }
     }
+}
+
+/// The app's calls on `NSApp` for policy, focus and windows, as closures so
+/// tests can record them and never touch the real application.
+struct AppActivation {
+    var setRegularPolicy: @MainActor () -> Void
+    var setAccessoryPolicy: @MainActor () -> Void
+    var activate: @MainActor () -> Void
+    var hide: @MainActor () -> Void
+    var windows: @MainActor () -> [WindowSnapshot]
+
+    static let live = {
+        AppActivation(
+            setRegularPolicy: { NSApp.setActivationPolicy(.regular) },
+            setAccessoryPolicy: { NSApp.setActivationPolicy(.accessory) },
+            activate: { NSApp.activate() },
+            hide: { NSApp.hide(nil) },
+            windows: {
+                NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, isMiniaturized: $0.isMiniaturized, canBecomeMain: $0.canBecomeMain) }
+            })
+    }()
 }

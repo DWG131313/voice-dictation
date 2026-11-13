@@ -494,11 +494,10 @@ final class TranscriptStoreTests: XCTestCase {
         store.addAlternate(to: transcript, TranscriptionResult(text: "Small.", model: whisperSmall, elapsed: 0.9))
         store.addAlternate(to: transcript, TranscriptionResult(text: "Second try.", model: whisperBase, elapsed: 0.4))
 
-        let byModel = Dictionary(uniqueKeysWithValues: transcript.alternates.map { ($0.modelKey, ($0.text, $0.seconds)) })
-        XCTAssertEqual(byModel.count, 2)
-        XCTAssertEqual(byModel["whisperKit/base.en"]?.0, "Second try.")
-        XCTAssertEqual(byModel["whisperKit/base.en"]?.1, 0.4)
-        XCTAssertEqual(byModel["whisperKit/small.en"]?.0, "Small.")
+        // Strings, not a dictionary: a second alternate for one model must
+        // fail the comparison, not crash the test process.
+        XCTAssertEqual(transcript.alternates.map { "\($0.modelKey): \($0.text) \($0.seconds)" }.sorted(),
+                       ["whisperKit/base.en: Second try. 0.4", "whisperKit/small.en: Small. 0.9"])
         XCTAssertEqual(try alternatesStored(in: store), 2)
     }
 

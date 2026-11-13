@@ -45,8 +45,6 @@ public struct MainWindow: View {
         .background { findShortcut }
         .defaultFocus($focus, .list)
         .preferredColorScheme(.dark)
-        .onAppear { library.windowOpened() }
-        .onDisappear { library.windowClosed() }
     }
 
     /// The hairline between two columns, up to the window's top edge.

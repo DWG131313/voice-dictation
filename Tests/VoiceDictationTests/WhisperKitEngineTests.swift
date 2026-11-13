@@ -375,7 +375,12 @@ final class WhisperKitEngineTests: XCTestCase {
     }
 
     private func states(of engine: WhisperKitEngine) async -> [ModelID: ModelDescriptor.State] {
-        Dictionary(uniqueKeysWithValues: await engine.models().map { ($0.id, $0.state) })
+        var states: [ModelID: ModelDescriptor.State] = [:]
+        for model in await engine.models() {
+            // A repeated id fails the test instead of crashing the process.
+            if states.updateValue(model.state, forKey: model.id) != nil { XCTFail("\(model.id) is listed twice") }
+        }
+        return states
     }
 
     /// Waits at most 2 s for `models()` to show `id` in `state`.

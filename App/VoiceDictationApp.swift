@@ -43,8 +43,8 @@ struct VoiceDictationApp: App {
         // title bar is hidden and the traffic lights sit over the sidebar.
         Window("VoiceDictation", id: AppModel.mainWindowID) {
             MainWindow(model: lifecycle.model)
-                .onAppear { lifecycle.windowDidOpen() }
-                .onDisappear { lifecycle.windowDidClose() }
+                .onAppear { lifecycle.windowDidOpen(AppModel.mainWindowID) }
+                .onDisappear { lifecycle.windowDidClose(AppModel.mainWindowID) }
         }
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
@@ -55,8 +55,8 @@ struct VoiceDictationApp: App {
         // window, never at launch otherwise and never restored.
         Window("Welcome", id: AppModel.welcomeWindowID) {
             OnboardingView(model: lifecycle.model)
-                .onAppear { lifecycle.windowDidOpen() }
-                .onDisappear { lifecycle.windowDidClose() }
+                .onAppear { lifecycle.windowDidOpen(AppModel.welcomeWindowID) }
+                .onDisappear { lifecycle.windowDidClose(AppModel.welcomeWindowID) }
         }
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
@@ -65,8 +65,8 @@ struct VoiceDictationApp: App {
         Settings {
             // Task 24 puts the settings here.
             SettingsPlaceholder()
-                .onAppear { lifecycle.windowDidOpen() }
-                .onDisappear { lifecycle.windowDidClose() }
+                .onAppear { lifecycle.windowDidOpen(AppModel.settingsWindowID) }
+                .onDisappear { lifecycle.windowDidClose(AppModel.settingsWindowID) }
         }
         // Like the window, never brought back at the next launch.
         .restorationBehavior(.disabled)

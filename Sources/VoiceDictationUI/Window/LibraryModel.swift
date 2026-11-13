@@ -93,7 +93,7 @@ public final class LibraryModel {
     /// Whether the window is open. While it is not, nobody sees the rows.
     @ObservationIgnored private var isWindowOpen = false
     /// True while Paste again has the window hidden (Ruling T19-5).
-    @ObservationIgnored private var isPastingAgain = false
+    @ObservationIgnored private(set) var isPastingAgain = false
     /// True once SwiftUI reported the window closed while Paste again had
     /// it hidden: it was only hidden, so its return is no opening either.
     @ObservationIgnored private var isHiddenByPasteAgain = false
