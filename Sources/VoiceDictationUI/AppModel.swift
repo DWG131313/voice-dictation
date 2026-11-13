@@ -451,15 +451,17 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
         activation.activate()
     }
 
-    /// A window has closed. While Paste again has the app hidden that is only
-    /// the hide, remembered so the window's return is recognised, and nothing
-    /// else happens. Otherwise: inside `onDisappear` the closing window may
-    /// still report itself visible, so the windows are counted a turn later.
-    /// With none left the app returns to the menu bar only and hides, handing
-    /// focus back to the app that was in front: a dictation made while this
-    /// app was active with no window would paste nowhere.
+    /// A window has closed. While Paste again runs and the app is hidden
+    /// that is only the hide, remembered so the window's return is
+    /// recognised, and nothing else happens. A close while the app is not
+    /// hidden, even during the run, is Danny's: a real close. Inside
+    /// `onDisappear` the closing window may still report itself visible, so
+    /// the windows are counted a turn later. With none left the app returns
+    /// to the menu bar only and hides, handing focus back to the app that
+    /// was in front: a dictation made while this app was active with no
+    /// window would paste nowhere.
     public func windowDidClose(_ id: String) {
-        guard !model.library.isPastingAgain else {
+        guard !(model.library.isPastingAgain && activation.isHidden()) else {
             hiddenByPasteAgain.insert(id)
             return
         }
@@ -481,6 +483,8 @@ struct AppActivation {
     var setAccessoryPolicy: @MainActor () -> Void
     var activate: @MainActor () -> Void
     var hide: @MainActor () -> Void
+    /// Whether the app is hidden (`NSApp.isHidden`), as Paste again leaves it.
+    var isHidden: @MainActor () -> Bool
     var windows: @MainActor () -> [WindowSnapshot]
 
     static let live = {
@@ -489,6 +493,7 @@ struct AppActivation {
             setAccessoryPolicy: { NSApp.setActivationPolicy(.accessory) },
             activate: { NSApp.activate() },
             hide: { NSApp.hide(nil) },
+            isHidden: { NSApp.isHidden },
             windows: {
                 NSApp.windows.map { WindowSnapshot(isVisible: $0.isVisible, isMiniaturized: $0.isMiniaturized, canBecomeMain: $0.canBecomeMain) }
             })

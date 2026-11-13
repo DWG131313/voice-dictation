@@ -91,12 +91,9 @@ public final class LibraryModel {
     @ObservationIgnored var pasteAgainWaitLimit: TimeInterval = 1
     @ObservationIgnored private let store: TranscriptStore
     /// Whether the window is open. While it is not, nobody sees the rows.
-    @ObservationIgnored private var isWindowOpen = false
+    @ObservationIgnored private(set) var isWindowOpen = false
     /// True while Paste again has the window hidden (Ruling T19-5).
     @ObservationIgnored private(set) var isPastingAgain = false
-    /// True once SwiftUI reported the window closed while Paste again had
-    /// it hidden: it was only hidden, so its return is no opening either.
-    @ObservationIgnored private var isHiddenByPasteAgain = false
     /// The re-transcription lane, which yields to dictations.
     @ObservationIgnored private let service: TranscriptionService
     /// The paster dictation uses: Paste again's tagged Cmd+V, and Copy.
@@ -133,13 +130,10 @@ public final class LibraryModel {
     /// The window has opened: lists everything again and selects the newest
     /// transcript. A selection kept from before, or taken by a dictation
     /// made while the window was closed, is one nobody was reading, and it
-    /// may lie below the top of a list that opens at the top. The window
-    /// showing again after Paste again hid it is no opening (`windowClosed`).
+    /// may lie below the top of a list that opens at the top. Only real
+    /// openings reach it: `AppLifecycle` filters out the return of a window
+    /// Paste again hid (Ruling T19-5).
     public func windowOpened() {
-        guard !isHiddenByPasteAgain else {
-            isHiddenByPasteAgain = false
-            return
-        }
         isWindowOpen = true
         reload()
         if section.scope != nil { selection = rows.first?.id }
@@ -147,17 +141,9 @@ public final class LibraryModel {
 
     /// The window has closed: dictations are no longer listed or counted
     /// until it opens again, which does both. The edit being typed is saved,
-    /// and the recording playing stops. Paste again hiding the window is no
-    /// closing (Ruling T19-5): should SwiftUI report it as one, it and the
-    /// window's return are ignored, so the transcript pasted stays selected
-    /// with its message, and the list does not jump to the newest.
+    /// and the recording playing stops. Only real closes reach it:
+    /// `AppLifecycle` filters out the hide Paste again does (Ruling T19-5).
     public func windowClosed() {
-        guard !isPastingAgain else {
-            isHiddenByPasteAgain = true
-            return
-        }
-        // The window was showing, whether or not its return was reported.
-        isHiddenByPasteAgain = false
         isWindowOpen = false
         commitEdit()
         player.stop()

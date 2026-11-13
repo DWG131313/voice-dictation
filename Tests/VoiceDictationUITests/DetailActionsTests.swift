@@ -569,52 +569,6 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertEqual(paster.copied, ["Hello there.", "Hello there."])
     }
 
-    /// Ruling T19-5: Paste again hides the window, and shows it again when the
-    /// previous app does not come back. Should SwiftUI report those as the
-    /// window closing and opening, they are neither: the transcript pasted
-    /// stays selected with its message, and the list does not jump to the
-    /// newest (Ruling T18-4), whether the window's return is reported during
-    /// the run or after it. A real close and reopen still opens on the newest.
-    @MainActor
-    func testPasteAgainsHideAndUnhideAreNotACloseAndReopen() async throws {
-        let apps = FakeApps()
-        apps.frontmostAfterHide = 7
-        let (library, store) = try rig(apps: apps)
-        library.pasteAgainWaitLimit = 0.1
-        let older = try XCTUnwrap(store.add(outcome("Older.", at: base)))
-        let newer = try XCTUnwrap(store.add(outcome("Newer.", at: base.addingTimeInterval(60))))
-        library.windowOpened()
-        library.selection = older.id
-        apps.onHide = { [weak library] in library?.windowClosed() }
-        apps.onUnhide = { [weak library] in library?.windowOpened() }
-
-        await library.pasteAgain(older)
-
-        XCTAssertEqual(apps.unhides, 1, "the previous app did not come back: copied, and the window shows again")
-        XCTAssertEqual(library.selection, older.id, "still the transcript pasted")
-        XCTAssertEqual(library.message(for: older), "Copied — paste with ⌘V")
-
-        // The window's return reported only once the run is over.
-        apps.onUnhide = nil
-        await library.pasteAgain(older)
-        library.windowOpened()
-        XCTAssertEqual(library.selection, older.id)
-        XCTAssertEqual(library.message(for: older), "Copied — paste with ⌘V")
-
-        // Pasted: the window stays hidden until Danny brings it back.
-        apps.frontmostAfterHide = 42
-        await library.pasteAgain(older)
-        XCTAssertEqual(paster.pasted, ["Older."])
-        library.windowOpened()
-        XCTAssertEqual(library.selection, older.id)
-
-        // A real close and reopen opens on the newest, as before.
-        apps.onHide = nil
-        library.windowClosed()
-        library.windowOpened()
-        XCTAssertEqual(library.selection, newer.id)
-    }
-
     /// macOS's side of Paste again shows the window again without activating
     /// the app (`unhideWithoutActivation`), so whichever app came to the front
     /// meanwhile keeps the keyboard. A stand-in takes `NSApplication`'s

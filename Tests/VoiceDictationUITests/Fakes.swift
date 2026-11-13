@@ -197,6 +197,8 @@ final class FakeActivation {
     private(set) var calls: [Call] = []
     /// What `NSApp.windows` would report: none, by default.
     var windows: [WindowSnapshot] = []
+    /// What `NSApp.isHidden` would report: not hidden, by default.
+    var isHidden = false
 
     func reset() { calls = [] }
 
@@ -206,6 +208,7 @@ final class FakeActivation {
             setAccessoryPolicy: { self.calls.append(.accessoryPolicy) },
             activate: { self.calls.append(.activate) },
             hide: { self.calls.append(.hide) },
+            isHidden: { self.isHidden },
             windows: { self.windows })
     }
 }

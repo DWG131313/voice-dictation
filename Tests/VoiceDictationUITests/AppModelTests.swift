@@ -363,8 +363,8 @@ final class AppModelTests: XCTestCase {
             library.selection = older.id
             activation.reset()
 
-            apps.onHide = { for id in ids { lifecycle.windowDidClose(id) } }
-            if returnsDuringTheRun { apps.onUnhide = { for id in ids { lifecycle.windowDidOpen(id) } } }
+            apps.onHide = { activation.isHidden = true; for id in ids { lifecycle.windowDidClose(id) } }
+            apps.onUnhide = { activation.isHidden = false; if returnsDuringTheRun { for id in ids { lifecycle.windowDidOpen(id) } } }
             await library.pasteAgain(older)
             if !returnsDuringTheRun { for id in ids { lifecycle.windowDidOpen(id) } }
 
@@ -379,6 +379,75 @@ final class AppModelTests: XCTestCase {
             lifecycle.windowDidOpen(AppModel.welcomeWindowID)
             XCTAssertEqual(activation.calls, [.regularPolicy, .activate])
         }
+    }
+
+    /// A close during the run while the app is not hidden is Danny closing
+    /// the window, not the hide: it is a real close, with its commit and its
+    /// return to the menu bar, and the window's next opening is a real one
+    /// (policy, activation, newest transcript).
+    @MainActor
+    func testARealCloseDuringPasteAgainStaysARealClose() async throws {
+        let apps = FakeApps()
+        apps.frontmostAfterHide = nil
+        let activation = FakeActivation()
+        let model = makeModel([appleEngine()], apps: apps)
+        let lifecycle = AppLifecycle(model: model, activation: activation.activation)
+        let library = model.library
+        let older = try XCTUnwrap(model.store.add(pasteAgainOutcome("Older.", at: 0)))
+        let newer = try XCTUnwrap(model.store.add(pasteAgainOutcome("Newer.", at: 60)))
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+        library.selection = older.id
+        activation.reset()
+
+        // The hide makes the app hidden; then Danny brings it back and closes main.
+        apps.onHide = { activation.isHidden = true }
+        apps.onUnhide = { activation.isHidden = false }
+        library.pasteAgainWaitLimit = 0.3
+        let run = Task { @MainActor in await library.pasteAgain(older) }
+        try await waitUntil("the app is hidden") { activation.isHidden }
+        activation.isHidden = false
+        lifecycle.windowDidClose(AppModel.mainWindowID)
+        await run.value
+
+        try await waitUntil("the app leaves and hides") { activation.calls == [.accessoryPolicy, .hide] }
+        XCTAssertFalse(library.isWindowOpen, "the library heard of the close")
+
+        activation.reset()
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+        XCTAssertEqual(activation.calls, [.regularPolicy, .activate])
+        XCTAssertEqual(library.selection, newer.id)
+    }
+
+    /// Close and reopen the main window after a run: both real, and the
+    /// reopened library opens on the newest transcript.
+    @MainActor
+    func testClosingAndReopeningMainAfterPasteAgainSelectsTheNewest() async throws {
+        let apps = FakeApps()
+        apps.frontmostAfterHide = nil
+        let activation = FakeActivation()
+        let model = makeModel([appleEngine()], apps: apps)
+        let lifecycle = AppLifecycle(model: model, activation: activation.activation)
+        let library = model.library
+        library.pasteAgainWaitLimit = 0.1
+        let older = try XCTUnwrap(model.store.add(pasteAgainOutcome("Older.", at: 0)))
+        let newer = try XCTUnwrap(model.store.add(pasteAgainOutcome("Newer.", at: 60)))
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+        library.selection = older.id
+        apps.onHide = { activation.isHidden = true; lifecycle.windowDidClose(AppModel.mainWindowID) }
+        apps.onUnhide = { activation.isHidden = false }
+        await library.pasteAgain(older)
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+        XCTAssertEqual(library.selection, older.id, "the paired return is ignored")
+        activation.reset()
+
+        apps.onHide = nil
+        lifecycle.windowDidClose(AppModel.mainWindowID)
+        try await waitUntil("the app leaves and hides") { activation.calls == [.accessoryPolicy, .hide] }
+        activation.reset()
+        lifecycle.windowDidOpen(AppModel.mainWindowID)
+
+        XCTAssertEqual(activation.calls, [.regularPolicy, .activate])
+        XCTAssertEqual(library.selection, newer.id)
     }
 
     /// Closing the last window outside Paste again returns to the menu bar
