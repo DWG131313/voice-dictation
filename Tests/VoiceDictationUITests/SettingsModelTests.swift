@@ -242,9 +242,7 @@ final class SettingsModelTests: XCTestCase {
     // MARK: - Microphone
 
     /// A saved microphone that is no longer connected: the row shows
-    /// "System default" and the recorder records from the system default,
-    /// since a UID that matches no connected device selects nothing on the
-    /// engine's input unit. The choice is kept, and once the microphone is
+    /// "System default", and the choice is kept, and once the microphone is
     /// back (the device list changes), the row shows it again.
     @MainActor
     func testMissingMicrophoneFallsBackToDefault() {
@@ -256,9 +254,6 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertNil(settings.microphone)
         XCTAssertEqual(settings.microphoneName, "System default")
         XCTAssertEqual(preferences.inputDeviceUID, yeti.uid, "kept for when it is back")
-        XCTAssertNil(AudioRecorder.microphone(forUID: yeti.uid, lookup: { $0 == self.builtIn.uid ? 73 : nil }),
-                     "the recorder selects nothing: the system default")
-        XCTAssertNil(AudioDevices.deviceID(forUID: yeti.uid), "Core Audio has no such device on this Mac")
 
         system.microphones = [builtIn, yeti]
         system.microphonesChanged()
@@ -266,7 +261,6 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(settings.microphones, [builtIn, yeti])
         XCTAssertEqual(settings.microphone, yeti.uid)
         XCTAssertEqual(settings.microphoneName, "Yeti Stereo Microphone")
-        XCTAssertEqual(AudioRecorder.microphone(forUID: yeti.uid, lookup: { $0 == self.yeti.uid ? 81 : nil }), 81)
     }
 
     /// Choosing a microphone saves it and moves the recorder to it, which

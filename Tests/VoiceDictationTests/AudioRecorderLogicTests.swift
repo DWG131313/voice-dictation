@@ -128,8 +128,8 @@ final class AudioRecorderLogicTests: XCTestCase {
     /// Following the system default, the device list changes nothing: the
     /// default-device listener rebuilds when the default moves.
     func testNoMicrophoneChosenIgnoresTheDeviceList() {
-        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: nil, isPrepared: true, preparedDevice: nil, current: nil))
-        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: nil, isPrepared: false, preparedDevice: nil, current: nil))
+        XCTAssertFalse(AudioRecorder.deviceChangeNeedsRebuild(forChosen: nil, isPrepared: true, preparedDevice: nil, current: nil))
+        XCTAssertFalse(AudioRecorder.deviceChangeNeedsRebuild(forChosen: nil, isPrepared: false, preparedDevice: nil, current: nil))
     }
 
     /// The chosen microphone unplugged: the engine built on it records
@@ -137,12 +137,12 @@ final class AudioRecorderLogicTests: XCTestCase {
     /// one on it. Unchanged: the prepared engine is kept.
     func testAChosenMicrophoneThatComesOrGoesRebuilds() {
         let uid = "AppleUSBAudioEngine:Blue:Yeti:1"
-        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: nil), "gone")
-        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: 81), "back")
-        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: 81))
-        XCTAssertFalse(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: nil),
+        XCTAssertTrue(AudioRecorder.deviceChangeNeedsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: nil), "gone")
+        XCTAssertTrue(AudioRecorder.deviceChangeNeedsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: 81), "back")
+        XCTAssertFalse(AudioRecorder.deviceChangeNeedsRebuild(forChosen: uid, isPrepared: true, preparedDevice: 81, current: 81))
+        XCTAssertFalse(AudioRecorder.deviceChangeNeedsRebuild(forChosen: uid, isPrepared: true, preparedDevice: nil, current: nil),
                        "still gone: the engine on the system default stays")
-        XCTAssertTrue(AudioRecorder.needsRebuild(forChosen: uid, isPrepared: false, preparedDevice: nil, current: 81),
+        XCTAssertTrue(AudioRecorder.deviceChangeNeedsRebuild(forChosen: uid, isPrepared: false, preparedDevice: nil, current: 81),
                       "nothing prepared: try again")
     }
 
@@ -153,6 +153,44 @@ final class AudioRecorderLogicTests: XCTestCase {
         XCTAssertEqual(AudioRecorder.microphone(forUID: "BuiltInMicrophoneDevice", lookup: connected), 73)
         XCTAssertNil(AudioRecorder.microphone(forUID: "AppleUSBAudioEngine:Blue:Yeti:1", lookup: connected))
         XCTAssertNil(AudioRecorder.microphone(forUID: nil, lookup: connected))
+    }
+
+    /// The recorder sets the chosen microphone on the engine's input unit
+    /// only while it is connected. A missing one never reaches `setDevice`:
+    /// the engine keeps the system default, and nil says so.
+    func testAMissingMicrophoneNeverReachesTheInputUnit() {
+        var set: [AudioDeviceID] = []
+        let connected: (String) -> AudioDeviceID? = { $0 == "BuiltInMicrophoneDevice" ? 73 : nil }
+
+        XCTAssertNil(AudioRecorder.selectMicrophone(uid: "AppleUSBAudioEngine:Blue:Yeti:1", lookup: connected,
+                                                    setDevice: { set.append($0) }))
+        XCTAssertNil(AudioRecorder.selectMicrophone(uid: nil, lookup: connected, setDevice: { set.append($0) }))
+        XCTAssertEqual(set, [], "the system default stays")
+
+        XCTAssertEqual(AudioRecorder.selectMicrophone(uid: "BuiltInMicrophoneDevice", lookup: connected,
+                                                      setDevice: { set.append($0) }), 73)
+        XCTAssertEqual(set, [73])
+    }
+
+    /// A device the input unit refuses is not recorded from: nil, the system default.
+    func testAMicrophoneTheInputUnitRefusesFallsBackToDefault() {
+        struct Refused: Error {}
+        XCTAssertNil(AudioRecorder.selectMicrophone(uid: "BuiltInMicrophoneDevice", lookup: { _ in 73 },
+                                                    setDevice: { _ in throw Refused() }))
+    }
+
+    /// Ruling T24-1: the start sound plays once the engine has started,
+    /// never before it and never when it fails to start.
+    func testTheStartSoundPlaysOnlyAfterTheEngineStarted() throws {
+        var events: [String] = []
+        try AudioRecorder.startEngine({ events.append("start") }, thenPlayStartSound: { events.append("sound") })
+        XCTAssertEqual(events, ["start", "sound"])
+
+        events = []
+        struct Busy: Error {}
+        XCTAssertThrowsError(try AudioRecorder.startEngine({ events.append("start"); throw Busy() },
+                                                           thenPlayStartSound: { events.append("sound") }))
+        XCTAssertEqual(events, ["start"], "no tick for a recording that did not start")
     }
 
     /// The start and stop sounds are the system's Tink and Pop, through

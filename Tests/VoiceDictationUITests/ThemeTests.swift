@@ -35,6 +35,10 @@ final class ThemeTests: XCTestCase {
                        [4, 8, 16, 24, 40])
     }
 
+    func testDisabledOpacityIsOneToken() {
+        XCTAssertEqual(Theme.Opacity.disabled, 0.4)
+    }
+
     private func width(_ font: CTFont) -> CGFloat {
         let str = NSAttributedString(string: "Hamburgefonts", attributes: [.font: font])
         return str.size().width

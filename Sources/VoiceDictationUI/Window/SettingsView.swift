@@ -47,33 +47,33 @@ public struct SettingsView: View {
         switch row {
         case .hotkey:
             line(row) {
-                PrismMenu(title: row.title, selection: $settings.hotkey, current: settings.hotkey.displayName,
+                PrismMenu(title: row.title, selection: $settings.hotkey, current: settings.hotkey.displayName, hint: nil,
                           options: HotkeyChoice.allCases.map { PrismMenu.Option(value: $0, name: $0.displayName) })
             }
         case .doubleTap:
             line(row, note: settings.doubleTapNote) {
-                PrismSwitch(title: row.title, isOn: $settings.doubleTapEnabled)
+                PrismSwitch(title: row.title, isOn: $settings.doubleTapEnabled, hint: settings.doubleTapNote)
             }
         case .pasteLastShortcut:
             line(row, note: SettingsModel.pasteLastNote) {
-                PrismSwitch(title: row.title, isOn: $settings.pasteLastHotkeyEnabled)
+                PrismSwitch(title: row.title, isOn: $settings.pasteLastHotkeyEnabled, hint: SettingsModel.pasteLastNote)
             }
         case .cleanup:
             let cleanup = settings.cleanupRow
             line(row, note: cleanup.note) {
                 PrismSwitch(title: row.title, isOn: Binding(get: { cleanup.isOn }, set: { settings.cleanupEnabled = $0 }),
-                            isEnabled: cleanup.isEnabled)
+                            isEnabled: cleanup.isEnabled, hint: cleanup.note)
             }
         case .keptRecordings:
             line(row, note: SettingsModel.keptRecordingsNote) {
                 PrismStepper(title: row.title, value: settings.keptRecordings,
-                             range: SettingsModel.keptRecordingsRange) { up in
+                             range: SettingsModel.keptRecordingsRange, hint: SettingsModel.keptRecordingsNote) { up in
                     settings.keptRecordings = SettingsModel.keptRecordings(after: settings.keptRecordings, up: up)
                 }
             }
         case .microphone:
             line(row) {
-                PrismMenu(title: row.title, selection: $settings.microphone, current: settings.microphoneName,
+                PrismMenu(title: row.title, selection: $settings.microphone, current: settings.microphoneName, hint: nil,
                           options: [PrismMenu.Option(value: nil, name: SettingsModel.systemDefaultMicrophone)]
                               + settings.microphones.map { PrismMenu.Option(value: $0.uid, name: $0.name) })
             }
@@ -84,7 +84,7 @@ public struct SettingsView: View {
         case .openAtLogin:
             let login = settings.openAtLoginRow
             line(row, note: login.note) {
-                PrismSwitch(title: row.title, isOn: $settings.openAtLogin, isEnabled: login.isEnabled)
+                PrismSwitch(title: row.title, isOn: $settings.openAtLogin, isEnabled: login.isEnabled, hint: login.note)
             }
         case .data:
             line(row, note: settings.dataPath) {
@@ -142,6 +142,8 @@ private struct PrismSwitch: View {
     let title: String
     @Binding var isOn: Bool
     var isEnabled = true
+    /// The row's note, which says why a switch is faded when it is.
+    var hint: String?
 
     var body: some View {
         Button {
@@ -162,9 +164,10 @@ private struct PrismSwitch: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.4)
+        .opacity(isEnabled ? 1 : Theme.Opacity.disabled)
         .accessibilityLabel(title)
         .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityHint(hint ?? "")
         .accessibilityAddTraits(.isToggle)
     }
 }
@@ -184,6 +187,7 @@ private struct PrismMenu<Value: Hashable>: View {
     @Binding var selection: Value
     /// The choice's name, shown in the box.
     let current: String
+    let hint: String?
     let options: [Option]
 
     var body: some View {
@@ -217,6 +221,7 @@ private struct PrismMenu<Value: Hashable>: View {
         .fixedSize()
         .accessibilityLabel(title)
         .accessibilityValue(current)
+        .accessibilityHint(hint ?? "")
     }
 }
 
@@ -227,6 +232,7 @@ private struct PrismStepper: View {
     let title: String
     let value: Int
     let range: ClosedRange<Int>
+    let hint: String?
     /// A press: up, or down.
     let step: (Bool) -> Void
 
@@ -243,6 +249,15 @@ private struct PrismStepper: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue("\(value)")
+        .accessibilityHint(hint ?? "")
+        // With keyboard focus on a button, the arrow keys step too.
+        .onMoveCommand { direction in
+            switch direction {
+            case .up, .right: step(true)
+            case .down, .left: step(false)
+            @unknown default: break
+            }
+        }
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: step(true)
@@ -264,6 +279,6 @@ private struct PrismStepper: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.4)
+        .opacity(isEnabled ? 1 : Theme.Opacity.disabled)
     }
 }

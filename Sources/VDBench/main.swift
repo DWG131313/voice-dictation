@@ -4,8 +4,8 @@ import VoiceDictationLib
 
 // vd-bench [dir] [--from-archive] [--output file]
 // Runs every ready speech model over the clips and writes
-// docs/engine-comparison.md. With --from-archive the clips are the app's
-// kept recordings (`<uuid>.m4a` in its audio folder); without it, the WAV
+// engine-comparison.md in the app's data folder (--output for elsewhere).
+// With --from-archive the clips are the app's kept recordings (`<uuid>.m4a` in its audio folder); without it, the WAV
 // files in `dir` (default: the comparison folder Task 2's switch filled).
 // It records nothing, pastes nothing and downloads nothing.
 

@@ -224,14 +224,19 @@ public class AudioRecorder {
             return
         }
 
-        // The start sound first, then the capture (Task 24): the old tick,
-        // played once the capture had started, began inside the recording.
-        // The system sound server plays it; the call returns in well under a
-        // millisecond, so it holds up neither the engine's start nor the
-        // first audio.
-        if soundsEnabled() { tickOnSound?.play() }
+        // The start sound plays right after the engine has started (Task 24,
+        // Ruling T24-1), never before it and never when it fails. The sound
+        // server plays it and the call returns in about 0.1 ms, so first audio
+        // is not held up. Through speakers it is heard by the microphone: it
+        // overlaps the first ~0.5 s of the recording (Tink lasts 0.56 s); with
+        // headphones it does not. Whisper suppresses non-speech, and the
+        // silence check only looks at the peak of the whole recording.
         do {
-            try input.engine.start()
+            try Self.startEngine({ try input.engine.start() },
+                                 thenPlayStartSound: { [weak self] in
+                                     guard let self, self.soundsEnabled() else { return }
+                                     self.tickOnSound?.play()
+                                 })
         } catch {
             Log.info("[AUDIO] Engine did not start: \(error.localizedDescription)")
             discardEngine()
@@ -247,6 +252,13 @@ public class AudioRecorder {
             self?.stopRecording()
         }
         delegate?.recordingDidStart()
+    }
+
+    /// Starts the engine, then plays the start sound, only if it started. A
+    /// recording that did not start gets no tick.
+    static func startEngine(_ start: () throws -> Void, thenPlayStartSound play: () -> Void) throws {
+        try start()
+        play()
     }
 
     /// Ends the recording and calls the delegate before returning.
@@ -490,7 +502,7 @@ public class AudioRecorder {
         AudioDevices.observeDevices { [weak self] in
             guard let self, !self.isRecording else { return }
             let current = Self.microphone(forUID: self.inputDeviceUID, lookup: AudioDevices.deviceID(forUID:))
-            guard Self.needsRebuild(forChosen: self.inputDeviceUID, isPrepared: self.prepared != nil,
+            guard Self.deviceChangeNeedsRebuild(forChosen: self.inputDeviceUID, isPrepared: self.prepared != nil,
                                     preparedDevice: self.prepared?.device, current: current) else { return }
             Log.info(current == nil ? "[AUDIO] The chosen microphone is gone — preparing the system default"
                                     : "[AUDIO] The chosen microphone is connected — preparing it")
@@ -503,7 +515,7 @@ public class AudioRecorder {
     /// now maps to (`current`, nil when it is not connected) is not the one
     /// the prepared engine records from (`preparedDevice`, nil for the system
     /// default), or nothing is prepared.
-    static func needsRebuild(forChosen uid: String?, isPrepared: Bool, preparedDevice: AudioDeviceID?,
+    static func deviceChangeNeedsRebuild(forChosen uid: String?, isPrepared: Bool, preparedDevice: AudioDeviceID?,
                              current: AudioDeviceID?) -> Bool {
         guard uid != nil else { return false }
         return !isPrepared || preparedDevice != current
@@ -520,49 +532,27 @@ public class AudioRecorder {
     /// chosen and connected, and returns it; otherwise the engine keeps the
     /// system default, and this returns nil.
     private func selectMicrophone(on inputNode: AVAudioInputNode) -> AudioDeviceID? {
-        guard let uid = inputDeviceUID else { return nil }
-        guard let device = Self.microphone(forUID: uid, lookup: AudioDevices.deviceID(forUID:)) else {
+        Self.selectMicrophone(uid: inputDeviceUID, lookup: AudioDevices.deviceID(forUID:),
+                              setDevice: { try inputNode.auAudioUnit.setDeviceID($0) })
+    }
+
+    /// The logic of `selectMicrophone(on:)`, with the lookup and the input
+    /// unit passed in: `setDevice` is called only for a chosen microphone
+    /// that is connected, and a failure of it also gives nil.
+    static func selectMicrophone(uid: String?, lookup: (String) -> AudioDeviceID?,
+                                 setDevice: (AudioDeviceID) throws -> Void) -> AudioDeviceID? {
+        guard let uid else { return nil }
+        guard let device = microphone(forUID: uid, lookup: lookup) else {
             Log.info("[AUDIO] Microphone \(uid) is not connected — using the system default")
             return nil
         }
         do {
-            try inputNode.auAudioUnit.setDeviceID(device)
+            try setDevice(device)
             return device
         } catch {
             Log.info("[AUDIO] Cannot select microphone \(uid): \(error.localizedDescription) — using the system default")
             return nil
         }
-    }
-}
-
-/// A short sound from `/System/Library/Sounds`, played by System Sound
-/// Services (AudioServices.h): `play()` hands it to the system sound server
-/// and returns at once. It is heard whatever "Play user interface sound
-/// effects" says (`kAudioServicesPropertyIsUISound` 0), as the `NSSound` it
-/// replaces was; Settings has its own switch. Nil when the file is missing.
-final class SystemSound {
-    private let id: SystemSoundID
-
-    init?(named name: String) {
-        let url = URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff")
-        var id: SystemSoundID = 0
-        // A missing file is an error here (-1500 on this Mac), not a silent sound.
-        guard AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr else {
-            Log.info("[AUDIO] The \(name) sound is not available")
-            return nil
-        }
-        var isUISound: UInt32 = 0
-        AudioServicesSetProperty(kAudioServicesPropertyIsUISound, UInt32(MemoryLayout<SystemSoundID>.size), &id,
-                                 UInt32(MemoryLayout<UInt32>.size), &isUISound)
-        self.id = id
-    }
-
-    deinit {
-        AudioServicesDisposeSystemSoundID(id)
-    }
-
-    func play() {
-        AudioServicesPlaySystemSoundWithCompletion(id, nil)
     }
 }
 

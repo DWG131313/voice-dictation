@@ -49,6 +49,12 @@ public enum Theme {
         public static let lg: CGFloat = 24
         public static let xl: CGFloat = 40
     }
+
+    public enum Opacity {
+        /// A control that cannot be used right now: switches, and the ends of
+        /// a stepper. Its row says why (and VoiceOver reads that as its hint).
+        public static let disabled: Double = 0.4
+    }
 }
 
 /// Primary button: white fill, black Jost label, square corners.

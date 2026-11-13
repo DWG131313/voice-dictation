@@ -23,7 +23,10 @@ public struct BenchOptions: Equatable {
     }
 
     public static let usage = "Usage: vd-bench [dir] [--from-archive] [--output file]"
-    public static let defaultOutput = "docs/engine-comparison.md"
+    /// The report's file name. By default it goes in the app's data folder
+    /// (Ruling T24-2), next to the recordings it is made from: it holds
+    /// dictated text, so it never lands in the repo.
+    public static let defaultOutputName = "engine-comparison.md"
 
     public var source: Source
     public var outputPath: String
@@ -39,7 +42,7 @@ public struct BenchOptions: Equatable {
     /// Anything else starting with `--`, and a second folder, are refused.
     public static func parse(_ arguments: [String], support: URL) throws -> BenchOptions {
         var arguments = arguments
-        var outputPath = defaultOutput
+        var outputPath = support.appendingPathComponent(defaultOutputName).path
         if let flag = arguments.firstIndex(of: "--output") {
             guard flag + 1 < arguments.count else { throw ArgumentError("--output needs a file path.") }
             outputPath = arguments[flag + 1]

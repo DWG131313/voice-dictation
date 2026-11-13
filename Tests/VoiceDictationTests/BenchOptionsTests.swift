@@ -16,12 +16,14 @@ final class BenchOptionsTests: XCTestCase {
 
     // MARK: - Arguments
 
-    /// Without the flag, as before: the comparison folder's WAVs, and the
-    /// report in `docs/engine-comparison.md`.
+    /// Without the flag, as before: the comparison folder's WAVs. The report
+    /// lands in the app's data folder (Ruling T24-2), next to the recordings
+    /// it is made from, never in the repo: it holds dictated text.
     func testWithoutTheFlagItReadsTheComparisonFolder() throws {
         let options = try BenchOptions.parse([], support: support)
         XCTAssertEqual(options.source, .wavs(support.appendingPathComponent("comparison", isDirectory: true)))
-        XCTAssertEqual(options.outputPath, "docs/engine-comparison.md")
+        XCTAssertEqual(options.outputPath, support.appendingPathComponent("engine-comparison.md").path)
+        XCTAssertEqual(try BenchOptions.parse(["--from-archive"], support: support).outputPath, options.outputPath)
     }
 
     /// `--from-archive` reads the kept recordings in `audio/`, wherever it
