@@ -10,6 +10,11 @@ options:
 packages:
   VoiceDictation:
     path: .
+  # Updates (Task 26). Only the app target links it, so `swift build` and
+  # `swift test` never fetch it.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.1
 targets:
   VoiceDictation:
     type: application
@@ -22,6 +27,7 @@ targets:
         product: VoiceDictationLib
       - package: VoiceDictation
         product: VoiceDictationUI
+      - package: Sparkle
     scheme: {}
     info:
       path: App/Info.plist
@@ -34,6 +40,18 @@ targets:
         LSUIElement: true
         NSMicrophoneUsageDescription: VoiceDictation needs microphone access to record your voice for transcription.
         NSSpeechRecognitionUsageDescription: VoiceDictation turns your speech into text on this Mac. Nothing is sent anywhere.
+        # Sparkle (Task 26) checks for updates only when Danny chooses "Check
+        # for Updates…": false means no automatic checks, and no prompt
+        # asking about them.
+        SUEnableAutomaticChecks: false
+        # PLACEHOLDERS, both, until the first Sparkle release: docs/release.md
+        # ("Sparkle") says what goes here. The feed's host never resolves
+        # (.invalid). The key is shaped like a real one because Sparkle will
+        # not start, and shows an alert at every launch, on a key that is not
+        # 32 bytes of base64; no update can pass it. release.sh refuses to run
+        # while either is still a placeholder.
+        SUFeedURL: "https://placeholder.invalid/appcast.xml"
+        SUPublicEDKey: "PLACEHOLDER+run+Sparkle+generate+keys+first="
     entitlements:
       path: App/VoiceDictation.entitlements
       properties:
@@ -47,6 +65,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         # The package's language mode.
         SWIFT_VERSION: "5.0"
+        # App/Assets.xcassets, drawn by scripts/make-icon.swift.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
           CODE_SIGN_STYLE: Automatic

@@ -104,7 +104,7 @@ VoiceDictation is a menu bar tool you hold a key to talk to. Its window is a qui
 
 ## Colors
 
-Dark only; there is no light mode, the prism needs the dark. Text is `#F2F2F2` on black (18.8:1) and muted text is `#8C8C8C` (6.3:1). The spectrum runs red, orange, yellow, green, blue, violet (no indigo) and appears exactly once per screen, on the selected transcript row, and never in the floating indicator. Status is told in words (`Failed`, `Skipped`), never in colour.
+Dark only; there is no light mode, the prism needs the dark. Text is `#F2F2F2` on black (18.8:1) and muted text is `#8C8C8C` (6.3:1). The spectrum runs red, orange, yellow, green, blue, violet (no indigo) and appears exactly once per screen, on the selected transcript row, and never in the floating indicator. The app icon is its one use outside the window. Status is told in words (`Failed`, `Skipped`), never in colour.
 
 ## Typography
 
@@ -130,6 +130,7 @@ Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square.
 - **Selected text:** black on the text white (`bg` on `text`), caret white; never the system accent, so the spectrum stays the only colour.
 - **Times and figures:** DM Mono, muted.
 - **Floating indicator:** a scrolling white volume line, no colour, no spectrum.
+- **App icon:** black, and a microphone drawn as an outline whose stroke is the spectrum, the only element.
 
 ## Do's and Don'ts
 

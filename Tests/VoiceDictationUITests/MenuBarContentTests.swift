@@ -1,8 +1,10 @@
+import Observation
 import XCTest
 import VoiceDictationLib
 @testable import VoiceDictationUI
 
-/// What the menu bar shows: its icon, the status line and the Model submenu.
+/// What the menu bar shows: its icon, the status line, the Model submenu and
+/// Check for Updates….
 /// Only the pure helpers are tested; the views themselves need the menu bar.
 final class MenuBarContentTests: XCTestCase {
     private let everyState: [DictationState] = [
@@ -79,6 +81,32 @@ final class MenuBarContentTests: XCTestCase {
         ])
     }
 
+    // MARK: - Check for Updates…
+
+    /// Choosing it asks Sparkle to check now, the app's only update check;
+    /// building the menu checks nothing.
+    @MainActor
+    func testCheckForUpdatesChecksOnlyWhenChosen() {
+        let updates = FakeUpdates()
+
+        let entry = MenuBarContent.updatesEntry(updates)
+
+        XCTAssertEqual(entry.title, "Check for Updates…")
+        XCTAssertTrue(entry.isEnabled)
+        XCTAssertEqual(updates.checks, 0)
+        entry.action()
+        XCTAssertEqual(updates.checks, 1)
+    }
+
+    /// Greyed out while Sparkle is already checking.
+    @MainActor
+    func testCheckForUpdatesWaitsWhileACheckIsUnderWay() {
+        let updates = FakeUpdates()
+        updates.canCheckForUpdates = false
+
+        XCTAssertFalse(MenuBarContent.updatesEntry(updates).isEnabled)
+    }
+
     // MARK: - The icon
 
     /// Today's symbols, as the old menu bar item drew them.
@@ -125,5 +153,16 @@ final class MenuBarContentTests: XCTestCase {
             ModelDescriptor(id: ModelID(engine: .whisperKit, name: "openai_whisper-base.en"), displayName: "base.en",
                             detail: "", state: .notDownloaded),
         ]
+    }
+}
+
+/// Stands in for Sparkle, which only the app target links.
+@MainActor @Observable
+private final class FakeUpdates: UpdateChecking {
+    var canCheckForUpdates = true
+    private(set) var checks = 0
+
+    func checkForUpdates() {
+        checks += 1
     }
 }

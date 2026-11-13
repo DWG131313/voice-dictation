@@ -1,16 +1,23 @@
 import AppKit
+import Combine
+import Observation
+import Sparkle
 import SwiftUI
 import VoiceDictationLib
 import VoiceDictationUI
 
 /// The app's scenes. Everything they show and do is in the package:
-/// `AppModel`, built and started by `AppLifecycle`, and the views.
+/// `AppModel`, built and started by `AppLifecycle`, and the views. The one
+/// exception is Sparkle, which only this target links: `SparkleUpdates`
+/// stands behind the menu's "Check for Updates…".
 @main
 struct VoiceDictationApp: App {
     @NSApplicationDelegateAdaptor(AppLifecycle.self) private var lifecycle
 
     /// Held for the life of the process: holding it is what keeps others out.
     private static let instanceGuard = SingleInstanceGuard()
+
+    private let updates: SparkleUpdates
 
     init() {
         // Refuse to start if another instance already holds the lock. This is
@@ -26,11 +33,13 @@ struct VoiceDictationApp: App {
         // Before anything reads a preference: the bare binary of old kept
         // them in another domain.
         PreferencesMigrator.migrateIfNeeded(fromDomain: PreferencesMigrator.legacyDomain, to: .standard)
+        // After the lock, so a copy turned away above starts no updater.
+        updates = SparkleUpdates()
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(model: lifecycle.model)
+            MenuBarContent(model: lifecycle.model, updates: updates)
         } label: {
             MenuBarLabel(pipeline: lifecycle.model.pipeline)
                 .modifier(OpenWelcomeAtLaunch(model: lifecycle.model))
@@ -75,5 +84,27 @@ struct VoiceDictationApp: App {
         }
         // Like the window, never brought back at the next launch.
         .restorationBehavior(.disabled)
+    }
+}
+
+/// Sparkle behind "Check for Updates…" (Task 26), built as Sparkle's SwiftUI
+/// setup builds it. `SUEnableAutomaticChecks` is false in Info.plist, so
+/// starting the updater neither asks about automatic checks nor schedules
+/// one: the app goes online for updates only when Danny chooses the item.
+@MainActor @Observable
+final class SparkleUpdates: UpdateChecking {
+    private let controller = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private(set) var canCheckForUpdates = false
+    @ObservationIgnored private var canCheckObservation: AnyCancellable?
+
+    init() {
+        // Key-value observable (SPUUpdater.h); false while a check is under way.
+        canCheckObservation = controller.updater.publisher(for: \.canCheckForUpdates)
+            .sink { [weak self] canCheck in self?.canCheckForUpdates = canCheck }
+    }
+
+    func checkForUpdates() {
+        controller.updater.checkForUpdates()
     }
 }

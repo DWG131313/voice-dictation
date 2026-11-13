@@ -1,16 +1,32 @@
 import AppKit
+import Observation
 import SwiftUI
 import VoiceDictationLib
 
+/// What "Check for Updates…" needs (Task 26). Sparkle provides it in the app
+/// target, the only one that links Sparkle, so the menu and its tests do not.
+/// The menu reads `canCheckForUpdates` as it draws, so a conforming class is
+/// `@Observable` and the item follows it.
+@MainActor
+public protocol UpdateChecking: AnyObject, Observable {
+    /// False while a check is under way: Sparkle's `canCheckForUpdates`.
+    var canCheckForUpdates: Bool { get }
+    /// Checks now and shows what it finds: the app's only update check.
+    func checkForUpdates()
+}
+
 /// The menu bar menu: what the app is doing, the window, Paste Last
-/// Transcript, the model dictation uses, Settings and Quit.
+/// Transcript, the model dictation uses, Settings, Check for Updates… and
+/// Quit.
 public struct MenuBarContent: View {
     private let model: AppModel
+    private let updates: any UpdateChecking
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
-    public init(model: AppModel) {
+    public init(model: AppModel, updates: any UpdateChecking) {
         self.model = model
+        self.updates = updates
     }
 
     public var body: some View {
@@ -45,6 +61,7 @@ public struct MenuBarContent: View {
             openSettings()
         }
         .keyboardShortcut(",")
+        updatesItem
         Divider()
         Button("Quit") {
             NSApp.terminate(nil)
@@ -64,6 +81,13 @@ public struct MenuBarContent: View {
                 Section { modelItems(section.models) }
             }
         }
+    }
+
+    /// Sparkle checks only from here: its automatic checks are off.
+    private var updatesItem: some View {
+        let entry = Self.updatesEntry(updates)
+        return Button(entry.title, action: entry.action)
+            .disabled(!entry.isEnabled)
     }
 
     /// A toggle draws the checkmark. Choosing the checked model goes through
@@ -124,6 +148,13 @@ public struct MenuBarContent: View {
             }
         }
         return sections
+    }
+
+    /// "Check for Updates…", greyed out while Sparkle is already checking;
+    /// choosing it asks Sparkle to check now.
+    static func updatesEntry(_ updates: any UpdateChecking)
+        -> (title: String, isEnabled: Bool, action: @MainActor () -> Void) {
+        ("Check for Updates…", updates.canCheckForUpdates, { updates.checkForUpdates() })
     }
 
     /// How a model reads in the Model submenu, and whether choosing it does
