@@ -195,6 +195,8 @@ final class DictationPipelineTests: XCTestCase {
             try await waitUntil("clip \(number) is in line") { await service.dictationsInLine == number }
         }
         dictate(clips[4], on: pipeline)
+        XCTAssertEqual(pipeline.state, .error(DictationPipeline.skippedFailure))
+        XCTAssertEqual(pipeline.work, .transcribing, "the skip's error hides none of the work in line")
         try await waitUntil("clip 2 is reported") { outcomes.count == 1 }
         try await waitUntil("clip 2 leaves the line") { await service.dictationsInLine == 4 }
         apple.isHeld = false
@@ -405,6 +407,45 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(outcomes.isEmpty, "a recording that never started is not a dictation")
         pipeline.missingPermission = nil
         XCTAssertEqual(pipeline.state, .idle)
+    }
+
+    /// The work under way, which the hotkey's tap and the indicator read
+    /// (final fix wave, item A): recording, then a cleanup
+    /// (`CleanupPipelineTests`), then dictations in line, else idle. An error
+    /// on show, a model being prepared and a missing permission are in
+    /// `state` only, for the menu bar.
+    @MainActor
+    func testTheWorkUnderWayIsReadPastAnError() async throws {
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
+        let pipeline = makePipeline([apple])
+        pipeline.errorDisplaySeconds = 60
+        pipeline.missingPermission = "Accessibility"
+        XCTAssertEqual(pipeline.state, .needsPermission("Accessibility"))
+        XCTAssertEqual(pipeline.work, .idle)
+
+        dictate(clip, on: pipeline)
+        try await waitUntil("the dictation reaches the engine") { apple.transcribedClips.count == 1 }
+        XCTAssertEqual(pipeline.work, .transcribing)
+        recorder.startFailure = "Microphone in use by another app"
+        pipeline.hotkeyDown()
+        XCTAssertEqual(pipeline.state, .error("Microphone in use by another app"))
+        XCTAssertEqual(pipeline.work, .transcribing, "the dictation in line is still under way")
+
+        recorder.startFailure = nil
+        pipeline.hotkeyDown()
+        guard case .recording = pipeline.work else { return XCTFail("not recording: \(pipeline.work)") }
+        XCTAssertEqual(pipeline.state, pipeline.work, "recording comes first in both")
+        pipeline.cancel()
+        XCTAssertEqual(pipeline.work, .transcribing)
+
+        apple.isHeld = false
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+        XCTAssertEqual(pipeline.work, .idle)
+        await pipeline.whilePreparing("WhisperKit base.en") {
+            XCTAssertEqual(pipeline.state, .preparingModel("WhisperKit base.en"))
+            XCTAssertEqual(pipeline.work, .idle)
+        }
     }
 
     /// Each slice's peak goes on with the time it was captured, every one of

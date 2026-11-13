@@ -53,7 +53,9 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
     let doubleTap: () -> Bool
     /// Read at each key-down: whether Control-Option-V pastes the last transcript.
     let pasteLastShortcut: () -> Bool
-    /// Read at each event: what the app is doing (`DictationPipeline.state`).
+    /// Read at each event: the work under way (`DictationPipeline.work`),
+    /// recording, transcribing, cleaning up or idle, whatever error the menu
+    /// bar shows.
     let appState: () -> DictationState
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?

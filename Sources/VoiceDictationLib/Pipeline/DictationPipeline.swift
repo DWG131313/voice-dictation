@@ -78,9 +78,15 @@ public final class DictationPipeline {
     /// A text with fewer words than this pastes without cleanup.
     public static let cleanupMinimumWords = 4
 
-    /// What the app is doing. An error shows for `errorDisplaySeconds`, then
-    /// the state returns to the true one.
+    /// What the app is doing, as the menu bar shows it. An error shows for
+    /// `errorDisplaySeconds`, then the state returns to the true one.
     public private(set) var state: DictationState = .idle
+    /// The work under way, whatever error is on show: `.recording`,
+    /// `.cleaning`, `.transcribing` or `.idle`, never another state. The
+    /// hotkey's tap and the indicator read it, so an error shown over
+    /// dictations still in line or cleaned up hides them from neither
+    /// Escape nor the indicator (final fix wave, item A).
+    public private(set) var work: DictationState = .idle
     /// Each peak (0...1) heard while recording, with the time its slice was
     /// captured, for the indicator's line: once per slice, on the main
     /// thread, and nothing between recordings (Task 24A). A callback, not an
@@ -607,20 +613,29 @@ public final class DictationPipeline {
         errorMessage = nil
     }
 
-    /// Sets the state to what is true now. Recording comes first, then an
-    /// error on show, then a cleanup under way (the dictation that pastes
-    /// next), then dictations in line, then a model being prepared, then a
-    /// missing permission.
+    /// Sets the work and the state to what is true now. The work is a
+    /// recording, then a cleanup under way (the dictation that pastes next),
+    /// then dictations in line, else idle. The state puts an error on show
+    /// after a recording and before the rest of the work, then a model being
+    /// prepared, then a missing permission.
     private func settle() {
-        let next: DictationState
+        let work: DictationState
         if let since = capture?.startedAt {
-            next = .recording(since: since)
+            work = .recording(since: since)
+        } else if cleaning != nil {
+            work = .cleaning
+        } else if !line.isEmpty {
+            work = .transcribing
+        } else {
+            work = .idle
+        }
+        let next: DictationState
+        if case .recording = work {
+            next = work
         } else if let errorMessage {
             next = .error(errorMessage)
-        } else if cleaning != nil {
-            next = .cleaning
-        } else if !line.isEmpty {
-            next = .transcribing
+        } else if work != .idle {
+            next = work
         } else if let model = modelsPreparing.last {
             next = .preparingModel(model)
         } else if let missingPermission {
@@ -628,6 +643,7 @@ public final class DictationPipeline {
         } else {
             next = .idle
         }
+        if self.work != work { self.work = work }
         if state != next { state = next }
     }
 

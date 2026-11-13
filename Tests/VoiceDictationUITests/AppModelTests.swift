@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import XCTest
 @testable import VoiceDictationLib
 @testable import VoiceDictationUI
@@ -398,8 +399,9 @@ final class AppModelTests: XCTestCase {
 
     /// The tap the app arms follows the preferences: the key saved when it is
     /// made, and double-tap dictation and the Paste last shortcut as they are
-    /// at each press. It reads what the pipeline is doing at each key. Making
-    /// one creates no event tap; only `start()` does.
+    /// at each press. At each key it reads the work under way
+    /// (`DictationPipeline.work`), not what the menu bar shows (final fix
+    /// wave, item A). Making one creates no event tap; only `start()` does.
     @MainActor
     func testTheHotkeyFollowsThePreferences() {
         preferences.hotkey = .rightCommand
@@ -416,7 +418,10 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(strategy.pasteLastShortcut())
         XCTAssertEqual(strategy.appState(), .idle)
         model.pipeline.missingPermission = "Microphone"
-        XCTAssertEqual(strategy.appState(), .needsPermission("Microphone"))
+        XCTAssertEqual(model.pipeline.state, .needsPermission("Microphone"), "the menu bar shows it")
+        XCTAssertEqual(strategy.appState(), .idle, "nothing is under way")
+        model.hotkeyDidStartPress()
+        guard case .recording = strategy.appState() else { return XCTFail("the tap reads \(strategy.appState())") }
     }
 
     // MARK: - Paste last (Ruling P4)
@@ -508,6 +513,75 @@ final class AppModelTests: XCTestCase {
             indicator.line.points(at: drawn) == expected.points(at: drawn)
         }
         XCTAssertTrue(indicator.showsListening)
+    }
+
+    // MARK: - An error shown over work under way (final fix wave, item A)
+
+    // In each test a dictation is in line, held in the engine, and the next
+    // press finds the microphone taken: "Microphone in use by another app"
+    // shows for a few seconds, over the dictation still under way.
+
+    /// Escape still cancels the dictation in line, and is swallowed: the
+    /// tap reads the work under way, not the error the menu bar shows. The
+    /// app's own paste still goes through first. Nothing pastes and nothing
+    /// is kept, and the error stays on show.
+    @MainActor
+    func testEscapeCancelsTheDictationInLineWhileAnErrorShows() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let model = makeModel([apple])
+        let tap = model.makeHotkeyStrategy()
+        tap.delegate = model
+        try await showAnErrorOverADictationInLine(model, apple)
+
+        XCTAssertTrue(letsThrough(tap, try keyDown(kVK_ANSI_V, flags: .maskCommand, tag: PasteEngine.eventTag)),
+                      "the app's own paste goes through")
+        XCTAssertFalse(letsThrough(tap, try keyDown(kVK_Escape)), "Escape is swallowed")
+        try await waitUntil("Escape cancels the dictation in line") { model.pipeline.dictationsInFlight == 0 }
+        apple.isHeld = false
+        // Time for a stray paste or transcript to show up.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(paster.pasted, [])
+        XCTAssertTrue(model.store.search("", scope: .all).isEmpty, "a cancelled dictation is not kept")
+        XCTAssertEqual(model.pipeline.state, .error("Microphone in use by another app"))
+    }
+
+    /// The indicator keeps "Transcribing" while the error shows, and hides
+    /// once the dictation pastes.
+    @MainActor
+    func testTheIndicatorKeepsTranscribingWhileAnErrorShows() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let indicator = FakeIndicator()
+        let model = makeModel([apple], indicator: indicator)
+        try await showAnErrorOverADictationInLine(model, apple)
+        // The indicator follows a change a turn later.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(indicator.isShowing, "the dictation in line is still under way")
+        XCTAssertEqual(indicator.state, .transcribing)
+        apple.isHeld = false
+        try await waitUntil("it hides once the text is pasted") { !indicator.isShowing }
+        XCTAssertEqual(paster.pasted, ["Hello there."])
+    }
+
+    /// The menu bar shows the error first, as before, then the work under
+    /// way once the error has had its time.
+    @MainActor
+    func testTheMenuBarStillShowsTheErrorOverWorkUnderWay() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let model = makeModel([apple])
+        model.pipeline.errorDisplaySeconds = 0.3
+        try await showAnErrorOverADictationInLine(model, apple)
+
+        XCTAssertEqual(MenuBarContent.statusLine(for: model.pipeline.state), "Error: Microphone in use by another app")
+        XCTAssertEqual(MenuBarLabel.symbolName(for: model.pipeline.state, exists: { _ in true }), "mic.slash.fill")
+        try await waitUntil("the error has had its time") { model.pipeline.state == .transcribing }
+        XCTAssertEqual(MenuBarContent.statusLine(for: model.pipeline.state), "Status: Transcribing...")
+        apple.isHeld = false
+        try await waitUntil("the dictation pastes") { self.paster.pasted == ["Hello there."] }
     }
 
     // MARK: - The app
@@ -706,6 +780,40 @@ final class AppModelTests: XCTestCase {
                  preferences: preferences, hotkeys: FakeHotkeys(), settingsSystem: FakeSettingsSystem().system,
                  dataDirectory: directory, onboardingSystem: system, indicator: indicator,
                  pasteAgain: (apps ?? FakeApps()).system, cleaner: cleaner)
+    }
+
+    /// A dictation in line, held in `apple`, then a press whose recording
+    /// cannot start: its error shows over the dictation still under way.
+    @MainActor
+    private func showAnErrorOverADictationInLine(_ model: AppModel, _ apple: FakeEngine,
+                                                 file: StaticString = #filePath, line: UInt = #line) async throws {
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the dictation is being transcribed", file: file, line: line) {
+            apple.calls.contains(.transcribe(.appleSpeech))
+        }
+        recorder.startFailure = "Microphone in use by another app"
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        XCTAssertEqual(model.pipeline.state, .error("Microphone in use by another app"), file: file, line: line)
+        XCTAssertEqual(model.pipeline.dictationsInFlight, 1, "the dictation is still in line", file: file, line: line)
+    }
+
+    /// A key-down as the event tap would be given it, made and never posted;
+    /// `tag` is its source data, as `PasteEngine` tags the app's own paste.
+    private func keyDown(_ key: Int, flags: CGEventFlags = [], tag: Int64 = 0) throws -> CGEvent {
+        let event = try XCTUnwrap(CGEvent(source: nil))
+        event.type = .keyDown
+        event.setIntegerValueField(.keyboardEventKeycode, value: Int64(key))
+        event.setIntegerValueField(.eventSourceUserData, value: tag)
+        event.flags = flags
+        return event
+    }
+
+    /// Whether the tap lets a key-down through untouched: it hands back that
+    /// same event, unretained, so this compares it while it is alive.
+    private func letsThrough(_ tap: ModifierKeyStrategy, _ event: CGEvent) -> Bool {
+        tap.handle(.keyDown, event)?.takeUnretainedValue() === event
     }
 
     /// Whether `line` strays from the centre anywhere a moment from now.

@@ -15,10 +15,12 @@ final class HotkeyLogicTests: XCTestCase {
     private let controlOption: CGEventFlags = [.maskControl, .maskAlternate]
     private let otherKeys = [kVK_RightArrow, kVK_ANSI_A, kVK_Space, kVK_Return, kVK_Delete].map(Int64.init)
     private let recording = DictationState.recording(since: Date(timeIntervalSince1970: 1_762_900_000))
+    /// What the tap reads: the work under way (`DictationPipeline.work`). An
+    /// error on show, a model being prepared and a missing permission are
+    /// the menu bar's alone, so with nothing under way the tap reads idle
+    /// (final fix wave, item A).
     private var working: [DictationState] { [recording, .transcribing, .cleaning] }
-    private let notWorking: [DictationState] = [
-        .idle, .preparingModel("Apple Speech"), .needsPermission("Microphone"), .error("Microphone in use by another app"),
-    ]
+    private let notWorking: [DictationState] = [.idle]
 
     // MARK: - Holding
 

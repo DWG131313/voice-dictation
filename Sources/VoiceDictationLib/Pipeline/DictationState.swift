@@ -1,6 +1,8 @@
 import Foundation
 
-/// What the app is doing, as the menu bar and the indicator show it.
+/// What the app is doing, as the menu bar shows it (`DictationPipeline.state`).
+/// The indicator and the hotkey's tap read the work under way instead
+/// (`DictationPipeline.work`): only recording, transcribing, cleaning up or idle.
 public enum DictationState: Equatable, Sendable {
     case idle, recording(since: Date), transcribing, cleaning
     /// A model is downloading or loading for dictation; the model's name.

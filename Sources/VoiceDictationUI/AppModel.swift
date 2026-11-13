@@ -168,7 +168,7 @@ public final class AppModel {
             self?.store.setLateCleanup(id: id, cleanedText: cleanedText, seconds: seconds)
         }
         listModelsWhenAMenuOpens()
-        observeStateForIndicator()
+        observeWorkForIndicator()
         // Every slice, each at the time it was captured (Task 24A).
         pipeline.onLevel = { [weak self] peak, time in self?.updateIndicator(level: (peak, time)) }
     }
@@ -392,26 +392,28 @@ public final class AppModel {
     // actor, and watches again. Levels come through `pipeline.onLevel`
     // instead, one call per slice.
 
-    private func observeStateForIndicator() {
+    private func observeWorkForIndicator() {
         withObservationTracking {
-            _ = pipeline.state
+            _ = pipeline.work
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.observeStateForIndicator()
+                self?.observeWorkForIndicator()
                 self?.updateIndicator()
             }
         }
     }
 
     /// Shows the floating indicator while a dictation is recorded, transcribed
-    /// or cleaned up, and hides it otherwise. A new recording starts a new
+    /// or cleaned up, and hides it otherwise. It follows the work under way
+    /// (`pipeline.work`), so an error the menu bar shows meanwhile leaves it
+    /// on (final fix wave, item A). A new recording starts a new
     /// line; a `level` heard while recording goes into it at the time its
     /// slice was captured, never when it got here (Task 24A), so the line
     /// advances evenly however the slices bunch on the way. Showing the
     /// indicator never activates the app or changes its activation policy
     /// (`IndicatorPanel`), so it stays out of `WindowPolicy`.
     private func updateIndicator(level: (peak: Float, at: TimeInterval)? = nil) {
-        let state = pipeline.state
+        let state = pipeline.work
         guard IndicatorView.words(for: state) != nil else {
             indicator?.hide()
             return
@@ -517,14 +519,15 @@ public final class AppModel {
     /// The hotkey's event tap, as the preferences have it. The key is read
     /// now, so another choice takes a new tap (`HotkeyManager.start` again);
     /// double-tap dictation and the Paste last shortcut are read at each
-    /// press, and what the pipeline is doing at each key. No tap exists until
-    /// it starts.
+    /// press, and the work under way at each key: `pipeline.work`, not the
+    /// menu bar's state, so Escape reaches dictations an error on show would
+    /// hide (final fix wave, item A). No tap exists until it starts.
     func makeHotkeyStrategy() -> ModifierKeyStrategy {
         let preferences = preferences
         return ModifierKeyStrategy(choice: preferences.hotkey,
                                    doubleTap: { preferences.doubleTapEnabled },
                                    pasteLastShortcut: { preferences.pasteLastHotkeyEnabled },
-                                   appState: { [weak self] in self?.pipeline.state ?? .idle })
+                                   appState: { [weak self] in self?.pipeline.work ?? .idle })
     }
 
     private func stopListening() {

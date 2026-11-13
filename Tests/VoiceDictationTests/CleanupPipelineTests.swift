@@ -345,6 +345,33 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.dictationsInFlight, 0)
     }
 
+    /// A press whose recording cannot start while a dictation is cleaned up
+    /// (final fix wave, item A): the error shows in `state`, for the menu
+    /// bar, and `work` stays on the cleanup, ahead of the dictation in line,
+    /// for the tap and the indicator. The cleanup carries on and pastes.
+    @MainActor
+    func testAnErrorDuringACleanupLeavesTheWorkOnTheCleanup() async throws {
+        let pipeline = makePipeline(engineText: raw)
+        pipeline.errorDisplaySeconds = 60
+        cleaner.reply = { [cleaned] _ in cleaned }
+        cleaner.isHeld = true
+        dictate(on: pipeline)
+        try await waitUntil("the cleanup starts") { cleaner.given.count == 1 }
+        dictate(on: pipeline)
+        XCTAssertEqual(pipeline.work, .cleaning)
+
+        recorder.startFailure = "Microphone in use by another app"
+        pipeline.hotkeyDown()
+
+        XCTAssertEqual(pipeline.state, .error("Microphone in use by another app"))
+        XCTAssertEqual(pipeline.work, .cleaning)
+        cleaner.isHeld = false
+        try await waitUntil("both dictations finish") { outcomes.count == 2 }
+        XCTAssertEqual(paster.pasted, [cleaned, cleaned])
+        XCTAssertEqual(pipeline.work, .idle)
+        XCTAssertEqual(pipeline.state, .error("Microphone in use by another app"), "the error has its time")
+    }
+
     /// Ruling T21-1: the order is OutputFilter (in the service, Ruling P3),
     /// then the replacements, then the cleaner, then the guard and the paste.
     /// Until Task 22 the replacements change nothing, so the cleaner gets the

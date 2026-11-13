@@ -130,11 +130,18 @@ final class FakeRecorder: Recording {
 
     /// What the next stop hands over.
     var nextClip = AudioClip(samples: [Float](repeating: 0.2, count: 16_000))
+    /// When set, starting fails with this message, as when another app holds
+    /// the microphone.
+    var startFailure: String?
     private(set) var isRecording = false
 
     func prepare() {}
 
     func startRecording() {
+        if let startFailure {
+            delegate?.recordingDidFail(error: startFailure)
+            return
+        }
         isRecording = true
         delegate?.recordingDidStart()
     }
