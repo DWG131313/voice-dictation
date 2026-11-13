@@ -19,14 +19,14 @@ struct ModelsView: View {
         var models: [ModelDescriptor]
 
         var id: EngineKind { engine }
-        /// The old whisper-cli models sit under a muted label; removed in Task 27.
+        /// The old whisper-cli models sit under a muted label; removed in Task 27A.
         var title: String? { engine == .whisperCLI ? "Previous engine" : nil }
     }
 
     /// Apple's models first, then WhisperKit (the engine lists it smallest
-    /// to largest), then the previous engine.
+    /// to largest), then whisper.cpp, then the previous engine.
     static func sections(_ models: [ModelDescriptor]) -> [Group] {
-        [EngineKind.appleSpeech, .whisperKit, .whisperCLI].compactMap { engine in
+        [EngineKind.appleSpeech, .whisperKit, .whisperCpp, .whisperCLI].compactMap { engine in
             let ofEngine = models.filter { $0.id.engine == engine }
             return ofEngine.isEmpty ? nil : Group(engine: engine, models: ofEngine)
         }

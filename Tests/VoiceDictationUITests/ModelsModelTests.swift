@@ -294,12 +294,16 @@ final class ModelsModelTests: XCTestCase {
     func testSectionsKeepApplesFirstThenWhisperKitThenThePreviousEngine() {
         let all = [descriptor(.appleSpeech, .ready), descriptor(base, .ready),
                    descriptor(ModelID(engine: .whisperCLI, name: "base.en"), .ready),
+                   descriptor(.whisperCppBase, .ready),
                    descriptor(.appleDictation, .ready), descriptor(tiny, .ready)]
         let sections = ModelsView.sections(all)
-        XCTAssertEqual(sections.map(\.engine), [.appleSpeech, .whisperKit, .whisperCLI])
+        XCTAssertEqual(sections.map(\.engine), [.appleSpeech, .whisperKit, .whisperCpp, .whisperCLI])
+        guard sections.count == 4 else { return }
         XCTAssertEqual(sections[0].models.map(\.id), [.appleSpeech, .appleDictation])
         XCTAssertEqual(sections[1].models.map(\.id), [base, tiny], "the engine's order is kept: it lists smallest first")
-        XCTAssertEqual(sections[2].title, "Previous engine")
+        XCTAssertEqual(sections[2].models.map(\.id), [.whisperCppBase])
+        XCTAssertNil(sections[2].title)
+        XCTAssertEqual(sections[3].title, "Previous engine")
     }
 
     func testButtonsFitTheState() {

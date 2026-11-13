@@ -1,7 +1,7 @@
 import Foundation
 
 public enum EngineKind: String, Codable, Sendable, CaseIterable {
-    case appleSpeech, whisperKit, whisperCLI
+    case appleSpeech, whisperKit, whisperCLI, whisperCpp
 }
 
 /// Names one speech model of one engine, e.g. `appleSpeech/en-US`.
@@ -31,6 +31,11 @@ public struct ModelID: Hashable, Codable, Sendable {
     public static let appleSpeech = ModelID(engine: .appleSpeech, name: "en-US")
     /// `DictationTranscriber` (Task 6).
     public static let appleDictation = ModelID(engine: .appleSpeech, name: "en-US-dictation")
+}
+
+extension ModelID {
+    /// whisper.cpp in this process with base.en: Task 27A's default (D2).
+    public static let whisperCppBase = ModelID(engine: .whisperCpp, name: "base.en")
 }
 
 public struct ModelDescriptor: Sendable, Identifiable {

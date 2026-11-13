@@ -19,10 +19,19 @@ let package = Package(
             path: "Sources/ObjCHelpers",
             publicHeadersPath: "include"
         ),
+        // whisper.cpp v1.9.5 (commit d1be6fd), the version of the whisper-cli Danny
+        // chose (D2), built by upstream from that commit as release b5454. Do not
+        // bump it without recording Task 27's golden text again.
+        .binaryTarget(
+            name: "whisper",
+            url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-b5454-xcframework.zip",
+            checksum: "e57f8c48933000acabc13bb913fbe82805d483a2deff692cc6738836bd92393b"
+        ),
         .target(
             name: "VoiceDictationLib",
             dependencies: [
                 "ObjCHelpers",
+                "whisper",
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],
             path: "Sources/VoiceDictationLib"
@@ -44,6 +53,8 @@ let package = Package(
             name: "VoiceDictationTests",
             dependencies: [
                 "VoiceDictationLib",
+                // The tests read whisper.cpp's C types.
+                "whisper",
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],
             path: "Tests/VoiceDictationTests",

@@ -48,6 +48,7 @@ guard !clips.isEmpty else {
 let engines: [any TranscriptionEngine] = [
     AppleSpeechEngine(),
     WhisperKitEngine(root: support.appendingPathComponent("whisperkit", isDirectory: true)),
+    WhisperCppEngine(directory: support.appendingPathComponent("models", isDirectory: true)),
     WhisperCLIEngine(),
 ]
 

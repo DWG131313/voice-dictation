@@ -47,9 +47,9 @@ public enum Transcriber {
         BundledBinary.findWhisperCLI()
     }
 
+    /// The formula lives in `WhisperCppEngine` now, which keeps whisper-cli's
+    /// limit after Task 27A deletes this file.
     public static func calculateTimeout(recordingDuration: TimeInterval) -> TimeInterval {
-        // Generous floor: the first run after a cold start pays for model
-        // loading and Metal shader compilation.
-        max(20.0, recordingDuration * 3.0)
+        WhisperCppEngine.timeout(recordingDuration: recordingDuration)
     }
 }
