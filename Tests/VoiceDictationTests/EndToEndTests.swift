@@ -5,6 +5,8 @@ import XCTest
 /// A whole dictation, from a recorded clip to the stored transcript, with
 /// only the microphone, the paste and the cleaner faked.
 final class EndToEndTests: XCTestCase {
+    /// The silent clip's length: 16 kHz × 2 s, long enough to keep.
+    private static let silentClipSamples = Int(AudioClip.sampleRate) * 2
     private var directories: [URL] = []
 
     override func tearDown() {
@@ -69,7 +71,7 @@ final class EndToEndTests: XCTestCase {
         let rig = try makeRig(engine: engine, selected: .appleSpeech)
         let pipeline = rig.pipeline(cleaner: nil, cleanupEnabled: { true })
         // Two seconds of zeros: long enough to keep, but silent.
-        rig.recorder.nextClip = AudioClip(samples: [Float](repeating: 0, count: 32_000))
+        rig.recorder.nextClip = AudioClip(samples: [Float](repeating: 0, count: Self.silentClipSamples))
 
         pipeline.hotkeyDown()
         pipeline.hotkeyUp()

@@ -473,6 +473,30 @@ final class AppModelTests: XCTestCase {
         guard case .recording = strategy.appState() else { return XCTFail("the tap reads \(strategy.appState())") }
     }
 
+    // MARK: - Permissions
+
+    /// Final fix wave, E3: microphone access granted while the app runs (the
+    /// Welcome window's first-run grant, say) readies the microphone at once.
+    /// `prepare()` does nothing without access, so otherwise the first
+    /// dictation would build it at key-down. A report that changes nothing
+    /// for the microphone readies nothing.
+    @MainActor
+    func testGrantingTheMicrophoneReadiesIt() {
+        let model = makeModel([appleEngine()])
+        let readied = recorder.prepareCount
+        model.permissionStatusChanged(accessibility: false, microphone: false)
+        XCTAssertEqual(recorder.prepareCount, readied, "no access yet")
+
+        model.permissionStatusChanged(accessibility: false, microphone: true)
+        XCTAssertEqual(recorder.prepareCount, readied + 1, "access granted: readied at once")
+
+        model.permissionStatusChanged(accessibility: true, microphone: true)
+        XCTAssertEqual(recorder.prepareCount, readied + 1, "only Accessibility changed")
+        model.permissionStatusChanged(accessibility: true, microphone: false)
+        model.permissionStatusChanged(accessibility: true, microphone: true)
+        XCTAssertEqual(recorder.prepareCount, readied + 2, "taken away and granted again: readied again")
+    }
+
     // MARK: - Paste last (Ruling P4)
 
     /// Paste last pastes the store's latest transcript as it reads now: an

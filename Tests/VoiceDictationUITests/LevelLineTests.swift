@@ -103,9 +103,11 @@ final class LevelLineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(points.last?.x ?? -.infinity, LevelLine.width)
     }
 
-    /// Ruling T17-1: the microphone sends a peak about every 100 ms, so every
-    /// other interval hears none. Such an interval holds the latest peak, so a
-    /// steady voice draws a steady line instead of dipping on every other vertex.
+    /// Ruling T17-1: an interval that hears no peak holds the latest one, so
+    /// a steady voice draws a steady line instead of dipping. Since Task 24A a
+    /// peak comes every 50 ms, one per interval, so this is a slice that was
+    /// lost; here peaks come every 100 ms, as they did before, and every other
+    /// interval hears none.
     func testPeaksEvery100msGiveASteadyLine() {
         var line = LevelLine()
         for n in stride(from: 0, to: 80, by: 2) { line.add(peak: 0.1, at: time(n)) }   // 4 s
@@ -163,7 +165,9 @@ final class LevelLineTests: XCTestCase {
     /// The recorder hands over a buffer's slices together, 130 ms after the
     /// buffer began, and sometimes two buffers' at once. Each slice keeps the
     /// time it was captured, so what was said keeps its spacing and every
-    /// vertex moves left exactly `step` per interval, however the bursts fall.
+    /// vertex moves left exactly `step` per interval, however the bursts fall:
+    /// also while a late buffer is still on its way, which the sweep covers
+    /// from buffer 5's arrival on.
     func testBunchedArrivalsStillScrollEvenly() {
         // 100 ms buffers, silent but for two loud slices: the first half of
         // buffer 5 (interval 10) and the second half of buffer 6 (interval 13).
@@ -173,23 +177,32 @@ final class LevelLineTests: XCTestCase {
 
         var line = LevelLine()
         var delivered = 0
-        var start: (time: TimeInterval, x: [CGFloat])?
-        for frame in stride(from: arrivals[7], to: arrivals[11], by: 0.01) {   // a frame every 10 ms
+        var start: (time: TimeInterval, x: CGFloat)?
+        var framesWithBoth = 0
+        for frame in stride(from: arrivals[5], to: arrivals[11], by: 0.01) {   // a frame every 10 ms
             while delivered < buffers.count, arrivals[delivered] <= frame {
                 feed(slices(of: buffers[delivered], from: time(2 * delivered)), to: &line)
                 delivered += 1
             }
-            let loud = twoLoudest(line.points(at: frame))
-            XCTAssertEqual(loud[1] - loud[0], 3 * LevelLine.step, accuracy: 1e-9, "three intervals apart, at \(frame)")
+            let points = line.points(at: frame)
+            // Buffer 5's loud vertex: alone until buffer 6 lands, then the
+            // left of the two.
+            let bothLoud = delivered > 6
+            let x = bothLoud ? twoLoudest(points)[0] : loudest(points).x
+            if bothLoud {
+                framesWithBoth += 1
+                let loud = twoLoudest(points)
+                XCTAssertEqual(loud[1] - loud[0], 3 * LevelLine.step, accuracy: 1e-9, "three intervals apart, at \(frame)")
+            }
             guard let start else {
-                start = (frame, loud)
+                start = (frame, x)
                 continue
             }
             let moved = CGFloat((frame - start.time) / LevelLine.interval) * LevelLine.step
-            XCTAssertEqual(loud[0], start.x[0] - moved, accuracy: 1e-9, "at \(frame)")
-            XCTAssertEqual(loud[1], start.x[1] - moved, accuracy: 1e-9, "at \(frame)")
+            XCTAssertEqual(x, start.x - moved, accuracy: 1e-9, "at \(frame)")
         }
         XCTAssertEqual(delivered, 11, "bursts landed between the frames")
+        XCTAssertGreaterThan(framesWithBoth, 0, "the sweep reached buffer 6's arrival")
     }
 
     // MARK: - Helpers

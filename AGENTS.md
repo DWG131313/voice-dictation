@@ -62,6 +62,8 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
 - The event tap heals itself: a 15 s health check and a wake notification (`HotkeyManager`)
 - Menu bar SF Symbols fall back to `mic.fill`, so the icon never blanks (`MenuBarLabel.symbolName`)
 - `xcode-select` points at the Command Line Tools, so prefix `swift` and `xcodebuild` with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+- Transcript and AlternateResult: add only optional or defaulted properties; anything else needs a VersionedSchema and a migration plan first, or the store is moved aside on launch.
+- `Package.resolved`: the committed SwiftPM version is authoritative; never commit the Xcode variant with Sparkle. xcodebuild writes that variant; `run-dev.sh` and `release.sh` put the committed one back when they end, and after a bare `xcodebuild` run `swift package resolve`
 
 ## Codex Knowledge Base
 

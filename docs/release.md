@@ -84,6 +84,18 @@ redo step 2 of the D4 setup and run the script again.
 
 ## Installing on the Mac mini
 
-Copy `dist/VoiceDictation-<version>.zip` over (AirDrop or Dropbox), double-click
-it, and drag `VoiceDictation.app` into Applications. Open it from there. The
-first launch asks for the usual microphone and accessibility permissions.
+The Mac mini still runs the old app from `main`. It holds the same lock,
+`~/Library/Application Support/VoiceDictation/instance.lock`, so while it runs
+the new app quits at once without a word (and a build older than the lock
+would answer the Globe key twice). Its old install also put it in Login Items,
+which would start it again at every login. So, the first time:
+
+1. Quit the old app from its menu bar menu.
+2. In System Settings > General > Login Items & Extensions, remove it from
+   "Open at Login".
+3. Copy `dist/VoiceDictation-<version>.zip` over (AirDrop or Dropbox),
+   double-click it, and drag `VoiceDictation.app` into Applications. Open it
+   from there.
+
+At the first launch the Welcome window opens and asks for the microphone and
+Accessibility, with a button for each; nothing is asked before you press one.

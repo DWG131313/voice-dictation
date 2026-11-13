@@ -5,7 +5,7 @@ import Foundation
 /// as wherever it is shown (`localizedDescription`), never "The operation
 /// couldn't be completed…".
 public enum TranscriptionError: Error, Equatable {
-    case modelNotReady(String), engineUnavailable(String), cancelled, failed(String)
+    case modelNotReady(String), engineUnavailable(String), failed(String)
 
     /// A model's load refused while its download runs, so a dictation made
     /// meanwhile fails at once and is kept as Failed with its recording
@@ -19,7 +19,6 @@ extension TranscriptionError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelNotReady(let reason), .engineUnavailable(let reason), .failed(let reason): reason
-        case .cancelled: "The transcription was cancelled"
         }
     }
 }

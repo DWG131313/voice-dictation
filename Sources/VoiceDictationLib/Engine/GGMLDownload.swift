@@ -29,7 +29,11 @@ public enum GGMLDownload {
             try removeIfPresent(file)
             try FileManager.default.moveItem(at: partial, to: file)
         } catch {
-            try? removeIfPresent(partial)
+            do {
+                try removeIfPresent(partial)
+            } catch let cleanup {
+                Log.info("[WHISPER] Could not remove the partial download of \(model.displayName): \(cleanup.localizedDescription)")
+            }
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if error is TranscriptionError { throw error }
             throw failure(model, error.localizedDescription)

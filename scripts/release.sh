@@ -97,6 +97,12 @@ mkdir -p dist
 rm -rf "${BUILD_DIR:?}"
 mkdir -p "$BUILD_DIR"
 
+# xcodebuild writes the app's packages, Sparkle among them, into
+# Package.resolved. The committed copy is SwiftPM's, without Sparkle, and it is
+# the one to keep: a copy goes aside now and comes back however this ends.
+cp Package.resolved "$BUILD_DIR/Package.resolved.committed"
+trap 'cp "$BUILD_DIR/Package.resolved.committed" Package.resolved' EXIT
+
 xcodegen
 xcodebuild archive \
     -scheme VoiceDictation \

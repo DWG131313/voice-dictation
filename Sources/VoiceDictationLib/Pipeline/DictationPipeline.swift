@@ -654,7 +654,7 @@ public final class DictationPipeline {
         case TranscriptionError.modelNotReady(let reason), TranscriptionError.engineUnavailable(let reason),
              TranscriptionError.failed(let reason):
             return reason
-        case TranscriptionError.cancelled, is CancellationError:
+        case is CancellationError:
             return "The transcription was cancelled"
         default:
             return error.localizedDescription

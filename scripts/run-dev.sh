@@ -12,6 +12,13 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 APP=".build/xcode/Build/Products/Debug/VoiceDictation.app"
 
+# xcodebuild writes the app's packages, Sparkle among them, into
+# Package.resolved. The committed copy is SwiftPM's, without Sparkle, and it is
+# the one to keep: a copy goes aside now and comes back however this ends.
+mkdir -p .build
+cp Package.resolved .build/Package.resolved.committed
+trap 'cp .build/Package.resolved.committed Package.resolved' EXIT
+
 xcodegen
 xcodebuild -scheme VoiceDictation -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath .build/xcode build
 

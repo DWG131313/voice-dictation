@@ -62,7 +62,8 @@ public enum HistoryImporter {
         /// The transcript keeps the model that made it, whisper-cli's, though
         /// that engine is retired (Task 27A): the window names it "whisper-cli
         /// base.en", and a transcript's model is a fact, not a choice. The
-        /// Mac mini's history has yet to be imported.
+        /// same holds for any Mac's history, imported the first time that Mac
+        /// runs this app.
         var outcome: DictationOutcome {
             DictationOutcome(date: timestamp, clip: nil, rawText: text, text: text,
                              model: ModelID(engine: .whisperCLI, name: modelId),

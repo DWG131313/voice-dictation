@@ -86,6 +86,13 @@ public final class AppModel {
     /// True while the hotkey tap is armed. Tracked explicitly so that losing
     /// and re-gaining Accessibility restarts it cleanly.
     @ObservationIgnored private var isListening = false
+    /// Whether microphone access was granted at the last permission report:
+    /// a change to granted readies the microphone (`permissionStatusChanged`).
+    @ObservationIgnored private var microphoneWasGranted = false
+    /// True during the launch's own permission check (`start()`). Access found
+    /// then is no new grant: the pipeline readied the microphone when it was
+    /// made, if access was granted then.
+    @ObservationIgnored private var isCheckingAtLaunch = false
     /// Lists the models again whenever a menu opens; kept as long as the app runs.
     @ObservationIgnored private var menuObserver: NSObjectProtocol?
     /// The floating indicator; none in tests that do not ask for one.
@@ -181,7 +188,6 @@ public final class AppModel {
     public func start() {
         Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
 
-        cleanupStaleRecordings()
         importHistory()
 
         // Reconcile "open at login" with the user's preference. This is a
@@ -193,7 +199,9 @@ public final class AppModel {
         // Check permissions. Nothing is asked for here: the Welcome window
         // has a button for each, so a prompt never lands on a user who has
         // not yet been told why.
+        isCheckingAtLaunch = true
         permissions.checkPermissions()
+        isCheckingAtLaunch = false
         Log.info("[INIT] Accessibility=\(permissions.isAccessibilityGranted) Microphone=\(permissions.isMicrophoneGranted)")
         showMissingPermission()
 
@@ -454,21 +462,6 @@ public final class AppModel {
         ]
     }
 
-    /// Recordings left behind by a crash mid-transcription. They live in the
-    /// temp directory, but there is no reason to let them pile up.
-    private func cleanupStaleRecordings() {
-        let tempDir = FileManager.default.temporaryDirectory
-        guard let files = try? FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil) else { return }
-        var removed = 0
-        for file in files where file.lastPathComponent.hasPrefix("voice-dictation-") && file.pathExtension == "wav" {
-            try? FileManager.default.removeItem(at: file)
-            removed += 1
-        }
-        if removed > 0 {
-            Log.info("[INIT] Removed \(removed) stale recording(s)")
-        }
-    }
-
     /// After each dictation: keep its transcript, a failed one too (Review
     /// Focus 4), with its recording as "Recordings to keep" allows, which
     /// the window's list then shows, open or not.
@@ -550,6 +543,11 @@ extension AppModel: @preconcurrency PermissionManagerDelegate {
     public func permissionStatusChanged(accessibility: Bool, microphone: Bool) {
         Log.info("[PERM] permissionStatusChanged accessibility=\(accessibility) microphone=\(microphone)")
         showMissingPermission()
+        // Microphone access granted just now (the Welcome window's first-run
+        // grant, say): ready the microphone, which `prepare()` skips without
+        // access, so the first dictation does not build it at key-down.
+        if microphone, !microphoneWasGranted, !isCheckingAtLaunch { recorder.prepare() }
+        microphoneWasGranted = microphone
         if accessibility {
             startListening()
         } else {

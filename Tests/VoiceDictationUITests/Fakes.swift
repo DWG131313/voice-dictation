@@ -134,8 +134,10 @@ final class FakeRecorder: Recording {
     /// the microphone.
     var startFailure: String?
     private(set) var isRecording = false
+    /// How many times the microphone was readied.
+    private(set) var prepareCount = 0
 
-    func prepare() {}
+    func prepare() { prepareCount += 1 }
 
     func startRecording() {
         if let startFailure {

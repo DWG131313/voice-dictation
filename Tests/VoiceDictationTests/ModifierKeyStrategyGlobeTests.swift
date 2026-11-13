@@ -6,7 +6,7 @@ import XCTest
 /// Globe choice: the Fn flag of each modifier change is Globe's, a key
 /// pressed while it is held cancels that hold, and the app's own Cmd+V never
 /// does. `HotkeyLogicTests` covers every choice and the Task 23 rules.
-final class GlobeKeyStrategyTests: XCTestCase {
+final class ModifierKeyStrategyGlobeTests: XCTestCase {
     private let otherKeys = [kVK_RightArrow, kVK_LeftArrow, kVK_ForwardDelete, kVK_Delete, kVK_ANSI_A, kVK_Space, kVK_Return]
     private let recording = DictationState.recording(since: Date())
 

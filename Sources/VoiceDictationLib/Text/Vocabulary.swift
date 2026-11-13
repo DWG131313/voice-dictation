@@ -3,7 +3,7 @@ import Observation
 
 /// Danny's own words and replacement rules, kept in `vocabulary.json` in the
 /// app's data folder. Words go to the engines that can use them as a hint
-/// (Apple Dictation, WhisperKit, whisper-cli; Apple Speech ignores them);
+/// (Apple Dictation, WhisperKit, whisper.cpp; Apple Speech ignores them);
 /// the rules change the text after any engine. Use from the main thread.
 ///
 /// The lists are held as rows with identities (`wordRows`, `ruleRows`), so a
