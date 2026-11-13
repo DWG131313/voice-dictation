@@ -82,6 +82,25 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(store.search("", scope: .all).count, 3, "an empty query matches everything")
     }
 
+    /// `count(scope:)` agrees with `search` and loads nothing.
+    @MainActor
+    func testCountMatchesSearch() throws {
+        let store = memoryStore()
+        XCTAssertEqual(store.count(scope: .all), 0)
+        let startOfToday = Calendar.current.startOfDay(for: Date())
+        store.add(outcome("Late last night", at: startOfToday.addingTimeInterval(-1)))
+        let pinned = try XCTUnwrap(store.add(outcome("First thing today", at: startOfToday)))
+        store.add(outcome("Just now", at: startOfToday.addingTimeInterval(60)))
+        store.setPinned(pinned, true)
+
+        XCTAssertEqual(store.count(scope: .all), 3)
+        XCTAssertEqual(store.count(scope: .today), 2)
+        XCTAssertEqual(store.count(scope: .pinned), 1)
+        for scope in [TranscriptStore.Scope.all, .today, .pinned] {
+            XCTAssertEqual(store.count(scope: scope), store.search("", scope: scope).count)
+        }
+    }
+
     @MainActor
     func testTodayScope() {
         let store = memoryStore()

@@ -117,12 +117,13 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.onboarding.state(of: .tryIt), .done)
     }
 
-    /// The window's list shows a dictation as soon as it is kept, selected
-    /// when nothing else was, whether or not the window is open.
+    /// With the window open its list shows a dictation as soon as it is
+    /// kept, selected when nothing else was. Closed, the library does no
+    /// work for it; the window lists it when it opens.
     @MainActor
     func testADictationAppearsInTheLibrary() async throws {
         let model = makeModel([appleEngine()])
-        model.library.reload()
+        model.library.windowOpened()
         XCTAssertTrue(model.library.rows.isEmpty)
 
         model.hotkeyDidStartPress()
@@ -132,6 +133,22 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.library.rows.map(\.text), ["Hello there."])
         XCTAssertEqual(model.library.selection, model.library.rows.first?.id)
         XCTAssertEqual(model.store.search("", scope: .all).count, 1, "kept once")
+    }
+
+    @MainActor
+    func testADictationMadeWithTheWindowClosedIsListedWhenItOpens() async throws {
+        let model = makeModel([appleEngine()])
+        model.library.windowOpened()
+        model.library.windowClosed()
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the transcript is kept") { !model.store.search("", scope: .all).isEmpty }
+        XCTAssertTrue(model.library.rows.isEmpty, "not listed while closed")
+        model.library.windowOpened()
+        XCTAssertEqual(model.library.rows.map(\.text), ["Hello there."])
+        XCTAssertEqual(model.library.selection, model.library.rows.first?.id)
     }
 
     // MARK: - Welcome window

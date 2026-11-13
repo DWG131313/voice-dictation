@@ -24,7 +24,7 @@ final class LibraryModelTests: XCTestCase {
         let store = memoryStore()
         store.add(outcome("First.", at: base))
         let library = LibraryModel(store: store)
-        library.reload()
+        library.windowOpened()
         XCTAssertEqual(library.rows.map(\.text), ["First."])
 
         let newer = try XCTUnwrap(store.add(outcome("Second.", at: base.addingTimeInterval(60))))
@@ -42,7 +42,7 @@ final class LibraryModelTests: XCTestCase {
         let first = try XCTUnwrap(store.add(outcome("First.", at: base)))
         store.add(outcome("Second.", at: base.addingTimeInterval(60)))
         let library = LibraryModel(store: store)
-        library.reload()
+        library.windowOpened()
         library.selection = first.id
 
         let third = try XCTUnwrap(store.add(outcome("Third.", at: base.addingTimeInterval(120))))
@@ -60,7 +60,7 @@ final class LibraryModelTests: XCTestCase {
         // An empty library selects its first transcript.
         let emptyStore = memoryStore()
         let empty = LibraryModel(store: emptyStore)
-        empty.reload()
+        empty.windowOpened()
         XCTAssertNil(empty.selection)
         let only = try XCTUnwrap(emptyStore.add(outcome("Only.", at: base)))
         empty.noteNewTranscript(only)
@@ -69,11 +69,63 @@ final class LibraryModelTests: XCTestCase {
         // One that is not listed here (not pinned, on Pinned) is not selected.
         let pinnedStore = memoryStore()
         let pinned = LibraryModel(store: pinnedStore)
+        pinned.windowOpened()
         pinned.section = .pinned
         let unpinned = try XCTUnwrap(pinnedStore.add(outcome("Not pinned.", at: base)))
         pinned.noteNewTranscript(unpinned)
         XCTAssertEqual(pinned.rows.count, 0)
         XCTAssertNil(pinned.selection)
+    }
+
+    /// Nobody reads a closed window, so a dictation made while it is closed
+    /// does not hold the selection: the window opens on the newest one,
+    /// listed at the top, not on whichever was selected when it closed.
+    @MainActor
+    func testReopenedWindowSelectsTheNewest() throws {
+        let store = memoryStore()
+        let first = try XCTUnwrap(store.add(outcome("D1.", at: base)))
+        let library = LibraryModel(store: store)
+        library.windowOpened()
+        XCTAssertEqual(library.selection, first.id)
+
+        library.windowClosed()
+        var newest = first
+        for n in 2...5 {
+            newest = try XCTUnwrap(store.add(outcome("D\(n).", at: base.addingTimeInterval(Double(n) * 60))))
+            library.noteNewTranscript(newest)
+        }
+        library.windowOpened()
+
+        XCTAssertEqual(library.rows.map(\.text), ["D5.", "D4.", "D3.", "D2.", "D1."])
+        XCTAssertEqual(library.selection, newest.id, "the newest, at the top of the list")
+        XCTAssertEqual(library.count(of: .all, models: []), 5)
+
+        // Open again, a selection stays where Danny put it.
+        library.selection = first.id
+        let sixth = try XCTUnwrap(store.add(outcome("D6.", at: base.addingTimeInterval(360))))
+        library.noteNewTranscript(sixth)
+        XCTAssertEqual(library.selection, first.id)
+    }
+
+    /// While the window is closed a dictation costs the library nothing: no
+    /// re-list and no counts, which opening does. (Not listing is how the
+    /// test sees it: the rows are those of the last look.)
+    @MainActor
+    func testClosedWindowDoesNotRelist() throws {
+        let store = memoryStore()
+        store.add(outcome("First.", at: base))
+        let library = LibraryModel(store: store)
+        library.windowOpened()
+        library.windowClosed()
+
+        let second = try XCTUnwrap(store.add(outcome("Second.", at: base.addingTimeInterval(60))))
+        library.noteNewTranscript(second)
+        XCTAssertEqual(library.rows.map(\.text), ["First."], "not listed again while closed")
+        XCTAssertEqual(library.count(of: .all, models: []), 1, "not counted again while closed")
+
+        library.windowOpened()
+        XCTAssertEqual(library.rows.map(\.text), ["Second.", "First."])
+        XCTAssertEqual(library.count(of: .all, models: []), 2)
     }
 
     // MARK: - What a row says
@@ -100,6 +152,27 @@ final class LibraryModelTests: XCTestCase {
         tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo")!
         XCTAssertEqual(LibraryModel.whenString(at(2026, 11, 12, 19, 42), now: now, calendar: tokyo, locale: enUS),
                        "12:42 PM")
+    }
+
+    /// The detail's title always says the time of day: the row's short
+    /// "Yesterday" and "Nov 3" gain it there.
+    @MainActor
+    func testTitleAlwaysHasTheTime() throws {
+        let store = memoryStore()
+        let t = try XCTUnwrap(store.add(outcome("Run the tests again.", at: at(2026, 11, 12, 19, 42))))
+        t.appName = "Terminal"
+        let now = at(2026, 11, 12, 20, 0)
+        func title(_ date: Date) -> String {
+            t.date = date
+            return LibraryModel.title(t, now: now, calendar: calendar, locale: enUS)
+        }
+
+        XCTAssertEqual(title(at(2026, 11, 12, 19, 42)), "Terminal · 7:42 PM")
+        XCTAssertEqual(title(at(2026, 11, 11, 18, 15)), "Terminal · Yesterday, 6:15 PM")
+        XCTAssertEqual(title(at(2026, 11, 3, 16, 3)), "Terminal · Nov 3, 4:03 PM")
+        XCTAssertEqual(title(at(2025, 1, 3, 16, 3)), "Terminal · Jan 3, 2025, 4:03 PM")
+        // The row keeps its short words.
+        XCTAssertEqual(LibraryModel.rowMeta(t, now: now, calendar: calendar, locale: enUS).when, "Jan 3, 2025")
     }
 
     func testLengthString() {
@@ -183,7 +256,7 @@ final class LibraryModelTests: XCTestCase {
         // No transcripts.
         let store = memoryStore()
         let library = LibraryModel(store: store)
-        library.reload()
+        library.windowOpened()
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Globe and speak.")
 
         // No search results.
@@ -223,7 +296,7 @@ final class LibraryModelTests: XCTestCase {
             return XCTFail("health is \(store.health)")
         }
         let library = LibraryModel(store: store)
-        library.reload()
+        library.windowOpened()
         XCTAssertEqual(library.notice, message)
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Globe and speak.")
 
@@ -245,10 +318,12 @@ final class LibraryModelTests: XCTestCase {
     @MainActor
     func testSectionsAndSearchChooseTheRows() throws {
         let store = memoryStore()
-        let now = Date()
-        let older = try XCTUnwrap(store.add(outcome("Book the service appointment.", at: now.addingTimeInterval(-3 * 86_400))))
-        let today = try XCTUnwrap(store.add(outcome("Run the tests again.", at: now.addingTimeInterval(-1))))
-        let pinned = try XCTUnwrap(store.add(outcome("Set up Tailscale.", at: now)))
+        // Placed from the start of today, so a run just after midnight
+        // cannot move any of them across the day (Ruling T18-2).
+        let midnight = Calendar.current.startOfDay(for: Date())
+        let older = try XCTUnwrap(store.add(outcome("Book the service appointment.", at: midnight.addingTimeInterval(-3 * 86_400))))
+        let today = try XCTUnwrap(store.add(outcome("Run the tests again.", at: midnight.addingTimeInterval(1))))
+        let pinned = try XCTUnwrap(store.add(outcome("Set up Tailscale.", at: midnight.addingTimeInterval(2))))
         store.setPinned(pinned, true)
         let library = LibraryModel(store: store)
 
@@ -276,10 +351,10 @@ final class LibraryModelTests: XCTestCase {
     @MainActor
     func testSidebarCounts() throws {
         let store = memoryStore()
-        let now = Date()
-        store.add(outcome("Older.", at: now.addingTimeInterval(-3 * 86_400)))
-        store.add(outcome("Today.", at: now))
-        let pinned = try XCTUnwrap(store.add(outcome("Pinned.", at: now.addingTimeInterval(-2 * 86_400))))
+        let midnight = Calendar.current.startOfDay(for: Date())
+        store.add(outcome("Older.", at: midnight.addingTimeInterval(-3 * 86_400)))
+        store.add(outcome("Today.", at: midnight.addingTimeInterval(1)))
+        let pinned = try XCTUnwrap(store.add(outcome("Pinned.", at: midnight.addingTimeInterval(-2 * 86_400))))
         store.setPinned(pinned, true)
         let library = LibraryModel(store: store)
         library.query = "today"
@@ -355,7 +430,7 @@ final class LibraryModelTests: XCTestCase {
         let older = try XCTUnwrap(store.add(outcome("Book the service appointment.", at: base)))
         store.add(outcome("Run the tests again.", at: base.addingTimeInterval(60)))
         let library = LibraryModel(store: store)
-        library.reload()
+        library.windowOpened()
         XCTAssertEqual(library.copyCommandText, "Run the tests again.")
 
         library.textSelection = NSRange(location: 4, length: 9)
@@ -395,6 +470,16 @@ final class LibraryModelTests: XCTestCase {
 
         view.string = ""
         XCTAssertFalse(view.validateMenuItem(copy), "no text: nothing to copy")
+    }
+
+    /// The screen's only colour is the spectrum, so selecting text in the
+    /// detail paints Prism's white on black, not the system accent.
+    @MainActor
+    func testSelectedTextIsPrismNotTheSystemAccent() {
+        let view = TranscriptTextView(frame: .zero)
+        XCTAssertEqual(view.selectedTextAttributes[.backgroundColor] as? NSColor, NSColor(Theme.Color.text))
+        XCTAssertEqual(view.selectedTextAttributes[.foregroundColor] as? NSColor, NSColor(Theme.Color.bg))
+        XCTAssertEqual(view.insertionPointColor, NSColor(Theme.Color.text))
     }
 
     // MARK: - Helpers

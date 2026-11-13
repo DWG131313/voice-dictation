@@ -65,6 +65,8 @@ public final class LibraryModel {
     /// reported it (Ruling T18-3). Only ⌘C reads it, so no view watches it.
     @ObservationIgnored var textSelection: NSRange?
     @ObservationIgnored private let store: TranscriptStore
+    /// Whether the window is open. While it is not, nobody sees the rows.
+    @ObservationIgnored private var isWindowOpen = false
 
     public init(store: TranscriptStore) {
         self.store = store
@@ -72,17 +74,36 @@ public final class LibraryModel {
 
     // MARK: - Listing
 
+    /// The window has opened: lists everything again and selects the newest
+    /// transcript. A selection kept from before, or taken by a dictation
+    /// made while the window was closed, is one nobody was reading, and it
+    /// may lie below the top of a list that opens at the top.
+    public func windowOpened() {
+        isWindowOpen = true
+        reload()
+        if section.scope != nil { selection = rows.first?.id }
+    }
+
+    /// The window has closed: dictations are no longer listed or counted
+    /// until it opens again, which does both.
+    public func windowClosed() {
+        isWindowOpen = false
+    }
+
     /// Lists the rows and counts again, as when the window opens.
     public func reload() {
         listRows()
         countTranscripts()
     }
 
-    /// A transcript was just kept. It joins the rows, at the top when it
-    /// belongs to the section and the search, and the counts. It never takes
-    /// the selection from another transcript: only with none selected is it
-    /// selected, if it is listed.
+    /// A transcript was just kept. With the window closed that costs
+    /// nothing: opening lists and counts everything. With it open, the
+    /// transcript joins the rows, at the top when it belongs to the section
+    /// and the search, and the counts, which the store counts without
+    /// loading. It never takes the selection from another transcript: only
+    /// with none selected is it selected, if it is listed.
     public func noteNewTranscript(_ t: Transcript) {
+        guard isWindowOpen else { return }
         listRows(keepingSelection: true)
         countTranscripts()
         if selection == nil, rows.contains(where: { $0.id == t.id }) {
@@ -103,7 +124,7 @@ public final class LibraryModel {
     private func countTranscripts() {
         var counts: [Section: Int] = [:]
         for section in Section.transcripts {
-            if let scope = section.scope { counts[section] = store.search("", scope: scope).count }
+            if let scope = section.scope { counts[section] = store.count(scope: scope) }
         }
         self.counts = counts
     }
@@ -178,10 +199,16 @@ public final class LibraryModel {
         return (appName(t), "\(when) · \(lengthString(t.recordingSeconds))")
     }
 
-    /// The detail's title: the app and the time, e.g. "Terminal · 7:42 PM".
+    /// The detail's title: the app and the time, always with the time of
+    /// day: "Terminal · 7:42 PM", "Terminal · Yesterday, 6:15 PM",
+    /// "Terminal · Nov 3, 4:03 PM", "Terminal · Jan 3, 2025, 4:03 PM".
     nonisolated static func title(_ t: Transcript, now: Date, calendar: Calendar = .current,
                                   locale: Locale = .current) -> String {
-        "\(appName(t)) · \(whenString(t.date, now: now, calendar: calendar, locale: locale))"
+        let day = whenString(t.date, now: now, calendar: calendar, locale: locale)
+        guard !calendar.isDate(t.date, inSameDayAs: now) else { return "\(appName(t)) · \(day)" }
+        let time = Date.FormatStyle(date: .omitted, time: .shortened, locale: locale,
+                                    calendar: calendar, timeZone: calendar.timeZone)
+        return "\(appName(t)) · \(day), \(plainSpaces(t.date.formatted(time)))"
     }
 
     /// The app it was dictated into. Imported history does not know it.

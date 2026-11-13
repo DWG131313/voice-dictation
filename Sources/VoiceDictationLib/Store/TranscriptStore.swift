@@ -160,6 +160,23 @@ public final class TranscriptStore {
         }
     }
 
+    /// How many transcripts are in `scope`: what `search("", scope:)` would
+    /// find, counted by the store without loading them.
+    public func count(scope: Scope) -> Int {
+        guard let context else { return 0 }
+        let since = scope == .today ? Calendar.current.startOfDay(for: Date()) : Date.distantPast
+        let pinnedOnly = scope == .pinned
+        let descriptor = FetchDescriptor<Transcript>(
+            predicate: #Predicate { $0.date >= since && (!pinnedOnly || $0.pinned) }
+        )
+        do {
+            return try context.fetchCount(descriptor)
+        } catch {
+            Log.info("[STORE] Could not count the transcripts: \(error)")
+            return 0
+        }
+    }
+
     /// The newest transcript that has text, so a failed dictation is
     /// skipped: what Paste last transcript pastes (Task 23).
     public var latest: Transcript? {

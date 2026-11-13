@@ -127,6 +127,7 @@ Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square.
 - **Primary button:** white fill, black Jost 600 label.
 - **Secondary button:** 1px white outline, white Work Sans 500 label.
 - **Selected transcript:** the 2px spectrum underline; every other row is white on black.
+- **Selected text:** black on the text white (`bg` on `text`), caret white; never the system accent, so the spectrum stays the only colour.
 - **Times and figures:** DM Mono, muted.
 - **Floating indicator:** a scrolling white volume line, no colour, no spectrum.
 

@@ -36,6 +36,9 @@ struct TranscriptList: View {
             .textFieldStyle(.plain)
             .font(Theme.Font.ui(13))
             .foregroundStyle(Theme.Color.text)
+            // The caret and selection follow the tint, not the system accent
+            // (Prism: the spectrum is the only colour).
+            .tint(Theme.Color.text)
             .focused(focus, equals: .search)
             .accessibilityLabel("Search transcripts")
             .padding(.horizontal, Theme.Space.sm + Theme.Space.xs)
@@ -88,6 +91,10 @@ struct TranscriptList: View {
             })
             .onChange(of: library.selection) { _, selection in
                 if let selection { proxy.scrollTo(selection) }
+            }
+            // The window opens on its selection, wherever it is in the list.
+            .onAppear {
+                if let selection = library.selection { proxy.scrollTo(selection) }
             }
             .accessibilityLabel("Transcripts")
         }

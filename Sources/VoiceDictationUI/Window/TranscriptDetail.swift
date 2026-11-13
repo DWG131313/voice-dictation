@@ -54,7 +54,7 @@ struct TranscriptDetail: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .accessibilityAddTraits(.isHeader)
-                // The row says only "Yesterday" or "Nov 3"; this gives the day and time.
+                // The title gives the day and time as a row says them; this the full date.
                 .help(t.date.formatted(date: .complete, time: .shortened))
             Spacer(minLength: Theme.Space.md)
             Text(status)
@@ -172,6 +172,31 @@ struct TranscriptText: NSViewRepresentable {
 final class TranscriptTextView: NSTextView {
     /// Where ⌘C puts the text; tests pass their own.
     var pasteboard: NSPasteboard = .general
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        usePrismSelection()
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        usePrismSelection()
+    }
+
+    /// Prism has no accent colour: selected words read black on the text
+    /// white, not on the system's blue.
+    private func usePrismSelection() {
+        selectedTextAttributes = [
+            .backgroundColor: NSColor(Theme.Color.text),
+            .foregroundColor: NSColor(Theme.Color.bg),
+        ]
+        insertionPointColor = NSColor(Theme.Color.text)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
 
     /// What ⌘C copies now; nil when there is no text.
     private var textToCopy: String? {
