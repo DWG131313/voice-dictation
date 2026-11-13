@@ -217,15 +217,19 @@ final class FakePaster: Pasting {
     /// False pastes nothing, as without Accessibility access.
     var succeeds = true
     var frontmostAppName: String? = "TextEdit"
+    /// Goes up with each paste and copy, as the clipboard's does.
+    private(set) var clipboardChangeCount = 0
     private(set) var pasted: [String] = []
     private(set) var copied: [String] = []
 
     func paste(text: String) -> Bool {
         pasted.append(text)
+        clipboardChangeCount += 1
         return succeeds
     }
 
     func copy(text: String) {
         copied.append(text)
+        clipboardChangeCount += 1
     }
 }

@@ -65,6 +65,11 @@ public class PasteEngine: Pasting {
         pasteboard.setString(text, forType: .string)
     }
 
+    /// The change count of the pasteboard `paste` and `copy` write.
+    public var clipboardChangeCount: Int {
+        pasteboard.changeCount
+    }
+
     // MARK: - Clipboard snapshot
 
     public struct Snapshot {

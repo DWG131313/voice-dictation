@@ -65,6 +65,26 @@ final class PasteEngineTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "transcript text", "the old clipboard came back over the text")
     }
 
+    /// The clipboard's change count is the engine's own pasteboard's (Ruling
+    /// T19-4): it goes up with the engine's copy, and with a copy made by
+    /// anyone else. Nothing is pasted: the engine is not trusted.
+    func testClipboardChangeCountIsThePasteboards() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("vd-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let engine = PasteEngine(pasteboard: pasteboard, isTrusted: { false }, restoreDelay: 0.05)
+        let before = engine.clipboardChangeCount
+        XCTAssertEqual(before, pasteboard.changeCount)
+
+        engine.copy(text: "transcript text")
+        XCTAssertGreaterThan(engine.clipboardChangeCount, before)
+
+        let afterCopy = engine.clipboardChangeCount
+        pasteboard.clearContents()   // another app copies something
+        pasteboard.setString("copied elsewhere", forType: .string)
+        XCTAssertGreaterThan(engine.clipboardChangeCount, afterCopy)
+        XCTAssertEqual(engine.clipboardChangeCount, pasteboard.changeCount)
+    }
+
     /// The Cmd+V the engine posts carries `PasteEngine.eventTag`, so the
     /// hotkey's event tap can tell the app's own paste from a key the user
     /// pressed. The events are only made here, never posted.

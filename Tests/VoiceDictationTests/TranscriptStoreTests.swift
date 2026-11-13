@@ -432,8 +432,9 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(transcript.text, "Hello there.")
         XCTAssertEqual(transcript.modelKey, "appleSpeech/en-US")
         XCTAssertFalse(transcript.isEdited)
-        let byModel = Dictionary(uniqueKeysWithValues: transcript.alternates.map { ($0.modelKey, $0.text) })
-        XCTAssertEqual(byModel, ["edited": "Hello, there, Danny.", "whisperKit/base.en": "Hello, there."])
+        // Sorted, so the order is fixed and a duplicate fails here instead of trapping.
+        XCTAssertEqual(transcript.alternates.map { "\($0.modelKey): \($0.text)" }.sorted(),
+                       ["edited: Hello, there, Danny.", "whisperKit/base.en: Hello, there."])
     }
 
     /// Danny's hand edit, set aside by a promote, is still his edit when it
@@ -646,8 +647,9 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(edited.text, "Edited by hand.")
         XCTAssertTrue(edited.isEdited)
         XCTAssertTrue(edited.pinned)
-        // The pasted text the first edit replaced is kept too (Ruling T19-2).
-        XCTAssertEqual(Set(edited.alternates.map(\.text)), ["Edited.", "Edited!"])
+        // The pasted text the first edit replaced is kept too (Ruling T19-2),
+        // once: sorted, as the relationship is unordered, so a duplicate fails.
+        XCTAssertEqual(edited.alternates.map(\.text).sorted(), ["Edited!", "Edited."])
         XCTAssertEqual(reverted.text, "reverted")
         XCTAssertFalse(reverted.isEdited)
         XCTAssertEqual(promoted.text, "Promoted!")

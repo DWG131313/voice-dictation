@@ -117,21 +117,25 @@ final class FakeRecorder: Recording {
 }
 
 /// A paster that records what it was asked to paste or copy instead of
-/// touching the clipboard.
+/// touching the clipboard. Its change count goes up with each, as the
+/// clipboard's does; a test adds to it for a copy made in another app.
 final class FakePaster: Pasting {
     var frontmostAppName: String? = "TextEdit"
     /// False pastes nothing, as without Accessibility access.
     var succeeds = true
+    var clipboardChangeCount = 0
     private(set) var pasted: [String] = []
     private(set) var copied: [String] = []
 
     func paste(text: String) -> Bool {
         pasted.append(text)
+        clipboardChangeCount += 1
         return succeeds
     }
 
     func copy(text: String) {
         copied.append(text)
+        clipboardChangeCount += 1
     }
 }
 
@@ -147,6 +151,10 @@ final class FakeApps {
     /// The app that comes to the front when this one hides; nil leaves the
     /// front as it was, as a slow app would for a moment.
     var frontmostAfterHide: pid_t? = 42
+    /// Run as this app hides and as it shows again: what SwiftUI might
+    /// report then, such as the window closing and opening.
+    var onHide: (() -> Void)?
+    var onUnhide: (() -> Void)?
     private(set) var hides = 0
     private(set) var unhides = 0
 
@@ -157,13 +165,27 @@ final class FakeApps {
             hide: {
                 self.hides += 1
                 if let next = self.frontmostAfterHide { self.frontmost = next }
+                self.onHide?()
             },
             unhide: {
                 self.unhides += 1
                 self.frontmost = FakeApps.thisApp
+                self.onUnhide?()
             }
         )
     }
+}
+
+/// Stands in for `NSApplication` in `PasteAgainSystem.live(application:)`:
+/// it records each call and hides or shows nothing.
+@MainActor
+final class FakeApplication: AppHiding {
+    enum Call: Equatable { case hide, unhideWithoutActivation }
+
+    private(set) var calls: [Call] = []
+
+    func hide(_ sender: Any?) { calls.append(.hide) }
+    func unhideWithoutActivation() { calls.append(.unhideWithoutActivation) }
 }
 
 /// An indicator that keeps what it was asked to show instead of showing it.

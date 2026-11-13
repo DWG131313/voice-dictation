@@ -32,6 +32,10 @@ public protocol Pasting {
     /// the window's Copy, and a text that must not go to whatever app is in
     /// front (Task 19).
     func copy(text: String)
+    /// The clipboard's change count (`NSPasteboard.changeCount`): it goes up
+    /// each time anything is put on the clipboard, by this app or another,
+    /// so two equal readings mean nothing was copied in between (Ruling T19-4).
+    var clipboardChangeCount: Int { get }
     /// The app a paste would go to.
     var frontmostAppName: String? { get }
 }

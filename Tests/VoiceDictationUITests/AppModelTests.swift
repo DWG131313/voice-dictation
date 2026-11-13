@@ -301,6 +301,27 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(lifecycle.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
     }
 
+    /// ⌘Q saves the edit being typed at once: the autosave waits about half
+    /// a second after the last keystroke, and the app would be gone by then.
+    /// AppKit tells the delegate it is quitting; so does this test.
+    @MainActor
+    func testQuittingSavesTheEditBeingTyped() throws {
+        let model = makeModel([appleEngine()])
+        let lifecycle = AppLifecycle(model: model)
+        let t = try XCTUnwrap(model.store.add(DictationOutcome(
+            date: Date(timeIntervalSince1970: 1_762_900_000), clip: nil, rawText: "Hello there.", text: "Hello there.",
+            model: .appleSpeech, transcribeSeconds: 0.2, appName: "TextEdit", status: .pasted)))
+        model.library.windowOpened()
+        model.library.edit(t, text: "Hello there, Danny.")
+        XCTAssertEqual(t.text, "Hello there.", "not saved yet: the autosave is still waiting")
+
+        let delegate: NSApplicationDelegate = lifecycle
+        delegate.applicationWillTerminate?(Notification(name: NSApplication.willTerminateNotification))
+
+        XCTAssertEqual(t.text, "Hello there, Danny.")
+        XCTAssertTrue(t.isEdited)
+    }
+
     // MARK: - Helpers
 
     @MainActor

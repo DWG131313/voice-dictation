@@ -157,6 +157,44 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertEqual(library.message(for: failed), "Copied — paste with ⌘V")
     }
 
+    /// Ruling T19-4: a failed transcript's re-transcription can finish long
+    /// after the click, when dictations hold it up. Anything copied meanwhile
+    /// stays on the clipboard: the transcript still takes the text and is
+    /// Copied, and Danny is told to use Copy, which then copies it.
+    @MainActor
+    func testALateReTranscriptionLeavesWhatWasCopiedMeanwhile() async throws {
+        let apple = appleEngine()
+        apple.result = "Hello there."
+        apple.isHeld = true
+        let (library, store) = try rig([apple])
+        let failed = try XCTUnwrap(store.add(failedOutcome("Apple Speech language files are not installed")))
+        library.windowOpened()
+
+        let running = Task { await library.retranscribe(failed, with: .appleSpeech) }
+        try await waitUntil("the engine has the clip") { apple.calls.contains(.transcribe(.appleSpeech)) }
+        paster.clipboardChangeCount += 1   // Danny copies something in another app.
+        apple.isHeld = false
+        await running.value
+
+        XCTAssertEqual(failed.text, "Hello there.")
+        XCTAssertEqual(failed.status, .copied)
+        XCTAssertTrue(paster.copied.isEmpty, "what was copied meanwhile stays on the clipboard")
+        XCTAssertTrue(paster.pasted.isEmpty)
+        XCTAssertEqual(library.message(for: failed), "Re-transcribed — use Copy")
+
+        library.copy(failed)
+        XCTAssertEqual(paster.copied, ["Hello there."])
+    }
+
+    /// Ruling T19-4, the decision: a failed transcript's new text goes on the
+    /// clipboard only if nothing was put there since its re-transcription
+    /// was asked for. A click on "Use this one" copies at once.
+    func testALateResultIsCopiedOnlyOntoAnUnchangedClipboard() {
+        XCTAssertTrue(LibraryModel.copiesResult(clipboardWhenAsked: 7, clipboardNow: 7))
+        XCTAssertFalse(LibraryModel.copiesResult(clipboardWhenAsked: 7, clipboardNow: 8), "something was copied meanwhile")
+        XCTAssertTrue(LibraryModel.copiesResult(clipboardWhenAsked: nil, clipboardNow: 8), "a click copies at once")
+    }
+
     /// A dictation skipped while Apple Speech was selected is kept as Failed
     /// under Apple Speech (`DictationPipelineTests.testQueueSkipsOldestBeyondThree`),
     /// and Re-transcribe with… offers Apple Speech too. Any other transcript
@@ -207,15 +245,41 @@ final class DetailActionsTests: XCTestCase {
         let t = try XCTUnwrap(store.add(outcome("Hello there.")))
         library.windowOpened()
 
+        let id = t.id
         let running = Task { await library.retranscribe(t, with: baseEn) }
         try await waitUntil("the engine has the clip") { whisper.calls.contains(.transcribe(self.baseEn)) }
+        XCTAssertEqual(library.running, [id: [baseEn]])
         library.delete(t)
         whisper.isHeld = false
         await running.value
 
         XCTAssertTrue(store.search("", scope: .all).isEmpty)
         XCTAssertEqual(try alternatesStored(in: store), 0)
+        // Read directly: with nothing selected now, `retranscribing` is empty whatever runs.
+        XCTAssertTrue(library.running.isEmpty, "the run is over")
+    }
+
+    /// Review Focus 1's failure path: a failed transcript, selected, is
+    /// re-transcribed with a model that will not load. It stays Failed, says
+    /// why, and puts nothing on the clipboard; the run is over.
+    @MainActor
+    func testRetranscribingAFailedTranscriptWithAModelThatWillNotLoad() async throws {
+        let apple = appleEngine()
+        apple.unloadable = [.appleSpeech]
+        let (library, store) = try rig([apple])
+        let failed = try XCTUnwrap(store.add(failedOutcome("Apple Speech language files are not installed")))
+        library.windowOpened()
+        library.selection = failed.id
+
+        await library.retranscribe(failed, with: .appleSpeech)
+
+        XCTAssertEqual(library.message(for: failed), "Could not re-transcribe: en-US will not load")
+        XCTAssertEqual(failed.status, .failed)
+        XCTAssertTrue(paster.copied.isEmpty)
+        XCTAssertEqual(library.selection, failed.id, "so `retranscribing` reads this transcript's runs")
         XCTAssertTrue(library.retranscribing.isEmpty)
+        XCTAssertTrue(failed.alternates.isEmpty)
+        XCTAssertEqual(apple.calls, [.prepare(.appleSpeech)], "it never reached the engine's transcribe")
     }
 
     // MARK: - Pin and Delete
@@ -503,6 +567,67 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertEqual(apps.hides, 1, "nothing to go back to: the window stays")
         XCTAssertTrue(paster.pasted.isEmpty)
         XCTAssertEqual(paster.copied, ["Hello there.", "Hello there."])
+    }
+
+    /// Ruling T19-5: Paste again hides the window, and shows it again when the
+    /// previous app does not come back. Should SwiftUI report those as the
+    /// window closing and opening, they are neither: the transcript pasted
+    /// stays selected with its message, and the list does not jump to the
+    /// newest (Ruling T18-4), whether the window's return is reported during
+    /// the run or after it. A real close and reopen still opens on the newest.
+    @MainActor
+    func testPasteAgainsHideAndUnhideAreNotACloseAndReopen() async throws {
+        let apps = FakeApps()
+        apps.frontmostAfterHide = 7
+        let (library, store) = try rig(apps: apps)
+        library.pasteAgainWaitLimit = 0.1
+        let older = try XCTUnwrap(store.add(outcome("Older.", at: base)))
+        let newer = try XCTUnwrap(store.add(outcome("Newer.", at: base.addingTimeInterval(60))))
+        library.windowOpened()
+        library.selection = older.id
+        apps.onHide = { [weak library] in library?.windowClosed() }
+        apps.onUnhide = { [weak library] in library?.windowOpened() }
+
+        await library.pasteAgain(older)
+
+        XCTAssertEqual(apps.unhides, 1, "the previous app did not come back: copied, and the window shows again")
+        XCTAssertEqual(library.selection, older.id, "still the transcript pasted")
+        XCTAssertEqual(library.message(for: older), "Copied — paste with ⌘V")
+
+        // The window's return reported only once the run is over.
+        apps.onUnhide = nil
+        await library.pasteAgain(older)
+        library.windowOpened()
+        XCTAssertEqual(library.selection, older.id)
+        XCTAssertEqual(library.message(for: older), "Copied — paste with ⌘V")
+
+        // Pasted: the window stays hidden until Danny brings it back.
+        apps.frontmostAfterHide = 42
+        await library.pasteAgain(older)
+        XCTAssertEqual(paster.pasted, ["Older."])
+        library.windowOpened()
+        XCTAssertEqual(library.selection, older.id)
+
+        // A real close and reopen opens on the newest, as before.
+        apps.onHide = nil
+        library.windowClosed()
+        library.windowOpened()
+        XCTAssertEqual(library.selection, newer.id)
+    }
+
+    /// macOS's side of Paste again shows the window again without activating
+    /// the app (`unhideWithoutActivation`), so whichever app came to the front
+    /// meanwhile keeps the keyboard. A stand-in takes `NSApplication`'s
+    /// place: nothing is hidden or shown.
+    @MainActor
+    func testTheLiveSystemShowsTheWindowAgainWithoutActivating() {
+        let application = FakeApplication()
+        let system = PasteAgainSystem.live(application: application)
+
+        system.hide()
+        system.unhide()
+
+        XCTAssertEqual(application.calls, [.hide, .unhideWithoutActivation])
     }
 
     // MARK: - The comparison

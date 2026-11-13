@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Observation
 import SwiftData
@@ -77,7 +76,7 @@ public final class LibraryModel {
     /// Danny's text for a transcript as he types it, until it is saved.
     private var draft: Draft?
     /// The models re-transcribing each transcript now.
-    private var running: [Transcript.ID: Set<ModelID>] = [:]
+    private(set) var running: [Transcript.ID: Set<ModelID>] = [:]
     /// The words the latest action left for Danny, and the transcript they
     /// are about.
     private var message: (transcript: Transcript.ID, text: String)?
@@ -93,6 +92,11 @@ public final class LibraryModel {
     @ObservationIgnored private let store: TranscriptStore
     /// Whether the window is open. While it is not, nobody sees the rows.
     @ObservationIgnored private var isWindowOpen = false
+    /// True while Paste again has the window hidden (Ruling T19-5).
+    @ObservationIgnored private var isPastingAgain = false
+    /// True once SwiftUI reported the window closed while Paste again had
+    /// it hidden: it was only hidden, so its return is no opening either.
+    @ObservationIgnored private var isHiddenByPasteAgain = false
     /// The re-transcription lane, which yields to dictations.
     @ObservationIgnored private let service: TranscriptionService
     /// The paster dictation uses: Paste again's tagged Cmd+V, and Copy.
@@ -129,8 +133,13 @@ public final class LibraryModel {
     /// The window has opened: lists everything again and selects the newest
     /// transcript. A selection kept from before, or taken by a dictation
     /// made while the window was closed, is one nobody was reading, and it
-    /// may lie below the top of a list that opens at the top.
+    /// may lie below the top of a list that opens at the top. The window
+    /// showing again after Paste again hid it is no opening (`windowClosed`).
     public func windowOpened() {
+        guard !isHiddenByPasteAgain else {
+            isHiddenByPasteAgain = false
+            return
+        }
         isWindowOpen = true
         reload()
         if section.scope != nil { selection = rows.first?.id }
@@ -138,8 +147,17 @@ public final class LibraryModel {
 
     /// The window has closed: dictations are no longer listed or counted
     /// until it opens again, which does both. The edit being typed is saved,
-    /// and the recording playing stops.
+    /// and the recording playing stops. Paste again hiding the window is no
+    /// closing (Ruling T19-5): should SwiftUI report it as one, it and the
+    /// window's return are ignored, so the transcript pasted stays selected
+    /// with its message, and the list does not jump to the newest.
     public func windowClosed() {
+        guard !isPastingAgain else {
+            isHiddenByPasteAgain = true
+            return
+        }
+        // The window was showing, whether or not its return was reported.
+        isHiddenByPasteAgain = false
         isWindowOpen = false
         commitEdit()
         player.stop()
@@ -299,6 +317,8 @@ public final class LibraryModel {
         guard !text.isEmpty else { return }
         clearMessage(for: id)
         let target = system.previousApp()
+        isPastingAgain = target != nil
+        defer { isPastingAgain = false }
         if target != nil { system.hide() }
         let start = ContinuousClock.now
         while true {
@@ -356,13 +376,26 @@ public final class LibraryModel {
     /// 11). A failed transcript that gets its text this way has it put on the
     /// clipboard and becomes Copied (Review Focus 1).
     public func promote(_ alternate: AlternateResult, in t: Transcript) {
+        promote(alternate, in: t, clipboardWhenAsked: nil)
+    }
+
+    /// `promote`, for a click (`clipboardWhenAsked` nil) or for a failed
+    /// transcript's re-transcription that has finished, with the clipboard's
+    /// change count when it was asked for. A failed transcript becomes Copied
+    /// either way; its text goes on the clipboard only as `copiesResult`
+    /// says, so it never replaces what was copied since (Ruling T19-4).
+    private func promote(_ alternate: AlternateResult, in t: Transcript, clipboardWhenAsked: Int?) {
         commitEdit(of: t)
         let wasFailed = t.status == .failed
         store.promote(alternate, in: t)
         guard wasFailed, !t.text.isEmpty else { return }
-        paster.copy(text: t.text)
+        if Self.copiesResult(clipboardWhenAsked: clipboardWhenAsked, clipboardNow: paster.clipboardChangeCount) {
+            paster.copy(text: t.text)
+            show(Self.copiedMessage, for: t.id)
+        } else {
+            show(Self.useCopyMessage, for: t.id)
+        }
         store.setStatus(t, .copied)
-        show(Self.copiedMessage, for: t.id)
     }
 
     /// "Use cleaned": a cleanup that came back after the paste becomes the
@@ -390,9 +423,10 @@ public final class LibraryModel {
     /// Re-transcribes the transcript's kept recording with `model`, in the
     /// service's re-transcription lane, which yields to dictations. The
     /// result is kept as an alternate, one per model: another run replaces
-    /// it. A failed transcript takes the result as its main text (`promote`).
-    /// Without a recording, or when the model fails or hears nothing, it says
-    /// why. A transcript deleted meanwhile gets nothing.
+    /// it. A failed transcript takes the result as its main text (`promote`),
+    /// and onto the clipboard only if nothing was copied since the request
+    /// (Ruling T19-4). Without a recording, or when the model fails or hears
+    /// nothing, it says why. A transcript deleted meanwhile gets nothing.
     public func retranscribe(_ t: Transcript, with model: ModelID) async {
         let id = t.id
         guard let name = t.audioFileName, let archive = store.audio else {
@@ -400,6 +434,7 @@ public final class LibraryModel {
             return
         }
         guard running[id]?.contains(model) != true else { return }
+        let clipboardWhenAsked = paster.clipboardChangeCount
         clearMessage(for: id)
         running[id, default: []].insert(model)
         defer { stopRunning(model, for: id) }
@@ -422,7 +457,7 @@ public final class LibraryModel {
         guard t.status == .failed,
               let alternate = t.alternates.first(where: { !$0.wasMain && $0.modelKey == result.model.storageKey })
         else { return }
-        promote(alternate, in: t)
+        promote(alternate, in: t, clipboardWhenAsked: clipboardWhenAsked)
     }
 
     private func stopRunning(_ model: ModelID, for id: Transcript.ID) {
@@ -627,6 +662,21 @@ public final class LibraryModel {
     nonisolated static let audioGone = "Audio no longer kept"
     /// What Danny is told when a text went on the clipboard, not into an app.
     nonisolated static let copiedMessage = "Copied — paste with ⌘V"
+    /// What Danny is told when a failed transcript's re-transcription became
+    /// its text but stayed off the clipboard, which held a newer copy.
+    nonisolated static let useCopyMessage = "Re-transcribed — use Copy"
+
+    /// Whether a failed transcript's new text goes on the clipboard (Ruling
+    /// T19-4). A click on "Use this one" (`clipboardWhenAsked` nil) copies at
+    /// once. A re-transcription can finish long after it was asked for, when
+    /// dictations hold it up, so it copies only if the clipboard's change
+    /// count is still the one from then: whatever was put there since, by any
+    /// app, stays, as `PasteEngine` never puts a clipboard back over a newer
+    /// copy.
+    nonisolated static func copiesResult(clipboardWhenAsked: Int?, clipboardNow: Int) -> Bool {
+        guard let clipboardWhenAsked else { return true }
+        return clipboardWhenAsked == clipboardNow
+    }
 
     /// Why the transcript cannot be played or re-transcribed: its recording
     /// is no longer kept (pruned, or never kept). Nil when it can.
@@ -656,27 +706,6 @@ public final class LibraryModel {
         t.isEdited && !isBlank(t.rawText) && t.text != t.rawText
     }
 
-    /// One look at the apps while Paste again waits (Ruling T19-3).
-    enum PasteAgainStep: Equatable {
-        /// The app that was in front before this one is in front again.
-        case paste
-        /// It is not yet.
-        case wait
-        /// There is none, or it has not come back in time: copy instead, so
-        /// nothing pastes into the wrong app.
-        case copyInstead
-    }
-
-    /// Whether Paste again may paste now: only into `target`, the app that
-    /// was in front before this one, and only once it is in front again.
-    /// After waiting `limit` seconds for it, Paste again copies instead.
-    nonisolated static func pasteAgainStep(target: pid_t?, frontmost: pid_t?, waited: TimeInterval,
-                                           limit: TimeInterval) -> PasteAgainStep {
-        guard let target else { return .copyInstead }
-        if frontmost == target { return .paste }
-        return waited < limit ? .wait : .copyInstead
-    }
-
     /// The row that takes the place of `id` when it leaves the list: the next
     /// one down that is still listed, or else the nearest above.
     nonisolated static func neighbour(of id: UUID, before: [UUID], after: [UUID]) -> UUID? {
@@ -692,54 +721,5 @@ public final class LibraryModel {
     private nonisolated static func seconds(_ duration: Duration) -> TimeInterval {
         let parts = duration.components
         return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
-    }
-}
-
-/// What Paste again needs from macOS, so tests can stand in for it: the app
-/// that was in front before this one, the app in front now, and hiding and
-/// showing this app's windows. Process identifiers name the apps.
-struct PasteAgainSystem {
-    var previousApp: @MainActor () -> pid_t?
-    var frontmostApp: @MainActor () -> pid_t?
-    var hide: @MainActor () -> Void
-    var unhide: @MainActor () -> Void
-
-    /// macOS itself. The previous app is the last other app to become
-    /// active, which macOS announces for every app; one that has quit counts
-    /// as none. Hiding hands the front back to it, as closing the last window
-    /// does (`AppLifecycle.windowDidClose`).
-    @MainActor
-    static func live() -> PasteAgainSystem {
-        let tracker = PreviousAppTracker()
-        return PasteAgainSystem(
-            previousApp: { tracker.previous.flatMap { $0.isTerminated ? nil : $0.processIdentifier } },
-            frontmostApp: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
-            hide: { NSApp.hide(nil) },
-            unhide: { NSApp.unhide(nil) }
-        )
-    }
-}
-
-/// Remembers the last app other than this one to become active.
-private final class PreviousAppTracker {
-    private(set) var previous: NSRunningApplication?
-    private var observer: NSObjectProtocol?
-
-    init() {
-        let thisApp = NSRunningApplication.current.processIdentifier
-        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != thisApp {
-            previous = front
-        }
-        observer = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.processIdentifier != thisApp else { return }
-            self?.previous = app
-        }
-    }
-
-    deinit {
-        if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     }
 }

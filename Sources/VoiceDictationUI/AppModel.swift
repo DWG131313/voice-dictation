@@ -400,6 +400,12 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
         super.init()
     }
 
+    /// Tests pass a model built from fakes.
+    init(model: AppModel) {
+        super.init()
+        self.model = model
+    }
+
     public func applicationWillFinishLaunching(_ notification: Notification) {
         // Menu bar only. A regular-policy app that activates would take
         // keyboard focus away from the app we're about to paste into.
@@ -408,6 +414,13 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         model.start()
+    }
+
+    /// Quitting saves the edit being typed in the main window at once: its
+    /// autosave waits about half a second after the last keystroke, and the
+    /// app would be gone by then.
+    public func applicationWillTerminate(_ notification: Notification) {
+        model.library.commitEdit()
     }
 
     /// Closing the window leaves the app running in the menu bar.
