@@ -14,9 +14,7 @@ public struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Welcome to VoiceDictation").font(.title2.weight(.semibold))
-                Text(onboarding.isComplete
-                     ? "You are all set. Hold 🌐 anywhere to dictate."
-                     : "A few things to set up before you can hold 🌐 and talk.")
+                Text(onboarding.summary)
                     .foregroundStyle(.secondary)
             }
             ForEach(onboarding.steps) { step in

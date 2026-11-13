@@ -101,6 +101,16 @@ public final class OnboardingModel {
 
     public var isComplete: Bool { steps.allSatisfy { $0.state == .done } }
 
+    /// The line under the window's title, naming the hotkey chosen.
+    public var summary: String {
+        let key = hotkeyName
+        return isComplete ? "You are all set. Hold \(key) anywhere to dictate."
+            : "A few things to set up before you can hold \(key) and talk."
+    }
+
+    /// The hotkey as the steps name it: "Globe", "Right Option"…
+    private var hotkeyName: String { preferences.hotkey.displayName }
+
     func state(of id: Step.ID) -> Step.State { step(id).state }
 
     private func applies(_ id: Step.ID) -> Bool {
@@ -119,7 +129,7 @@ public final class OnboardingModel {
             return system.accessibilityGranted()
                 ? Step(id: id, title: "Accessibility", state: .done, detail: "VoiceDictation can paste for you.", actionTitle: nil)
                 : Step(id: id, title: "Accessibility", state: .needed,
-                       detail: "Needed to watch for the Globe key and paste. Switch VoiceDictation on in the list.",
+                       detail: "Needed to watch for the \(hotkeyName) key and paste. Switch VoiceDictation on in the list.",
                        actionTitle: "Open Accessibility Settings")
         case .globeKey:
             let usage = globeKeyUsage
@@ -134,7 +144,7 @@ public final class OnboardingModel {
             return triedIt
                 ? Step(id: id, title: "Try it", state: .done, detail: "Your first dictation pasted.", actionTitle: nil)
                 : Step(id: id, title: "Try it", state: .needed,
-                       detail: "Click into any text field, hold 🌐, say a sentence and let go.", actionTitle: nil)
+                       detail: "Click into any text field, hold \(hotkeyName), say a sentence and let go.", actionTitle: nil)
         }
     }
 

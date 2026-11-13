@@ -90,10 +90,11 @@ struct Sidebar: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "Hold Right Option to dictate", and with hands-free on
-    /// "· double-tap to lock" after it.
+    /// "Hold Right Option to dictate", or with double-tap dictation on
+    /// (`handsFree`) "Hold or double-tap Right Option to dictate": a double
+    /// tap locks a recording, and another stops it. Danny's wording: the
+    /// window never says "hands-free".
     static func hotkeyReminder(for hotkey: HotkeyChoice, handsFree: Bool) -> String {
-        let hold = "Hold \(hotkey.displayName) to dictate"
-        return handsFree ? hold + " · double-tap to lock" : hold
+        "Hold \(handsFree ? "or double-tap " : "")\(hotkey.displayName) to dictate"
     }
 }

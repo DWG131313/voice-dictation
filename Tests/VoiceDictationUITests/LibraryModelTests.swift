@@ -310,13 +310,14 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Right Command and speak.")
     }
 
-    /// The sidebar's footer says which key dictates and, with hands-free
-    /// on, how to lock.
-    func testTheSidebarFooterNamesTheHotkeyAndTheLock() {
+    /// The sidebar's footer says which key dictates and, with double-tap
+    /// dictation on (`handsFree`), that a double tap does too. Danny's
+    /// wording (finding 9): the window never says "hands-free".
+    func testTheSidebarFooterNamesTheHotkeyAndTheDoubleTap() {
         XCTAssertEqual(Sidebar.hotkeyReminder(for: .globe, handsFree: false), "Hold Globe to dictate")
         XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightOption, handsFree: false), "Hold Right Option to dictate")
-        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightCommand, handsFree: true),
-                       "Hold Right Command to dictate · double-tap to lock")
+        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightCommand, handsFree: true), "Hold or double-tap Right Command to dictate")
+        XCTAssertEqual(Sidebar.hotkeyReminder(for: .globe, handsFree: true), "Hold or double-tap Globe to dictate")
     }
 
     /// Ruling T18-1: a store started anew after a damaged one was moved aside

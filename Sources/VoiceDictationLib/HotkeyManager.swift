@@ -1,161 +1,4 @@
 import Cocoa
-import Carbon.HIToolbox
-import IOKit.hidsystem
-
-/// The key held to dictate (Task 23). Globe is the default; the right-hand
-/// Option and Command keys suit a keyboard whose Globe key does something
-/// else, and leave the left-hand ones free for shortcuts.
-public enum HotkeyChoice: String, Codable, CaseIterable, Sendable {
-    case globe, rightOption, rightCommand
-
-    /// How the window and the logs name the key.
-    public var displayName: String {
-        switch self {
-        case .globe: return "Globe"
-        case .rightOption: return "Right Option"
-        case .rightCommand: return "Right Command"
-        }
-    }
-
-    /// What a `flagsChanged` event says about this key: whether it is now
-    /// down, or nil when the event is about another key.
-    ///
-    /// Globe is read as before Task 23, from the Fn flag of every modifier
-    /// change: Globe+Shift reports Globe down again, which changes nothing.
-    /// A right-hand key is read only from its own key's events (Events.h:
-    /// `kVK_RightOption` is 61, `kVK_RightCommand` 54), by the
-    /// device-dependent bit IOLLEvent.h gives that side
-    /// (`NX_DEVICERALTKEYMASK`, `NX_DEVICERCMDKEYMASK`). So the left-hand key
-    /// (58, 55), which sets the same Option or Command flag, does nothing,
-    /// and letting go of the right-hand one ends the dictation even while the
-    /// left one is still down.
-    func isDown(flagsChangedKeyCode keyCode: Int64, flags: CGEventFlags) -> Bool? {
-        switch self {
-        case .globe:
-            return flags.contains(.maskSecondaryFn)
-        case .rightOption:
-            guard keyCode == Int64(kVK_RightOption) else { return nil }
-            return flags.rawValue & UInt64(NX_DEVICERALTKEYMASK) != 0
-        case .rightCommand:
-            guard keyCode == Int64(kVK_RightCommand) else { return nil }
-            return flags.rawValue & UInt64(NX_DEVICERCMDKEYMASK) != 0
-        }
-    }
-}
-
-/// What a press or release of the hotkey does to the dictation.
-public enum HotkeyAction: Equatable {
-    /// Nothing: a down while the key is already down, a release after a
-    /// cancel, or the release of the press that stopped a hands-free
-    /// recording, or of the second tap that locked one.
-    case none
-    /// A recording starts.
-    case start
-    /// The recording stops and is transcribed.
-    case stop
-    /// The press was a tap with hands-free on, maybe the first of a double
-    /// tap: its recording is thrown away.
-    case discardTap
-}
-
-/// The hotkey's presses and releases, turned into what they do to the
-/// dictation (Task 23), kept apart from the event tap so the rules can be
-/// tested.
-///
-/// Hands-free off, every press records and its release stops, as before: a
-/// quick tap makes a recording too short to keep, which the recorder's
-/// 0.5 s rule throws away. Hands-free on, a hold dictates the same way. A
-/// tap, a press let go within `tapMaximum`, is no dictation: its recording
-/// is thrown away (`.discardTap`). A second tap that goes down within
-/// `doubleTapWindow` of the first one's release locks instead: its recording
-/// carries on after it is let go, until the next press stops it.
-public struct TapTracker {
-    public static let doubleTapWindow: TimeInterval = 0.35, tapMaximum: TimeInterval = 0.25
-
-    /// Where the hotkey stands for the dictation.
-    enum Hold: Equatable {
-        /// Up, or down only to stop a hands-free recording, or down for a
-        /// dictation a key has cancelled.
-        case none
-        /// Down for the dictation its press started.
-        case held
-        /// Up, with a hands-free recording running until the next press.
-        case locked
-    }
-
-    /// Read at each release. The event tap sets it from the preference at
-    /// each press and release, so a change takes effect at once.
-    public var handsFreeEnabled: Bool
-    /// Whether the key is down, as last reported.
-    private var isDown = false
-    /// When the press under way went down, while it holds the dictation it
-    /// started.
-    private var heldSince: TimeInterval?
-    private var isLocked = false
-    /// When the last tap was let go, while a second one could still lock.
-    private var lastTapEnd: TimeInterval?
-
-    public init(handsFreeEnabled: Bool = false) {
-        self.handsFreeEnabled = handsFreeEnabled
-    }
-
-    var hold: Hold {
-        if isLocked { return .locked }
-        return heldSince == nil ? .none : .held
-    }
-
-    /// The key went down at `time`, in seconds on a steady clock. A down
-    /// while it is already down changes nothing.
-    public mutating func down(at time: TimeInterval) -> HotkeyAction {
-        guard !isDown else { return .none }
-        isDown = true
-        if isLocked {
-            isLocked = false
-            return .stop
-        }
-        heldSince = time
-        return .start
-    }
-
-    /// The key went up at `time`. An up while it is up changes nothing.
-    public mutating func up(at time: TimeInterval) -> HotkeyAction {
-        guard isDown else { return .none }
-        isDown = false
-        guard let start = heldSince else { return .none }
-        heldSince = nil
-        guard handsFreeEnabled, time - start <= Self.tapMaximum else {
-            lastTapEnd = nil
-            return .stop
-        }
-        if let lastTapEnd, start - lastTapEnd <= Self.doubleTapWindow {
-            self.lastTapEnd = nil
-            isLocked = true
-            return .none
-        }
-        lastTapEnd = time
-        return .discardTap
-    }
-
-    /// The dictation the hotkey held or locked is over: a key cancelled the
-    /// hold, Escape cancelled everything, or the hands-free recording ended
-    /// by itself. The key's release, or its next press, starts from nothing.
-    mutating func cancel() {
-        heldSince = nil
-        isLocked = false
-        lastTapEnd = nil
-    }
-
-    /// Forgets every press, for an event tap that is rebuilt: the new tap may
-    /// never see the key's release. Returns `.stop` when a dictation was held
-    /// or locked, to end it as if the key had been let go; a release that
-    /// does arrive afterwards changes nothing.
-    mutating func reset() -> HotkeyAction {
-        let wasDictating = hold != .none
-        cancel()
-        isDown = false
-        return wasDictating ? .stop : .none
-    }
-}
 
 /// What the hotkey's event tap tells the app, on the main queue, once it has
 /// answered the event. The two cancels differ: `hotkeyCancelled` is the
@@ -164,20 +7,25 @@ public struct TapTracker {
 public protocol HotkeyDelegate: AnyObject {
     /// The hotkey went down: a dictation starts recording.
     func hotkeyDidStartPress()
-    /// The hotkey was let go after a hold, or pressed to stop a hands-free
-    /// recording, or its tap was rebuilt or replaced mid-press: the
-    /// recording stops and is transcribed.
+    /// The hotkey was let go after a hold, or double-tapped to stop a
+    /// hands-free recording, or its release went by while the tap was off,
+    /// or its tap was taken down mid-press: the recording stops and is
+    /// transcribed.
     func hotkeyDidEndPress()
-    /// A key was pressed while the hotkey was held, the hotkey used as a
-    /// modifier: cancel this hold's dictation, and only that one.
+    /// A key or a mouse button was pressed while the hotkey was held, the
+    /// hotkey used as a modifier: cancel this hold's dictation, and only
+    /// that one.
     func hotkeyCancelled()
     /// With hands-free on, the hotkey was tapped rather than held, maybe the
     /// first tap of a double tap: throw away the recording it started.
     func hotkeyDidTap()
-    /// Escape while the app was recording, transcribing or cleaning up,
-    /// hands-free locked or not: cancel everything, not just a hold.
+    /// A plain Escape, with neither Command, Control nor Option, while the
+    /// app was recording, transcribing or cleaning up, hands-free locked or
+    /// not: cancel everything, not just a hold.
     func escapePressedWhileWorking()
-    /// Control-Option-V with its shortcut on: paste the last transcript.
+    /// Control-Option-V with its shortcut on, once Control and Option are
+    /// let go (or a second later, if they stay down): paste the last
+    /// transcript.
     func pasteLastShortcutPressed()
 }
 
@@ -190,46 +38,12 @@ public protocol HotkeyStrategy: AnyObject {
     func ensureHealthy()
 }
 
-/// How the event tap answers a key-down: what it does to the dictation, and
-/// whether the key goes on to the app in front.
-public enum KeyAction: Equatable, Sendable {
-    /// Nothing happens and the key goes through untouched. That is any key
-    /// while the hotkey is up and the app is not working, any key but Escape
-    /// while hands-free is locked, Control-Option-V with its shortcut off,
-    /// and the app's own Cmd+V, tagged `PasteEngine.eventTag` (a dictation's
-    /// paste, or Paste last's), whatever the hotkey, the hold or the state.
-    case none
-    /// Another key while the hotkey is held for a dictation: the hotkey was
-    /// used as a modifier (Globe+Right Arrow is End), so this hold's
-    /// dictation is cancelled with `cancelHold()`, which never reaches an
-    /// earlier one, and the key goes through.
-    case cancelHoldAndPass
-    /// Escape while the app is working (recording, transcribing or cleaning
-    /// up), whether the hotkey is held, locked or up: everything is cancelled
-    /// with `cancel()`, and Escape is swallowed.
-    case cancelAllAndConsume
-    /// Control-Option-V with its shortcut on: the last transcript pastes
-    /// (`pasteLast()`), and the key is swallowed.
-    case pasteLastAndConsume
-    /// A key repeat of either of the two above, the key held down: swallowed,
-    /// and nothing more happens. A held Escape cancels once, and a held
-    /// Control-Option-V pastes once.
-    case consume
-
-    /// Whether the key is swallowed rather than going on to the app.
-    var consumes: Bool {
-        switch self {
-        case .none, .cancelHoldAndPass: return false
-        case .cancelAllAndConsume, .pasteLastAndConsume, .consume: return true
-        }
-    }
-}
-
 /// The hotkey's event tap, for any `HotkeyChoice` (Task 9's
 /// `GlobeKeyStrategy`, generalised in Task 23). It reads the chosen key from
-/// modifier changes and judges every key-down, answers each event at once,
-/// and tells the delegate afterwards, on the main queue. Every rule is a
-/// pure static function, tested without a tap; the tap only calls them.
+/// modifier changes and judges every key-down and mouse-down, answers each
+/// event at once, and tells the delegate afterwards, on the main queue.
+/// Every rule is a pure static function (`HotkeyLogic.swift`), tested
+/// without a tap; the tap only calls them.
 public final class ModifierKeyStrategy: HotkeyStrategy {
     public weak var delegate: HotkeyDelegate?
     /// The key that dictates. Another choice takes another strategy.
@@ -244,6 +58,20 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
     private var runLoopSource: CFRunLoopSource?
     /// The presses, as the tap has seen them; tests set it, never a tap.
     var tracker = TapTracker()
+    /// Whether the log has said that an event's timestamp was not trusted.
+    private var saidStampUntrusted = false
+    /// Paste last's request, while it waits for Control and Option to be let go.
+    private var pasteLastWait = PasteLastWait()
+    /// How long a Paste last waits at most for Control and Option to be let
+    /// go; tests shorten it.
+    var pasteLastCap = PasteLastWait.cap
+    /// Reads the modifier keys as they are now, for a tap that missed
+    /// events: the HID system's state (CGEventSource.h), never an event's.
+    /// Tests stand in for it.
+    var readLiveFlags: () -> CGEventFlags = {
+        ModifierKeyStrategy.liveFlags(flagsState: CGEventSource.flagsState(.hidSystemState),
+                                      keyState: { CGEventSource.keyState(.hidSystemState, key: $0) })
+    }
 
     /// The closures are called on the main thread, where the tap runs.
     public init(choice: HotkeyChoice, handsFree: @escaping () -> Bool = { false },
@@ -259,98 +87,38 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         stop()
     }
 
-    // MARK: - The rules
-
-    /// How the tap answers a modifier change: nothing unless it is about the
-    /// chosen key (`HotkeyChoice.isDown`), then the tracker's answer. A
-    /// hands-free recording that ended by itself (five minutes, an input
-    /// change, a failure) leaves no lock: the press after it dictates,
-    /// rather than stopping a recording that is already over.
-    static func action(forFlagsChanged keyCode: Int64, flags: CGEventFlags, at time: TimeInterval, choice: HotkeyChoice,
-                       tracker: inout TapTracker, handsFree: Bool = false, state: DictationState) -> HotkeyAction {
-        guard let isDown = choice.isDown(flagsChangedKeyCode: keyCode, flags: flags) else { return .none }
-        tracker.handsFreeEnabled = handsFree
-        guard isDown else { return tracker.up(at: time) }
-        if tracker.hold == .locked, !isRecording(state) { tracker.cancel() }
-        return tracker.down(at: time)
-    }
-
-    /// How the tap answers a key-down, given where the hotkey stands and what
-    /// the app is doing: Task 9's decision, extended with the state. In
-    /// order: the app's own Cmd+V goes through untouched; Escape cancels
-    /// everything while the app works, and is swallowed only then; any key
-    /// while the hotkey is held cancels that hold, Control-Option-V included;
-    /// Control-Option-V with its shortcut on pastes the last transcript. A
-    /// key repeat never cancels or pastes again.
-    static func action(forKeyDown keyCode: Int64, flags: CGEventFlags = [], isRepeat: Bool = false,
-                       sourceUserData: Int64 = 0, hold: TapTracker.Hold, state: DictationState,
-                       pasteLastShortcut: Bool = false) -> KeyAction {
-        guard sourceUserData != PasteEngine.eventTag else { return .none }
-        if keyCode == Int64(kVK_Escape), isWorking(state) {
-            return isRepeat ? .consume : .cancelAllAndConsume
-        }
-        if hold == .held { return .cancelHoldAndPass }
-        if pasteLastShortcut, keyCode == Int64(kVK_ANSI_V), isControlOption(flags) {
-            return isRepeat ? .consume : .pasteLastAndConsume
-        }
-        return .none
-    }
-
-    /// The same, applied to `tracker`: a cancel ends the hotkey's hold or
-    /// its hands-free lock, so the key's release, or its next press, starts
-    /// from nothing.
-    static func action(forKeyDown keyCode: Int64, flags: CGEventFlags = [], isRepeat: Bool = false,
-                       sourceUserData: Int64 = 0, tracker: inout TapTracker, state: DictationState,
-                       pasteLastShortcut: Bool = false) -> KeyAction {
-        let answer = Self.action(forKeyDown: keyCode, flags: flags, isRepeat: isRepeat, sourceUserData: sourceUserData,
-                                 hold: tracker.hold, state: state, pasteLastShortcut: pasteLastShortcut)
-        switch answer {
-        case .cancelHoldAndPass, .cancelAllAndConsume: tracker.cancel()
-        case .none, .pasteLastAndConsume, .consume: break
-        }
-        return answer
-    }
-
-    /// Escape cancels: something is being recorded, transcribed or cleaned up.
-    private static func isWorking(_ state: DictationState) -> Bool {
-        switch state {
-        case .recording, .transcribing, .cleaning: return true
-        case .idle, .preparingModel, .needsPermission, .error: return false
-        }
-    }
-
-    private static func isRecording(_ state: DictationState) -> Bool {
-        if case .recording = state { return true }
-        return false
-    }
-
-    /// Control and Option without Command or Shift; Caps Lock and Fn do not
-    /// matter.
-    private static func isControlOption(_ flags: CGEventFlags) -> Bool {
-        flags.contains([.maskControl, .maskAlternate]) && flags.isDisjoint(with: [.maskCommand, .maskShift])
-    }
-
     // MARK: - The tap
 
-    public func start() {
-        stop()
+    /// The events the tap sees: modifier changes (the hotkey, and Control
+    /// and Option let go for Paste last), key-downs, and every mouse
+    /// button's down, for a click made with the hotkey held.
+    static let eventsOfInterest: CGEventMask = [CGEventType.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        .reduce(0) { mask, type in mask | (1 << type.rawValue) }
 
-        let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
+    /// Makes the tap, or, called again by the health check, a fresh one in
+    /// place of a tap that stopped working. The old tap may have missed the
+    /// key's release, or a press, so the new one catches up with the key as
+    /// it is now: a dictation whose key is still down carries on, and one
+    /// whose release was missed stops. If no tap can be made, none will see
+    /// the release, and a dictation under way stops as if it had been let go.
+    public func start() {
+        removeTap()
 
         Log.info("[HOTKEY] Creating event tap for \(choice.displayName). AXIsProcessTrusted=\(AXIsProcessTrusted())")
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+            eventsOfInterest: Self.eventsOfInterest,
+            callback: { (_, type, event, refcon) -> Unmanaged<CGEvent>? in
                 guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let strategy = Unmanaged<ModifierKeyStrategy>.fromOpaque(refcon).takeUnretainedValue()
-                return strategy.handleEvent(proxy: proxy, type: type, event: event)
+                return strategy.handle(type, event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             Log.info("[HOTKEY] FAILED to create event tap — Accessibility permission may not be granted")
+            tell(tracker.reset())
             return
         }
 
@@ -360,13 +128,21 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         Log.info("[HOTKEY] Event tap created and enabled=\(CGEvent.tapIsEnabled(tap: tap))")
+        catchUp()
     }
 
-    /// Takes the tap down. The key's release may then never be seen, by this
-    /// tap or by the one that replaces it (the health check's rebuild, or
-    /// another hotkey), so a dictation the key held or locked stops as if the
-    /// key had been let go: its recording is transcribed, not left running.
+    /// Takes the tap down for good: listening stops, or another hotkey's tap
+    /// replaces this one. The key's release will never be seen, so a
+    /// dictation the key held or locked stops as if the key had been let go:
+    /// its recording is transcribed, not left running. A Paste last still
+    /// waiting for its keys is dropped.
     public func stop() {
+        removeTap()
+        pasteLastWait.cancel()
+        tell(tracker.reset())
+    }
+
+    private func removeTap() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
@@ -376,12 +152,12 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         }
         eventTap = nil
         runLoopSource = nil
-        tell(tracker.reset())
     }
 
     /// macOS can disable an event tap (a slow callback, sleep/wake, a change
     /// in Accessibility trust) without telling anyone. Re-enable it, and if
-    /// that doesn't stick, tear it down and build a fresh one.
+    /// that doesn't stick, tear it down and build a fresh one. Either way the
+    /// tap may have missed events meanwhile, and catches up.
     public func ensureHealthy() {
         guard let tap = eventTap else {
             Log.info("[HOTKEY] Health check: no tap present, recreating")
@@ -392,35 +168,45 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
 
         Log.info("[HOTKEY] Health check: tap was disabled, re-enabling")
         CGEvent.tapEnable(tap: tap, enable: true)
-        if !CGEvent.tapIsEnabled(tap: tap) {
+        if CGEvent.tapIsEnabled(tap: tap) {
+            catchUp()
+        } else {
             Log.info("[HOTKEY] Health check: re-enable failed, recreating tap")
             start()
         }
     }
 
-    private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // macOS disables a tap whose callback is too slow. Re-enable and move on.
+    /// Answers one event from the tap: the event, to let it through, or nil
+    /// to swallow it. Tests call it with events they make and never post.
+    func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+        // macOS disables a tap whose callback is too slow. Re-enable it, and
+        // catch up with the hotkey: its release, or a press, may have gone by.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             Log.info("[HOTKEY] Event tap was disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input") — re-enabling")
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
+            catchUp()
             return Unmanaged.passUnretained(event)
         }
 
         // Keep this callback fast and quiet: it runs for every modifier change
         // and keystroke on the system, so no logging of routine events here.
         if type == .flagsChanged {
-            tell(Self.action(forFlagsChanged: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags,
-                             at: ProcessInfo.processInfo.systemUptime, choice: choice, tracker: &tracker,
+            let flags = event.flags
+            tell(Self.action(forFlagsChanged: event.getIntegerValueField(.keyboardEventKeycode), flags: flags,
+                             at: time(of: event), choice: choice, tracker: &tracker,
                              handsFree: handsFree(), state: appState()))
+            if pasteLastWait.modifiersChanged(to: flags) {
+                deliver { $0.pasteLastShortcutPressed() }
+            }
             return Unmanaged.passUnretained(event)
         }
 
         if type == .keyDown {
             let action = Self.action(forKeyDown: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags,
                                      isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0,
-                                     sourceUserData: event.getIntegerValueField(.eventSourceUserData),
+                                     sourceUserData: event.getIntegerValueField(.eventSourceUserData), choice: choice,
                                      tracker: &tracker, state: appState(), pasteLastShortcut: pasteLastShortcut())
             tell(action)
             if action.consumes {
@@ -428,7 +214,31 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
             }
         }
 
+        if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            tell(Self.action(forMouseDownWithUserData: event.getIntegerValueField(.eventSourceUserData), tracker: &tracker))
+        }
+
         return Unmanaged.passUnretained(event)
+    }
+
+    /// The tap missed events: macOS had it turned off, or it was rebuilt.
+    /// Catches up with the hotkey as it is now, from the live modifier state.
+    private func catchUp() {
+        tell(Self.action(forLiveFlags: readLiveFlags(), choice: choice, tracker: &tracker))
+    }
+
+    /// When `event` happened, by its own timestamp (`eventTime`), so a press
+    /// handled late is timed as it was made; by the moment it is handled
+    /// when the stamp cannot be trusted, which the log says once.
+    private func time(of event: CGEvent) -> TimeInterval {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let time = Self.eventTime(stampedAt: event.timestamp, handledAt: now) { return time }
+        if !saidStampUntrusted {
+            saidStampUntrusted = true
+            Log.info("[HOTKEY] An event's timestamp (\(event.timestamp)) is not on the uptime clock (\(now) s); "
+                     + "timing presses by when they are handled")
+        }
+        return now
     }
 
     // MARK: - Telling the app
@@ -446,8 +256,21 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         switch action {
         case .cancelHoldAndPass: deliver { $0.hotkeyCancelled() }
         case .cancelAllAndConsume: deliver { $0.escapePressedWhileWorking() }
-        case .pasteLastAndConsume: deliver { $0.pasteLastShortcutPressed() }
+        case .pasteLastAndConsume: waitToPasteLast()
         case .none, .consume: break
+        }
+    }
+
+    /// Paste last's shortcut: the paste waits for Control and Option to be
+    /// let go, which `handle` sees as a modifier change, and goes anyway
+    /// after `pasteLastCap` (Ruling T23-1).
+    private func waitToPasteLast() {
+        let request = pasteLastWait.request()
+        let cap = pasteLastCap
+        DispatchQueue.main.asyncAfter(deadline: .now() + cap) { [weak self] in
+            guard let self, self.pasteLastWait.capReached(for: request) else { return }
+            Log.info("[HOTKEY] Paste last: Control or Option still down after \(cap) s; pasting anyway")
+            self.deliver { $0.pasteLastShortcutPressed() }
         }
     }
 

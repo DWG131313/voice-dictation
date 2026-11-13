@@ -36,7 +36,8 @@ public final class AppModel {
     /// The key that dictates, as saved, which the window names. The event
     /// tap took it when it started (`makeHotkeyStrategy`).
     public var hotkey: HotkeyChoice { preferences.hotkey }
-    /// Whether a double tap of the hotkey locks a recording, as saved.
+    /// Whether a double tap of the hotkey locks a recording, until another
+    /// stops it, as saved.
     public var handsFreeEnabled: Bool { preferences.handsFreeEnabled }
     /// The downloads under way, which Cancel cancels.
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]

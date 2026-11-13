@@ -93,8 +93,10 @@ final class GlobeKeyStrategyTests: XCTestCase {
         }
     }
 
-    /// A rebuilt tap forgets a press under way, and since Task 23 stops its
-    /// dictation as if Globe had been let go (`HotkeyLogicTests` has the rest).
+    /// A tap taken down for good forgets a press under way, and since Task 23
+    /// stops its dictation as if Globe had been let go; a tap rebuilt by the
+    /// health check catches up with the key instead (`HotkeyLogicTests` has
+    /// the rest).
     func testResetStopsAPressUnderWayAndForgetsIt() {
         var tracker = TapTracker()
         XCTAssertEqual(change(kVK_Function, [.maskSecondaryFn], &tracker), .start)

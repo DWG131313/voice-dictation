@@ -176,8 +176,9 @@ public class PreferencesManager {
         set { defaults.set(newValue.rawValue, forKey: Keys.hotkey) }
     }
 
-    /// Hands-free lock: a quick double tap of the hotkey records until the
-    /// next press (Task 23). Off until switched on; read at each press.
+    /// Hands-free lock: a quick double tap of the hotkey records until
+    /// another double tap stops it (Task 23; the window calls it double-tap
+    /// dictation). Off until switched on; read at each press.
     public var handsFreeEnabled: Bool {
         get { defaults.bool(forKey: Keys.handsFreeEnabled) }
         set { defaults.set(newValue, forKey: Keys.handsFreeEnabled) }

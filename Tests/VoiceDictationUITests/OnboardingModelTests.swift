@@ -124,6 +124,29 @@ final class OnboardingModelTests: XCTestCase {
         XCTAssertFalse(model.isComplete)
     }
 
+    /// The window's words name the hotkey chosen, not 🌐 whatever it is: the
+    /// Try it step, the Accessibility step and the line under the title.
+    func testTheWordsNameTheChosenHotkey() {
+        let model = makeModel()
+        accessibility = false
+        preferences.hotkey = .rightOption
+        XCTAssertEqual(model.step(.tryIt).detail, "Click into any text field, hold Right Option, say a sentence and let go.")
+        XCTAssertEqual(model.step(.accessibility).detail,
+                       "Needed to watch for the Right Option key and paste. Switch VoiceDictation on in the list.")
+        XCTAssertEqual(model.summary, "A few things to set up before you can hold Right Option and talk.")
+        preferences.hotkey = .globe
+        XCTAssertEqual(model.step(.tryIt).detail, "Click into any text field, hold Globe, say a sentence and let go.")
+        XCTAssertEqual(model.step(.accessibility).detail,
+                       "Needed to watch for the Globe key and paste. Switch VoiceDictation on in the list.")
+
+        accessibility = true
+        model.recordOutcome(pasted(.pasted))
+        for (choice, name) in [(HotkeyChoice.globe, "Globe"), (.rightOption, "Right Option"), (.rightCommand, "Right Command")] {
+            preferences.hotkey = choice
+            XCTAssertEqual(model.summary, "You are all set. Hold \(name) anywhere to dictate.")
+        }
+    }
+
     // MARK: - Speech model
 
     func testSpeechModelStepNeededWhenAssetsMissing() async throws {
