@@ -6,7 +6,7 @@ Hold a key, say what you mean, let go: your words appear in whatever app you are
 
 VoiceDictation needs macOS 26 or later.
 
-A release is a signed, notarised zip that opens without a warning. `./scripts/release.sh` makes one as `dist/VoiceDictation-<version>.zip` (the one-time setup is in `docs/release.md`). Unzip it, drag VoiceDictation into Applications and open it.
+A release is a signed, notarised zip that opens without a warning. `./scripts/release.sh` makes one as `dist/VoiceDictation-<version>.zip` (the one-time setup is in `docs/release.md`). Unzip it, drag VoiceDictation into Applications and open it. On a Mac that ran the old version, quit it from its menu bar menu and remove it from System Settings > General > Login Items first (details in `docs/release.md`).
 
 To build it yourself you need Xcode and XcodeGen (`brew install xcodegen`). Then `./scripts/run-dev.sh` builds the app and opens it.
 
