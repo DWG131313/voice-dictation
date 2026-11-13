@@ -25,6 +25,14 @@ public final class AppModel {
     public private(set) var models: [ModelDescriptor] = []
     /// The model dictation uses, as last listed; nil until then.
     public private(set) var selectedModel: ModelID?
+    /// How far each download this app started has got, 0 to 1. Only models
+    /// downloading now are here.
+    public private(set) var downloadProgress: [ModelID: Double] = [:]
+    /// A short note for a model's row in the Models section: why its last
+    /// download, delete or switch failed. Cleared when the next one starts.
+    public private(set) var modelMessages: [ModelID: String] = [:]
+    /// The downloads under way, which Cancel cancels.
+    @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
     /// The Welcome window's steps.
     @ObservationIgnored public private(set) lazy var onboarding = OnboardingModel(
         system: onboardingSystem,
@@ -186,26 +194,103 @@ public final class AppModel {
 
     // MARK: - Models
 
-    /// Lists every model again, and the one dictation uses.
+    /// Lists every model again, and the one dictation uses. A model this app
+    /// is downloading reads as downloading, with the progress it has.
     public func refreshModels() async {
         let models = await service.allModels()
         let selected = await service.selected
-        self.models = models
+        self.models = models.map { model in
+            guard downloads[model.id] != nil else { return model }
+            var downloading = model
+            downloading.state = .downloading(downloadProgress[model.id] ?? 0)
+            return downloading
+        }
         self.selectedModel = selected
     }
 
-    /// Makes `model` the one dictation uses, downloading it first if it is
-    /// not on the Mac, and remembers the choice. The pipeline shows the
-    /// progress, and a failure, which leaves the choice as it was.
-    func choose(_ model: ModelDescriptor) async {
+    /// Makes `model` the one dictation uses and remembers the choice. The
+    /// pipeline shows the progress, and a failure, which leaves the choice
+    /// as it was and is noted on the model's row too. Never downloads.
+    func use(_ model: ModelDescriptor) async {
+        modelMessages[model.id] = nil
         do {
-            try await pipeline.selectModel(model.id, named: model.displayName,
-                                           downloadingFirst: model.state == .notDownloaded)
+            try await pipeline.selectModel(model.id, named: model.displayName)
             preferences.selectedModelID = model.id
         } catch {
-            // Already shown and logged by the pipeline.
+            modelMessages[model.id] = Self.message(for: error)
         }
         await refreshModels()
+    }
+
+    /// The menu bar's choice, and the same two operations as the Models
+    /// section (Ruling T20-1): a model not on the Mac is downloaded first,
+    /// which Danny can watch and cancel in the section; a cancelled or
+    /// failed download selects nothing.
+    func choose(_ model: ModelDescriptor) async {
+        if model.state == .notDownloaded {
+            guard await download(model.id) else { return }
+        }
+        await use(model)
+    }
+
+    /// Downloads a model. Never changes the one in use (Ruling P8). Returns
+    /// whether the download finished; a second call for a model already
+    /// downloading joins it. A cancel is no failure and leaves no note.
+    @discardableResult
+    func download(_ id: ModelID) async -> Bool {
+        if let running = downloads[id] { return await running.value }
+        modelMessages[id] = nil
+        downloadProgress[id] = 0
+        let service = service
+        let task = Task { [self] () -> Bool in
+            var finished = false
+            do {
+                try await service.download(id) { [weak self] fraction in
+                    Task { @MainActor in self?.downloadProgressed(id, to: fraction) }
+                }
+                finished = true
+            } catch {
+                if !Task.isCancelled, !(error is CancellationError) { modelMessages[id] = Self.message(for: error) }
+            }
+            downloads[id] = nil
+            downloadProgress[id] = nil
+            await refreshModels()
+            return finished
+        }
+        downloads[id] = task
+        await refreshModels()
+        return await task.value
+    }
+
+    /// Cancels the download's task; the engine removes what it had fetched
+    /// and the row goes back to Not downloaded once it has (Ruling T20-2).
+    func cancelDownload(_ id: ModelID) {
+        downloads[id]?.cancel()
+    }
+
+    /// Deletes a model's files. The one in use, one still preparing and the
+    /// Apple models, which macOS manages, are refused; the row says why.
+    func deleteModel(_ id: ModelID) async {
+        modelMessages[id] = nil
+        do {
+            try await service.delete(id)
+        } catch {
+            modelMessages[id] = Self.message(for: error)
+        }
+        await refreshModels()
+    }
+
+    private func downloadProgressed(_ id: ModelID, to fraction: Double) {
+        // Late reports of a finished or cancelled download are ignored.
+        guard downloads[id] != nil else { return }
+        downloadProgress[id] = max(fraction, downloadProgress[id] ?? 0)
+        if let index = models.firstIndex(where: { $0.id == id }) {
+            models[index].state = .downloading(downloadProgress[id] ?? 0)
+        }
+    }
+
+    private static func message(for error: Error) -> String {
+        DictationPipeline.describe(error)
     }
 
     /// Lists the models again whenever a menu opens, the menu bar menu among

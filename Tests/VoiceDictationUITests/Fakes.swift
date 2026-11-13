@@ -29,6 +29,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     private var _delay: TimeInterval = 0
     private var _unloadable: Set<ModelID> = []
     private var _calls: [Call] = []
+    private var _onDownload: (@Sendable (ModelID, @escaping @Sendable (Double) -> Void) async throws -> Void)?
 
     init(kind: EngineKind, models: [ModelDescriptor] = []) {
         self.kind = kind
@@ -59,6 +60,12 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
         set { lock.withLock { _unloadable = newValue } }
     }
     var calls: [Call] { lock.withLock { _calls } }
+    /// Replaces the download: it reports progress through the closure it is
+    /// given, and throws (`CancellationError` when cancelled) like an engine.
+    var onDownload: (@Sendable (ModelID, @escaping @Sendable (Double) -> Void) async throws -> Void)? {
+        get { lock.withLock { _onDownload } }
+        set { lock.withLock { _onDownload = newValue } }
+    }
 
     private func record(_ call: Call) { lock.withLock { _calls.append(call) } }
 
@@ -78,6 +85,7 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
 
     func download(_ model: ModelID, progress: @escaping @Sendable (Double) -> Void) async throws {
         record(.download(model))
+        if let onDownload { try await onDownload(model, progress); return }
         progress(1)
     }
 

@@ -21,6 +21,11 @@ Subagent-driven development, Danny's choice on 2026-11-11: a fresh implementer p
 
 Implementers do not launch the app (controller ruling P2), so checks that need the running app, a microphone, permissions or a human are listed here for Danny.
 
+- Task 20 (Models section; not performed because it downloads a real model and needs the running app and a microphone). With the app running (`./scripts/run-dev.sh`), open the window and choose Models in the sidebar:
+  1. Next to "WhisperKit base.en" press Download. The row reads "Downloading 42%" (the figure moves in steps), and "In use" stays on the model that was in use: downloading never switches. Press Cancel once: the row goes back to "Not downloaded" with no message. Download it again and let it finish: "Ready", with its size in DM Mono.
+  2. Press "Use for dictation" on it: the button becomes "In use" and the sidebar footer names it. Dictate into TextEdit and the text pastes. Then press "Use for dictation" on the model you had before: dictation switches back.
+  3. Press Delete on base.en: its files go and it reads "Not downloaded". Delete is missing on the selected model and on the two Apple models. Choosing a not-downloaded model in the menu bar's Model submenu downloads it, and the same progress and Cancel show in the Models section.
+
 - Task 19 (fix round 1: the clipboard a late re-transcription leaves alone, and quitting while typing; not performed because they need the running app, dictation and you). With the app running (`./scripts/run-dev.sh`) and a few transcripts kept:
   1. Re-transcribe a failed transcript (as in step 7 of the Task 19 check below) with a model that takes a few seconds, and before it finishes copy a word in TextEdit (⌘C). When it finishes, the transcript has its new text and reads "Copied", "Re-transcribed — use Copy" shows under the buttons, and ⌘V in TextEdit still pastes your word. Click Copy: ⌘V now pastes the transcript. A dictation made while it runs counts as a copy too (its paste goes through the clipboard), so the same message appears then. With nothing copied meanwhile it is as before: "Copied — paste with ⌘V", and ⌘V pastes the transcript.
   2. Quit while typing. Click into a transcript's text, type a word and press ⌘Q straight away. Start the app again and open the window: the word is there, and the status reads "Edited".
