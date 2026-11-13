@@ -1,7 +1,27 @@
 import Foundation
 
+/// Why a model could not be prepared, used, downloaded or deleted. Each case
+/// carries its reason in plain words, and that reason is what the error reads
+/// as wherever it is shown (`localizedDescription`), never "The operation
+/// couldn't be completed…".
 public enum TranscriptionError: Error, Equatable {
     case modelNotReady(String), engineUnavailable(String), cancelled, failed(String)
+
+    /// A model's load refused while its download runs, so a dictation made
+    /// meanwhile fails at once and is kept as Failed with its recording
+    /// (Review Focus 1).
+    static func stillDownloading(_ model: String) -> TranscriptionError {
+        .modelNotReady("\(model) is still downloading. This recording is kept: re-transcribe it from the window when it's ready.")
+    }
+}
+
+extension TranscriptionError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .modelNotReady(let reason), .engineUnavailable(let reason), .failed(let reason): reason
+        case .cancelled: "The transcription was cancelled"
+        }
+    }
 }
 
 public protocol TranscriptionEngine: Sendable {

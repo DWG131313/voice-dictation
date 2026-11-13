@@ -294,6 +294,55 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.welcomeRequests, 0)
     }
 
+    /// Final fix wave, E1 (Ruling T20-1): the Welcome window's Download is the
+    /// app's own download, so the step and the Models section show the same
+    /// progress, and the section's Cancel stops it. A cancel is no failure:
+    /// the step offers Download again, with nothing said.
+    @MainActor
+    func testTheWelcomeDownloadIsTheAppsAndItsCancelStopsIt() async throws {
+        let apple = FakeEngine(kind: .appleSpeech, models: [appleSpeechRow(.notDownloaded)])
+        apple.onDownload = { _, progress in
+            progress(0.42)
+            try await Task.sleep(for: .seconds(60))
+        }
+        let model = makeModel([apple])
+        await model.refreshModels()
+
+        let download = Task { await model.onboarding.downloadSelectedModel() }
+        try await waitUntil("the Models section shows the download") { model.downloadProgress[.appleSpeech] == 0.42 }
+        XCTAssertEqual(model.onboarding.step(.speechModel).detail, "Downloading… 42%")
+        let row = try XCTUnwrap(model.models.first { $0.id == .appleSpeech })
+        XCTAssertEqual(ModelsView.actions(for: row, selected: model.selectedModel,
+                                          cancellable: model.downloadProgress[.appleSpeech] != nil), [.cancel])
+
+        model.cancelDownload(.appleSpeech)
+        await download.value
+
+        XCTAssertNil(model.downloadProgress[.appleSpeech])
+        XCTAssertNil(model.modelMessages[.appleSpeech], "a cancel is not an error")
+        XCTAssertEqual(model.onboarding.step(.speechModel).detail, "Apple Speech needs its files before it can listen.")
+        XCTAssertEqual(model.onboarding.step(.speechModel).actionTitle, "Download Apple Speech")
+    }
+
+    /// Final fix wave, E1: a failed Welcome download says why in plain words,
+    /// the engine's own, as the Models section's row does; never "The
+    /// operation couldn't be completed…".
+    @MainActor
+    func testAFailedWelcomeDownloadSaysWhyInPlainWords() async {
+        let apple = FakeEngine(kind: .appleSpeech, models: [appleSpeechRow(.notDownloaded)])
+        apple.onDownload = { _, _ in
+            throw TranscriptionError.failed("Apple Speech language files could not be installed: No network")
+        }
+        let model = makeModel([apple])
+        await model.refreshModels()
+
+        await model.onboarding.downloadSelectedModel()
+
+        XCTAssertEqual(model.onboarding.step(.speechModel).detail,
+                       "The download failed: Apple Speech language files could not be installed: No network")
+        XCTAssertEqual(model.modelMessages[.appleSpeech], "Apple Speech language files could not be installed: No network")
+    }
+
     /// The icon can appear again (its image changes with the state); only
     /// the first sight after a request may open the window.
     @MainActor
@@ -827,6 +876,11 @@ final class AppModelTests: XCTestCase {
 
     private func descriptor(_ id: ModelID, _ state: ModelDescriptor.State) -> ModelDescriptor {
         ModelDescriptor(id: id, displayName: id.name, detail: "", state: state)
+    }
+
+    /// Apple Speech's row, named as the app names it.
+    private func appleSpeechRow(_ state: ModelDescriptor.State) -> ModelDescriptor {
+        ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: state)
     }
 
     /// The comparison folder's files, by name.

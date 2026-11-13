@@ -180,8 +180,8 @@ final class WhisperKitEngineTests: XCTestCase {
             try await engine.prepare(tiny)
             XCTFail("prepare should be refused while tiny.en downloads")
         } catch {
-            XCTAssertEqual(error as? TranscriptionError,
-                           .modelNotReady("WhisperKit tiny.en is still downloading"))
+            XCTAssertEqual(error as? TranscriptionError, .modelNotReady(
+                "WhisperKit tiny.en is still downloading. This recording is kept: re-transcribe it from the window when it's ready."))
         }
 
         XCTAssertEqual(calls.value, 0)

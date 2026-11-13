@@ -65,12 +65,14 @@ public final class OnboardingModel {
     /// Read again by `refresh()`; the other steps read live state, which the
     /// views track.
     private var globeKeyUsage: Int?   // nil, as macOS saves it for Do Nothing, until `refresh()`
-    /// While the speech model downloads: how far, 0 to 1.
-    private var downloadProgress: Double?
     private var downloadFailure: String?
 
     @ObservationIgnored private let system: OnboardingSystem
-    @ObservationIgnored private let service: TranscriptionService
+    /// Downloads a model through the app's own download (`AppModel.download`,
+    /// Ruling T20-1), so the Models section shows its progress and its Cancel
+    /// stops it. Returns why it failed, in the words its row in the Models
+    /// section shows; nil once it finished or was cancelled.
+    @ObservationIgnored private let download: (ModelID) async -> String?
     @ObservationIgnored private let models: () -> [ModelDescriptor]
     @ObservationIgnored private let selected: () -> ModelID?
     @ObservationIgnored private let refreshModels: () async -> Void
@@ -80,11 +82,11 @@ public final class OnboardingModel {
     /// at every launch.
     private var triedIt: Bool
 
-    init(system: OnboardingSystem, service: TranscriptionService, models: @escaping () -> [ModelDescriptor],
-         selected: @escaping () -> ModelID?, refreshModels: @escaping () async -> Void,
-         preferences: PreferencesManager) {
+    init(system: OnboardingSystem, download: @escaping (ModelID) async -> String?,
+         models: @escaping () -> [ModelDescriptor], selected: @escaping () -> ModelID?,
+         refreshModels: @escaping () async -> Void, preferences: PreferencesManager) {
         self.system = system
-        self.service = service
+        self.download = download
         self.models = models
         self.selected = selected
         self.refreshModels = refreshModels
@@ -150,15 +152,13 @@ public final class OnboardingModel {
 
     /// The step for the model dictation uses (ruling T14-1), not Apple
     /// Speech's alone. A new app often sees Apple's files as not downloaded
-    /// though they are on the Mac; its Download then finishes at once.
+    /// though they are on the Mac; its Download then finishes at once. A
+    /// download under way, from here or the Models section, reads as the
+    /// model's own state.
     private func speechModelStep() -> Step {
         let title = "Speech model"
         guard let selected = selected(), let model = models().first(where: { $0.id == selected }) else {
             return Step(id: .speechModel, title: title, state: .needed, detail: "Checking the speech model…", actionTitle: nil)
-        }
-        if let progress = downloadProgress {
-            return Step(id: .speechModel, title: title, state: .needed,
-                        detail: "Downloading… \(Int((progress * 100).rounded()))%", actionTitle: nil)
         }
         switch model.state {
         case .ready:
@@ -205,21 +205,15 @@ public final class OnboardingModel {
         }
     }
 
-    /// Downloads the model dictation uses, then lists the models again.
+    /// Downloads the model dictation uses through the app's own download, so
+    /// the Models section can cancel it (Ruling T20-1), then lists the models
+    /// again. A failure is said on the step; a cancel is no failure.
     func downloadSelectedModel() async {
-        guard let id = selected(), downloadProgress == nil else { return }
+        guard let id = selected() else { return }
         downloadFailure = nil
-        downloadProgress = 0
-        do {
-            try await service.download(id) { [weak self] progress in
-                Task { @MainActor in
-                    if self?.downloadProgress != nil { self?.downloadProgress = progress }
-                }
-            }
-        } catch {
-            downloadFailure = "The download failed: \(error.localizedDescription)"
+        if let reason = await download(id) {
+            downloadFailure = "The download failed: \(reason)"
         }
-        downloadProgress = nil
         await refreshModels()
     }
 

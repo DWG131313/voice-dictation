@@ -45,10 +45,12 @@ public final class AppModel {
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
     /// The state each row's note was made in.
     @ObservationIgnored private var noteStates: [ModelID: ModelDescriptor.State] = [:]
-    /// The Welcome window's steps.
+    /// The Welcome window's steps. Its Download is this model's `download`,
+    /// so the Models section shows it and can cancel it (Ruling T20-1).
     @ObservationIgnored public private(set) lazy var onboarding = OnboardingModel(
         system: onboardingSystem,
-        service: service,
+        // A failed download leaves its reason on the model's row; a cancel leaves none.
+        download: { [unowned self] id in await download(id) ? nil : modelMessages[id] },
         models: { [unowned self] in models },
         selected: { [unowned self] in selectedModel },
         refreshModels: { [unowned self] in await refreshModels() },

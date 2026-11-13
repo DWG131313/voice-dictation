@@ -435,7 +435,8 @@ final class WhisperCppEngineTests: XCTestCase {
             try await engine.prepare(base)
             XCTFail("prepare should be refused while base.en downloads")
         } catch {
-            XCTAssertEqual(error as? TranscriptionError, .modelNotReady("whisper.cpp base.en is still downloading"))
+            XCTAssertEqual(error as? TranscriptionError, .modelNotReady(
+                "whisper.cpp base.en is still downloading. This recording is kept: re-transcribe it from the window when it's ready."))
         }
 
         XCTAssertEqual(loads.value, 0)

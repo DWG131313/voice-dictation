@@ -203,7 +203,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
         // `fetch` writes the tokenizer before it can be cancelled, so a model
         // can look downloaded while its download may still remove its files.
         guard downloads[model.id] == nil else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) is still downloading")
+            throw TranscriptionError.stillDownloading(model.displayName)
         }
         guard isDownloaded(model) else {
             throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")

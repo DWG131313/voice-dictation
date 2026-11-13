@@ -20,9 +20,12 @@ final class OnboardingModelTests: XCTestCase {
     private var refreshes = 0
     private var onRefresh: () -> Void = {}
     private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
-    private let engine = FakeEngine(kind: .appleSpeech)
-    private let whisperKitEngine = FakeEngine(kind: .whisperKit)
-    private let whisperCppEngine = FakeEngine(kind: .whisperCpp)
+    /// The models Download was asked for, in order. The app's own download
+    /// (`AppModel.download`) stands behind it; `AppModelTests` runs that one.
+    private var downloads: [ModelID] = []
+    /// What the next Download gives back: why it failed, or nil once it
+    /// finished or was cancelled.
+    private var downloadFailure: String?
 
     // MARK: - Completeness
 
@@ -161,7 +164,7 @@ final class OnboardingModelTests: XCTestCase {
         }
         await model.downloadSelectedModel()
 
-        XCTAssertEqual(engine.calls, [.download(.appleSpeech)])
+        XCTAssertEqual(downloads, [.appleSpeech])
         XCTAssertEqual(refreshes, 1)
         XCTAssertEqual(model.state(of: .speechModel), .done)
     }
@@ -177,42 +180,46 @@ final class OnboardingModelTests: XCTestCase {
 
         await model.downloadSelectedModel()
 
-        XCTAssertEqual(whisperKitEngine.calls, [.download(tiny)])
-        XCTAssertEqual(engine.calls, [])
+        XCTAssertEqual(downloads, [tiny])
     }
 
     /// The default model since Task 27A. It is fetched only when Danny presses
-    /// the step's Download, never by itself.
+    /// the step's Download, never by itself. Its progress is the app's
+    /// download's (`AppModelTests.testTheWelcomeDownloadIsTheAppsAndItsCancelStopsIt`).
     func testSpeechModelStepDownloadsWhisperCppBase() async throws {
         models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .notDownloaded)]
         selected = .whisperCppBase
-        let gate = AsyncStream.makeStream(of: Void.self)
-        whisperCppEngine.onDownload = { _, progress in
-            progress(0.42)
-            for await _ in gate.stream {}
-        }
         let model = makeModel()
         XCTAssertEqual(model.state(of: .speechModel), .needed)
         XCTAssertEqual(model.step(.speechModel).actionTitle, "Download whisper.cpp base.en")
-        XCTAssertEqual(whisperCppEngine.calls, [], "nothing downloads until Download is pressed")
-
-        let download = Task { await model.downloadSelectedModel() }
-        let deadline = ContinuousClock.now + .seconds(2)
-        while model.step(.speechModel).detail != "Downloading… 42%", ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertEqual(model.step(.speechModel).detail, "Downloading… 42%")
-        XCTAssertEqual(whisperCppEngine.calls, [.download(.whisperCppBase)])
+        XCTAssertEqual(downloads, [], "nothing downloads until Download is pressed")
 
         onRefresh = { [self] in
             models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .ready)]
         }
-        gate.continuation.finish()
-        await download.value
+        await model.downloadSelectedModel()
 
+        XCTAssertEqual(downloads, [.whisperCppBase], "Apple Speech was not asked")
         XCTAssertEqual(model.state(of: .speechModel), .done)
         XCTAssertEqual(model.step(.speechModel).detail, "whisper.cpp base.en is ready.")
-        XCTAssertEqual(engine.calls, [], "Apple Speech was not asked")
+    }
+
+    /// A failed Download says why on the step, in the words the app gives
+    /// (final fix wave, E1), and offers Download again. A cancelled one says
+    /// nothing, and the next press clears what an earlier failure said.
+    func testAFailedDownloadSaysWhyAndACancelSaysNothing() async {
+        models = [ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .notDownloaded)]
+        let model = makeModel()
+
+        downloadFailure = "Apple Speech language files could not be installed: No network"
+        await model.downloadSelectedModel()
+        XCTAssertEqual(model.step(.speechModel).detail,
+                       "The download failed: Apple Speech language files could not be installed: No network")
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download Apple Speech")
+
+        downloadFailure = nil
+        await model.downloadSelectedModel()
+        XCTAssertEqual(model.step(.speechModel).detail, "Apple Speech needs its files before it can listen.")
     }
 
     /// Preparing is the normal state at launch, not a reason to interrupt.
@@ -288,8 +295,10 @@ final class OnboardingModelTests: XCTestCase {
             refreshPermissions: {}
         )
         return OnboardingModel(system: system,
-                               service: TranscriptionService(engines: [whisperCppEngine, engine, whisperKitEngine],
-                                                             selected: selected ?? .appleSpeech),
+                               download: { [self] id in
+                                   downloads.append(id)
+                                   return downloadFailure
+                               },
                                models: { [self] in models },
                                selected: { [self] in selected },
                                refreshModels: { [self] in refreshes += 1; onRefresh() },

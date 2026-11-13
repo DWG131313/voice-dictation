@@ -297,7 +297,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
         // A download may still fail and remove what it wrote, so a load
         // never starts under one.
         guard downloads[model.id] == nil else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) is still downloading")
+            throw TranscriptionError.stillDownloading(model.displayName)
         }
         guard size(of: model) == model.bytes else {
             throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")

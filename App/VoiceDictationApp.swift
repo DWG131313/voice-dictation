@@ -61,9 +61,13 @@ struct VoiceDictationApp: App {
         .defaultSize(width: 1120, height: 640)
 
         // The setup steps, shown at launch while any is left; like the main
-        // window, never at launch otherwise and never restored.
+        // window, never at launch otherwise and never restored. Black and
+        // dark only, as the other windows are, in light mode too.
         Window("Welcome", id: AppModel.welcomeWindowID) {
             OnboardingView(model: lifecycle.model)
+                .background(Theme.Color.bg)
+                .foregroundStyle(Theme.Color.text)
+                .preferredColorScheme(.dark)
                 .onAppear { lifecycle.windowDidOpen(AppModel.welcomeWindowID) }
                 .onDisappear { lifecycle.windowDidClose(AppModel.welcomeWindowID) }
         }
