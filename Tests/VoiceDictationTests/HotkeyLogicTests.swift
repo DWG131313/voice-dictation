@@ -49,8 +49,9 @@ final class HotkeyLogicTests: XCTestCase {
 
     /// Hands-free on: tap, then tap again within 0.35 s, and the second
     /// tap's recording stays on after its release. While it is locked a
-    /// single press does nothing, and a double tap stops it at the second
-    /// tap's press, whose release does nothing (Danny's change, finding 9).
+    /// single press does nothing, and a double tap stops it (Danny's change,
+    /// finding 9) as its second tap is let go: only then is that press known
+    /// to be a tap, with no other key or click during it (Ruling T23-2).
     func testHandsFreeDoubleTapLocksUntilADoubleTapStopsIt() {
         var tracker = TapTracker(handsFreeEnabled: true)
         XCTAssertEqual(tracker.down(at: 0), .start)
@@ -61,8 +62,8 @@ final class HotkeyLogicTests: XCTestCase {
         XCTAssertEqual(tracker.down(at: 30), .none, "a press does nothing")
         XCTAssertEqual(tracker.up(at: 30.1), .none)
         XCTAssertEqual(tracker.hold, .locked)
-        XCTAssertEqual(tracker.down(at: 30.3), .stop, "a double tap stops it")
-        XCTAssertEqual(tracker.up(at: 30.4), .none, "and its release does nothing")
+        XCTAssertEqual(tracker.down(at: 30.3), .none, "a double tap's second press does nothing yet")
+        XCTAssertEqual(tracker.up(at: 30.4), .stop, "its release stops it")
         XCTAssertEqual(tracker.hold, .none)
         XCTAssertEqual(tracker.down(at: 31), .start, "the press after that dictates as before")
         XCTAssertEqual(tracker.up(at: 32), .stop)
@@ -118,8 +119,8 @@ final class HotkeyLogicTests: XCTestCase {
         tracker.handsFreeEnabled = false
         XCTAssertEqual(tracker.down(at: 200), .none)
         XCTAssertEqual(tracker.up(at: 200.1), .none)
-        XCTAssertEqual(tracker.down(at: 200.3), .stop)
-        XCTAssertEqual(tracker.up(at: 200.4), .none)
+        XCTAssertEqual(tracker.down(at: 200.3), .none)
+        XCTAssertEqual(tracker.up(at: 200.4), .stop)
         XCTAssertEqual(tracker.down(at: 201), .start)
         XCTAssertEqual(tracker.up(at: 201.1), .stop, "hands-free off: a short recording")
     }
@@ -148,7 +149,7 @@ final class HotkeyLogicTests: XCTestCase {
         }
         var tracker = TapTracker()
         lock(.rightOption, &tracker)
-        XCTAssertEqual(doubleTap(.rightOption, at: 200, &tracker), [.none, .none, .stop, .none],
+        XCTAssertEqual(doubleTap(.rightOption, at: 200, &tracker), [.none, .none, .none, .stop],
                        "still recording: a press does nothing, and a double tap stops it")
     }
 
@@ -167,7 +168,9 @@ final class HotkeyLogicTests: XCTestCase {
 
     /// While locked, a long press does nothing either, and is no first tap:
     /// a quick tap just after its release is a first tap, so the recording
-    /// stops only at the tap after that.
+    /// stops only at the tap after that. Nor is a long press going down just
+    /// after a tap the double tap's second: it is no tap, so it does nothing
+    /// (finding 9: a long press also clears a pending first tap).
     func testALongPressWhileLockedDoesNothing() {
         for choice in HotkeyChoice.allCases {
             var tracker = TapTracker()
@@ -175,28 +178,41 @@ final class HotkeyLogicTests: XCTestCase {
             XCTAssertEqual(press(choice, down: true, at: 200, &tracker, handsFree: true), .none, "\(choice)")
             XCTAssertEqual(press(choice, down: false, at: 201, &tracker, handsFree: true), .none, "\(choice)")
             XCTAssertEqual(tracker.hold, .locked, "\(choice): still locked")
-            XCTAssertEqual(doubleTap(choice, at: 201.1, &tracker), [.none, .none, .stop, .none],
+            XCTAssertEqual(doubleTap(choice, at: 201.1, &tracker), [.none, .none, .none, .stop],
                            "\(choice): the long press was no first tap")
+
+            var afterATap = TapTracker()
+            lock(choice, &afterATap)
+            XCTAssertEqual(press(choice, down: true, at: 200, &afterATap, handsFree: true), .none, "\(choice)")
+            XCTAssertEqual(press(choice, down: false, at: 200.1, &afterATap, handsFree: true), .none, "\(choice): a tap")
+            XCTAssertEqual(press(choice, down: true, at: 200.3, &afterATap, handsFree: true), .none,
+                           "\(choice): a long press going down within the window")
+            XCTAssertEqual(press(choice, down: false, at: 201.3, &afterATap, handsFree: true), .none,
+                           "\(choice): is no second tap")
+            XCTAssertEqual(afterATap.hold, .locked, "\(choice): still locked")
+            XCTAssertEqual(doubleTap(choice, at: 201.4, &afterATap), [.none, .none, .none, .stop],
+                           "\(choice): a double tap after it stops it")
         }
     }
 
     /// While locked, a double tap stops the recording: a tap, then a second
-    /// press going down within `doubleTapWindow` of the tap's release. The
-    /// stop comes at that second press, and its release does nothing. After
-    /// it a quick tap is a first tap again: hands-free on, its recording is
-    /// thrown away.
-    func testADoubleTapWhileLockedStopsAtTheSecondPress() {
+    /// tap going down within `doubleTapWindow` of the first one's release.
+    /// The stop comes as the second tap is let go, when it is known to be a
+    /// tap (Ruling T23-2); its press does nothing. After it a quick tap is a
+    /// first tap again: hands-free on, its recording is thrown away.
+    func testADoubleTapWhileLockedStopsAsItsSecondTapIsLetGo() {
         let window = TapTracker.doubleTapWindow
         for choice in HotkeyChoice.allCases {
             var tracker = TapTracker()
             lock(choice, &tracker)
             XCTAssertEqual(press(choice, down: true, at: 200, &tracker, handsFree: true), .none, "\(choice)")
             XCTAssertEqual(press(choice, down: false, at: 200.1, &tracker, handsFree: true), .none, "\(choice)")
-            XCTAssertEqual(press(choice, down: true, at: 200.1 + window - 0.01, &tracker, handsFree: true), .stop,
-                           "\(choice): the second press, just inside the window, stops it")
+            XCTAssertEqual(press(choice, down: true, at: 200.1 + window - 0.01, &tracker, handsFree: true), .none,
+                           "\(choice): the second press, just inside the window, does nothing yet")
+            XCTAssertEqual(tracker.hold, .locked, "\(choice)")
+            XCTAssertEqual(press(choice, down: false, at: 200.5, &tracker, handsFree: true), .stop,
+                           "\(choice): its release stops it")
             XCTAssertEqual(tracker.hold, .none, "\(choice)")
-            XCTAssertEqual(press(choice, down: false, at: 200.5, &tracker, handsFree: true), .none,
-                           "\(choice): its release does nothing")
             XCTAssertEqual(press(choice, down: true, at: 200.6, &tracker, handsFree: true), .start, "\(choice): a quick tap after it")
             XCTAssertEqual(press(choice, down: false, at: 200.7, &tracker, handsFree: true), .discardTap,
                            "\(choice): is a first tap")
@@ -218,7 +234,8 @@ final class HotkeyLogicTests: XCTestCase {
             XCTAssertEqual(press(choice, down: true, at: slow, &tracker, handsFree: true), .none, "\(choice): a slow second tap")
             XCTAssertEqual(press(choice, down: false, at: slow + 0.1, &tracker, handsFree: true), .none, "\(choice)")
             XCTAssertEqual(tracker.hold, .locked, "\(choice): does not stop it")
-            XCTAssertEqual(press(choice, down: true, at: slow + 0.3, &tracker, handsFree: true), .stop,
+            XCTAssertEqual(press(choice, down: true, at: slow + 0.3, &tracker, handsFree: true), .none, "\(choice)")
+            XCTAssertEqual(press(choice, down: false, at: slow + 0.4, &tracker, handsFree: true), .stop,
                            "\(choice): it was a first tap")
         }
     }
@@ -226,7 +243,7 @@ final class HotkeyLogicTests: XCTestCase {
     /// Hands-free on, quick taps one after another: the first is thrown
     /// away and the second locks. The tap that locked is no first tap toward
     /// stopping, so the third does nothing and the fourth stops the
-    /// recording at its press. A fifth is a first tap again.
+    /// recording as it is let go. A fifth is a first tap again.
     func testQuickTapsInARowLockThenStopAtTheFourth() {
         for choice in HotkeyChoice.allCases {
             var tracker = TapTracker()
@@ -237,8 +254,91 @@ final class HotkeyLogicTests: XCTestCase {
             XCTAssertEqual(taps[0], [.start, .discardTap], "\(choice): the first tap is thrown away")
             XCTAssertEqual(taps[1], [.start, .none], "\(choice): the second tap locks")
             XCTAssertEqual(taps[2], [.none, .none], "\(choice): the third does nothing")
-            XCTAssertEqual(taps[3], [.stop, .none], "\(choice): the fourth stops at its press")
+            XCTAssertEqual(taps[3], [.none, .stop], "\(choice): the fourth stops as it is let go")
             XCTAssertEqual(taps[4], [.start, .discardTap], "\(choice): a fifth is a first tap again")
+        }
+    }
+
+    // MARK: - Chorded presses (Ruling T23-2)
+
+    /// A press of the hotkey with another key going down during it is the
+    /// hotkey used as a modifier, never a tap. While locked it does nothing:
+    /// two quick shortcuts made with the hotkey, Right Command+Z twice say,
+    /// are no double tap, and the recording goes on.
+    func testChordedPressesWhileLockedAreNotTaps() {
+        for choice in HotkeyChoice.allCases {
+            var tracker = TapTracker()
+            lock(choice, &tracker)
+            XCTAssertEqual(chordedPress(choice, from: 200, to: 200.1, &tracker), [.none, .none], "\(choice): the first shortcut")
+            XCTAssertEqual(chordedPress(choice, from: 200.3, to: 200.4, &tracker), [.none, .none],
+                           "\(choice): the second, within the window")
+            XCTAssertEqual(tracker.hold, .locked, "\(choice): still locked")
+        }
+    }
+
+    /// A chorded press also clears a pending first tap. A plain tap, then a
+    /// shortcut made with the hotkey going down within `doubleTapWindow` of
+    /// it, is no double tap; nor is the shortcut a first tap. So a plain
+    /// double tap going down at once after both, within the window of either
+    /// release, still takes its two taps: it stops the recording as its
+    /// second tap is let go.
+    func testChordedPressClearsAPendingTap() {
+        for choice in HotkeyChoice.allCases {
+            var tracker = TapTracker()
+            lock(choice, &tracker)
+            XCTAssertEqual(press(choice, down: true, at: 200, &tracker, handsFree: true), .none, "\(choice)")
+            XCTAssertEqual(press(choice, down: false, at: 200.1, &tracker, handsFree: true), .none, "\(choice): a plain tap")
+            XCTAssertEqual(chordedPress(choice, from: 200.2, to: 200.25, &tracker), [.none, .none],
+                           "\(choice): a shortcut within the window does not stop it")
+            XCTAssertEqual(tracker.hold, .locked, "\(choice): still locked")
+            XCTAssertEqual(doubleTap(choice, at: 200.3, &tracker), [.none, .none, .none, .stop],
+                           "\(choice): a plain double tap stops it, at its second tap")
+            XCTAssertEqual(tracker.hold, .none, "\(choice)")
+        }
+    }
+
+    /// A click during the press counts as a key does: the press is no tap.
+    /// While locked, two quick presses with a click during each are no
+    /// double tap, and a plain tap followed within the window by a press
+    /// with a click stops nothing either.
+    func testAClickDuringAPressMakesItNoTap() {
+        for choice in HotkeyChoice.allCases {
+            var tracker = TapTracker()
+            lock(choice, &tracker)
+            XCTAssertEqual(chordedPress(choice, from: 200, to: 200.1, &tracker, click: true), [.none, .none], "\(choice)")
+            XCTAssertEqual(chordedPress(choice, from: 200.3, to: 200.4, &tracker, click: true), [.none, .none],
+                           "\(choice): no double tap")
+            XCTAssertEqual(press(choice, down: true, at: 201, &tracker, handsFree: true), .none, "\(choice)")
+            XCTAssertEqual(press(choice, down: false, at: 201.1, &tracker, handsFree: true), .none, "\(choice): a plain tap")
+            XCTAssertEqual(chordedPress(choice, from: 201.2, to: 201.25, &tracker, click: true), [.none, .none],
+                           "\(choice): a press with a click, within the window, does not stop it")
+            XCTAssertEqual(tracker.hold, .locked, "\(choice): still locked")
+            XCTAssertEqual(doubleTap(choice, at: 201.3, &tracker), [.none, .none, .none, .stop], "\(choice)")
+        }
+    }
+
+    /// The app's own paste, tagged, can land while the hotkey is down for a
+    /// double tap: an earlier dictation pastes the moment its text is ready.
+    /// It is no key the user pressed, so the press is still a tap, and the
+    /// double tap still stops the recording. A click tagged as the app's own
+    /// is the same, though the app posts none.
+    func testTheAppsOwnPasteDuringAPressLeavesItATap() {
+        for choice in HotkeyChoice.allCases {
+            for click in [false, true] {
+                var tracker = TapTracker()
+                lock(choice, &tracker)
+                for (down, up, release) in [(200.0, 200.1, HotkeyAction.none), (200.3, 200.4, .stop)] {
+                    XCTAssertEqual(press(choice, down: true, at: down, &tracker, handsFree: true), .none, "\(choice)")
+                    if click {
+                        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: PasteEngine.eventTag, choice: choice,
+                                                                  tracker: &tracker), .none, "\(choice): the app's own click")
+                    } else {
+                        XCTAssertEqual(ownPaste(v, &tracker, state: recording), [.none, .none, .none], "\(choice): the app's own paste")
+                    }
+                    XCTAssertEqual(press(choice, down: false, at: up, &tracker, handsFree: true), release,
+                                   "\(choice), click \(click): still a double tap")
+                }
+            }
         }
     }
 
@@ -475,36 +575,87 @@ final class HotkeyLogicTests: XCTestCase {
         }
     }
 
-    /// A click while the hotkey is held is the hotkey used as a modifier
-    /// (Right Command+click opens a link in a new tab): it cancels that
-    /// hold's dictation with `cancelHold()`, as a key does, and goes through,
-    /// for every choice. While hands-free is locked the key is up, and a
-    /// click cancels nothing; nor does one with the hotkey up. A click is
-    /// never swallowed, and one the app tagged as its own changes nothing.
-    func testAClickWhileTheHotkeyIsHeldCancelsThatHold() {
-        for choice in HotkeyChoice.allCases {
+    /// Ruling T23-3: a click while a right-hand hotkey is held is a
+    /// modifier-click (Right Command+click opens a link in a new tab, Right
+    /// Option+click is many apps' own), so it cancels that hold's dictation
+    /// with `cancelHold()`, as a key does. Globe+click is no shortcut, and
+    /// holding Globe while clicking where the text should go is a plausible
+    /// way to dictate: the click cancels nothing, and the release stops the
+    /// dictation as usual. Either way the click goes through.
+    func testAClickCancelsAHeldRightHandKeyButNotGlobe() {
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .globe, hold: .held), .none, "Globe")
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .rightCommand, hold: .held),
+                       .cancelHoldAndPass, "Right Command")
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .rightOption, hold: .held),
+                       .cancelHoldAndPass, "Right Option")
+        XCTAssertFalse(KeyAction.cancelHoldAndPass.consumes, "the click goes through")
+
+        for choice in [HotkeyChoice.rightOption, .rightCommand] {
             var held = TapTracker()
             XCTAssertEqual(press(choice, down: true, at: 0, &held), .start)
-            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, tracker: &held), .cancelHoldAndPass, "\(choice)")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, tracker: &held),
+                           .cancelHoldAndPass, "\(choice)")
             XCTAssertEqual(held.hold, .none, "\(choice)")
             XCTAssertEqual(press(choice, down: false, at: 1, &held), .none, "\(choice): the release does nothing")
             XCTAssertEqual(press(choice, down: true, at: 2, &held), .start, "\(choice): the next press dictates")
+        }
+
+        var globe = TapTracker()
+        XCTAssertEqual(press(.globe, down: true, at: 0, &globe), .start)
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .globe, tracker: &globe), .none, "Globe")
+        XCTAssertEqual(globe.hold, .held, "Globe: still dictating")
+        XCTAssertEqual(press(.globe, down: false, at: 3, &globe), .stop, "Globe: its release stops the dictation")
+    }
+
+    /// With Globe held a click cancels nothing, but the press is still no
+    /// tap (Ruling T23-2). Let go quickly with hands-free on, it is a
+    /// dictation too short to keep, not a tap thrown away; and it is no tap
+    /// toward a lock: after a plain tap it locks nothing, and that tap is no
+    /// longer pending.
+    func testAQuickPressOfGlobeWithAClickIsNoTap() {
+        var tracker = TapTracker()
+        XCTAssertEqual(press(.globe, down: true, at: 0, &tracker, handsFree: true), .start)
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .globe, tracker: &tracker), .none)
+        XCTAssertEqual(press(.globe, down: false, at: 0.1, &tracker, handsFree: true), .stop, "a short dictation, not a tap")
+
+        XCTAssertEqual(press(.globe, down: true, at: 10, &tracker, handsFree: true), .start)
+        XCTAssertEqual(press(.globe, down: false, at: 10.1, &tracker, handsFree: true), .discardTap, "a plain tap")
+        XCTAssertEqual(press(.globe, down: true, at: 10.2, &tracker, handsFree: true), .start)
+        XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: .globe, tracker: &tracker), .none)
+        XCTAssertEqual(press(.globe, down: false, at: 10.25, &tracker, handsFree: true), .stop, "a press with a click: no lock")
+        XCTAssertEqual(tracker.hold, .none)
+        XCTAssertEqual(press(.globe, down: true, at: 10.3, &tracker, handsFree: true), .start)
+        XCTAssertEqual(press(.globe, down: false, at: 10.35, &tracker, handsFree: true), .discardTap,
+                       "a plain tap within the window of both is a first tap")
+    }
+
+    /// While hands-free is locked the key is up, and a click cancels
+    /// nothing, whatever the hotkey (unchanged by Ruling T23-3); nor does one
+    /// with the hotkey up. A click the app tagged as its own changes
+    /// nothing, even with a right-hand key held.
+    func testAClickWhileLockedOrWithTheHotkeyUpCancelsNothing() {
+        for choice in HotkeyChoice.allCases {
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, hold: .locked), .none,
+                           "\(choice), locked")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, hold: .none), .none, "\(choice), up")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: PasteEngine.eventTag, choice: choice, hold: .held),
+                           .none, "\(choice), held, tagged")
 
             var locked = TapTracker()
             lock(choice, &locked)
-            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, tracker: &locked), .none, "\(choice), locked")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, tracker: &locked), .none,
+                           "\(choice), locked")
             XCTAssertEqual(locked.hold, .locked, "\(choice): the lock carries on")
 
             var up = TapTracker()
-            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, tracker: &up), .none, "\(choice), up")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, tracker: &up), .none, "\(choice), up")
 
             var tagged = TapTracker()
             XCTAssertEqual(press(choice, down: true, at: 0, &tagged), .start)
-            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: PasteEngine.eventTag, tracker: &tagged), .none,
-                           "\(choice): tagged as the app's own")
+            XCTAssertEqual(ModifierKeyStrategy.action(forMouseDownWithUserData: PasteEngine.eventTag, choice: choice, tracker: &tagged),
+                           .none, "\(choice): tagged as the app's own")
             XCTAssertEqual(tagged.hold, .held, "\(choice)")
         }
-        XCTAssertFalse(KeyAction.cancelHoldAndPass.consumes, "the click goes through")
     }
 
     /// The tap listens for a mouse button going down, whichever button, as
@@ -698,14 +849,14 @@ final class HotkeyLogicTests: XCTestCase {
             lock(choice, &locked)
             XCTAssertEqual(catchUp([], &locked), .none, "\(choice): locked, the key up: it carries on")
             XCTAssertEqual(locked.hold, .locked, "\(choice)")
-            XCTAssertEqual(doubleTap(choice, at: 200, &locked), [.none, .none, .stop, .none], "\(choice): a double tap stops it")
+            XCTAssertEqual(doubleTap(choice, at: 200, &locked), [.none, .none, .none, .stop], "\(choice): a double tap stops it")
 
             var pressed = TapTracker()
             lock(choice, &pressed)
             XCTAssertEqual(catchUp(down, &pressed), .none, "\(choice): locked, the key down: a press does nothing")
             XCTAssertEqual(pressed.hold, .locked, "\(choice)")
             XCTAssertEqual(press(choice, down: false, at: 200.1, &pressed), .none, "\(choice): its release does nothing")
-            XCTAssertEqual(doubleTap(choice, at: 200.2, &pressed), [.none, .none, .stop, .none],
+            XCTAssertEqual(doubleTap(choice, at: 200.2, &pressed), [.none, .none, .none, .stop],
                            "\(choice): that press was no first tap, and a double tap stops the lock")
 
             var missedPress = TapTracker()
@@ -924,6 +1075,23 @@ final class HotkeyLogicTests: XCTestCase {
          press(choice, down: false, at: time + 0.1, &tracker, handsFree: true),
          press(choice, down: true, at: time + 0.3, &tracker, handsFree: true),
          press(choice, down: false, at: time + 0.4, &tracker, handsFree: true)]
+    }
+
+    /// A press of the chosen key, hands-free on, with another key going down
+    /// during it: Z, carrying the key's own modifier as a real key-down does,
+    /// as in Right Command+Z. Or, with `click`, a mouse button going down
+    /// during it. While locked the key or the click goes through and cancels
+    /// nothing, which this checks. Returns the hotkey's down and up.
+    private func chordedPress(_ choice: HotkeyChoice, from down: TimeInterval, to up: TimeInterval,
+                              _ tracker: inout TapTracker, click: Bool = false,
+                              file: StaticString = #filePath, line: UInt = #line) -> [HotkeyAction] {
+        let pressed = press(choice, down: true, at: down, &tracker, handsFree: true)
+        let other = click
+            ? ModifierKeyStrategy.action(forMouseDownWithUserData: 0, choice: choice, tracker: &tracker)
+            : ModifierKeyStrategy.action(forKeyDown: Int64(kVK_ANSI_Z), flags: liveFlags(choice), choice: choice,
+                                         tracker: &tracker, state: recording)
+        XCTAssertEqual(other, .none, "\(choice): the \(click ? "click" : "key") goes through", file: file, line: line)
+        return [pressed, press(choice, down: false, at: up, &tracker, handsFree: true)]
     }
 
     /// What the tap answers a key-down the app posted itself, tagged as

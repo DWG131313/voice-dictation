@@ -12,9 +12,9 @@ public protocol HotkeyDelegate: AnyObject {
     /// or its tap was taken down mid-press: the recording stops and is
     /// transcribed.
     func hotkeyDidEndPress()
-    /// A key or a mouse button was pressed while the hotkey was held, the
-    /// hotkey used as a modifier: cancel this hold's dictation, and only
-    /// that one.
+    /// A key was pressed while the hotkey was held, or a mouse button while
+    /// Right Option or Right Command was, the hotkey used as a modifier:
+    /// cancel this hold's dictation, and only that one.
     func hotkeyCancelled()
     /// With hands-free on, the hotkey was tapped rather than held, maybe the
     /// first tap of a double tap: throw away the recording it started.
@@ -91,7 +91,8 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
 
     /// The events the tap sees: modifier changes (the hotkey, and Control
     /// and Option let go for Paste last), key-downs, and every mouse
-    /// button's down, for a click made with the hotkey held.
+    /// button's down: a click made with a right-hand hotkey held cancels
+    /// that hold, and one during any press of the hotkey makes it no tap.
     static let eventsOfInterest: CGEventMask = [CGEventType.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         .reduce(0) { mask, type in mask | (1 << type.rawValue) }
 
@@ -215,7 +216,8 @@ public final class ModifierKeyStrategy: HotkeyStrategy {
         }
 
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
-            tell(Self.action(forMouseDownWithUserData: event.getIntegerValueField(.eventSourceUserData), tracker: &tracker))
+            tell(Self.action(forMouseDownWithUserData: event.getIntegerValueField(.eventSourceUserData), choice: choice,
+                             tracker: &tracker))
         }
 
         return Unmanaged.passUnretained(event)

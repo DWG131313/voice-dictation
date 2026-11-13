@@ -81,7 +81,7 @@ final class ModifierKeyStrategyTests: XCTestCase {
     /// in a new tab): the click goes through untouched, whichever button,
     /// and cancels that hold's dictation. While hands-free is locked a click
     /// cancels nothing.
-    func testAClickWithTheHotkeyHeldGoesThroughAndCancelsTheHold() throws {
+    func testAClickWithRightCommandHeldGoesThroughAndCancelsTheHold() throws {
         for button in [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown] {
             let (strategy, delegate) = make(.rightCommand, state: recording)
             XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_RightCommand, flags: rightCommandDown)))
@@ -99,6 +99,63 @@ final class ModifierKeyStrategyTests: XCTestCase {
         runMainQueue()
         XCTAssertEqual(delegate.calls, ["hotkeyDidStartPress", "hotkeyDidTap", "hotkeyDidStartPress"], "locked: the click cancels nothing")
         XCTAssertEqual(strategy.tracker.hold, .locked)
+    }
+
+    /// Globe held, then a click: Globe+click is no shortcut, and holding
+    /// Globe while clicking where the text should go is a way to dictate
+    /// (Ruling T23-3). The tap gives the rule its choice, so the click goes
+    /// through and cancels nothing, whichever button, and letting go of
+    /// Globe ends the dictation as usual.
+    func testAClickWithGlobeHeldGoesThroughAndKeepsDictating() throws {
+        for button in [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown] {
+            let (strategy, delegate) = make(.globe, state: recording)
+            XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_Function, flags: .maskSecondaryFn)))
+            XCTAssertTrue(letsThrough(strategy, button, try event(button, flags: .maskSecondaryFn)), "\(button.rawValue) goes through")
+            runMainQueue()
+            XCTAssertEqual(delegate.calls, ["hotkeyDidStartPress"], "\(button.rawValue): still dictating")
+            XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_Function, flags: [])))
+            runMainQueue()
+            XCTAssertEqual(delegate.calls, ["hotkeyDidStartPress", "hotkeyDidEndPress"], "\(button.rawValue): let go")
+        }
+    }
+
+    // MARK: - Shortcuts made with the hotkey (Ruling T23-2)
+
+    /// While double-tap dictation records, two quick shortcuts made with the
+    /// hotkey itself, Right Command+Z twice, are no double tap: the tap gives
+    /// the rules every key-down, each press with a key during it is no tap,
+    /// and the recording goes on. Nor is the second shortcut a first tap: a
+    /// plain tap at once after it stops nothing, and the tap after that stops
+    /// the recording.
+    func testTwoShortcutsMadeWithTheHotkeyWhileLockedDoNotStopIt() throws {
+        let (strategy, delegate) = make(.rightCommand, handsFree: true, state: recording)
+        let now = ProcessInfo.processInfo.systemUptime
+        func hotkey(down: Bool, secondsAgo: TimeInterval) throws {
+            XCTAssertTrue(letsThrough(strategy, .flagsChanged, try event(.flagsChanged, key: kVK_RightCommand,
+                                                                         flags: down ? rightCommandDown : [], at: now - secondsAgo)))
+        }
+        for (down, secondsAgo) in [(true, 2.0), (false, 1.9), (true, 1.7), (false, 1.6)] {
+            try hotkey(down: down, secondsAgo: secondsAgo)
+        }
+        let locked = ["hotkeyDidStartPress", "hotkeyDidTap", "hotkeyDidStartPress"]
+        for start in [1.0, 0.7] {
+            try hotkey(down: true, secondsAgo: start)
+            XCTAssertTrue(letsThrough(strategy, .keyDown, try event(.keyDown, key: kVK_ANSI_Z, flags: rightCommandDown)),
+                          "Right Command+Z goes through")
+            try hotkey(down: false, secondsAgo: start - 0.1)
+        }
+        runMainQueue()
+        XCTAssertEqual(delegate.calls, locked, "two shortcuts: no stop")
+        XCTAssertEqual(strategy.tracker.hold, .locked)
+
+        try hotkey(down: true, secondsAgo: 0.4)
+        try hotkey(down: false, secondsAgo: 0.3)
+        runMainQueue()
+        XCTAssertEqual(delegate.calls, locked, "a plain tap just after them is a first tap")
+        try hotkey(down: true, secondsAgo: 0.2)
+        try hotkey(down: false, secondsAgo: 0.1)
+        runMainQueue()
+        XCTAssertEqual(delegate.calls, locked + ["hotkeyDidEndPress"], "and the next one stops it")
     }
 
     // MARK: - A tap turned off
