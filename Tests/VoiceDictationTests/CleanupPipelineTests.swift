@@ -98,6 +98,52 @@ final class CleanupPipelineTests: XCTestCase {
         XCTAssertTrue(cleaner.given.isEmpty)
     }
 
+    /// Ruling T22-3: the outcome carries the engine's own text beside the replaced raw text.
+    @MainActor
+    func testOutcomeKeepsTheEngineText() async throws {
+        cleanupOn = false
+        let pipeline = makePipeline(engineText: "my gv seventy", replacements: { [Replacement(from: "gv seventy", to: "GV70")] })
+
+        dictate(on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(outcomes.first?.engineText, "my gv seventy")
+        XCTAssertEqual(outcomes.first?.rawText, "my GV70")
+    }
+
+    /// A rule that empties the text leaves nothing to paste or keep: it is
+    /// nothing heard, and the comparison archive still gets the engine's text.
+    @MainActor
+    func testARuleThatEmptiesTheTextIsNothingHeard() async throws {
+        cleanupOn = false
+        let pipeline = makePipeline(engineText: "um", replacements: { [Replacement(from: "um", to: "")] })
+        var heard: [String] = []
+        pipeline.onNothingHeard = { _, _, engineText in heard.append(engineText) }
+
+        dictate(on: pipeline)
+        try await waitUntil("it is reported") { heard.count == 1 }
+
+        XCTAssertEqual(heard, ["um"])
+        XCTAssertTrue(outcomes.isEmpty)
+        XCTAssertTrue(paster.pasted.isEmpty)
+        XCTAssertEqual(pipeline.state, .idle)
+    }
+
+    /// A rule whose output holds a filler ("uh-huh"): if the cleaner drops
+    /// it the guard sees a removed word, and the raw text, rule applied, pastes.
+    @MainActor
+    func testRuleOutputWithAFillerThatCleanupDropsPastesRaw() async throws {
+        let engineText = "so i said uh huh to the plan"
+        let pipeline = makePipeline(engineText: engineText, replacements: { [Replacement(from: "uh huh", to: "uh-huh")] })
+        cleaner.reply = { _ in "So I said to the plan." }
+
+        dictate(on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(paster.pasted, ["so i said uh-huh to the plan"])
+        XCTAssertNil(outcomes.first?.cleanedText)
+    }
+
     /// A cleanup that changes a word, explains itself, refuses in words or
     /// adds a word is rejected: the raw text is pasted and nothing is shown.
     @MainActor

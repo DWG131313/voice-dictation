@@ -25,11 +25,11 @@ struct VocabularyView: View {
                 heading("Words")
                 note("Words the app should recognise. Apple Dictation and the Whisper models use them as a hint; "
                      + "Apple Speech ignores them, so for it add a replacement below.")
-                ForEach(store.words.indices, id: \.self) { index in
+                ForEach($store.wordRows) { $row in
                     editableRow {
-                        field("Word", text: $store.words[index])
+                        field("Word", text: $row.text)
                     } remove: {
-                        store.words.remove(at: index)
+                        store.removeWord(id: row.id)
                         store.save()
                     }
                 }
@@ -42,13 +42,13 @@ struct VocabularyView: View {
                 heading("Replacements")
                     .padding(.top, Theme.Space.xl)
                 note("Always replace this with that. Whole words, any capitals; the longest match wins.")
-                ForEach(store.replacements.indices, id: \.self) { index in
+                ForEach($store.ruleRows) { $row in
                     editableRow {
-                        field("When I say", text: $store.replacements[index].from)
+                        field("When I say", text: $row.from)
                         Text("→").foregroundStyle(Theme.Color.textMuted)
-                        field("Write", text: $store.replacements[index].to)
+                        field("Write", text: $row.to)
                     } remove: {
-                        store.replacements.remove(at: index)
+                        store.removeRule(id: row.id)
                         store.save()
                     }
                 }
@@ -76,7 +76,7 @@ struct VocabularyView: View {
     private func addReplacement() {
         let from = newFrom.trimmingCharacters(in: .whitespaces)
         guard !from.isEmpty else { return }
-        store.replacements.append(Replacement(from: from, to: newTo))
+        store.addReplacement(from: from, to: newTo)
         store.save()
         newFrom = ""
         newTo = ""

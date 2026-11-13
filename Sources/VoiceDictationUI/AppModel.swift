@@ -131,8 +131,8 @@ public final class AppModel {
             self?.store.setLateCleanup(id: id, cleanedText: cleanedText, seconds: seconds)
         }
         // No outcome, but the engine did transcribe the clip (Ruling T9-2).
-        pipeline.onNothingHeard = { [weak self] clip, endedAt in
-            self?.comparisonRecordings.keep(clip, rawText: "", date: endedAt)
+        pipeline.onNothingHeard = { [weak self] clip, endedAt, engineText in
+            self?.comparisonRecordings.keep(clip, rawText: engineText, date: endedAt)
         }
         listModelsWhenAMenuOpens()
         observeStateForIndicator()

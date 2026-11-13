@@ -28,6 +28,21 @@ final class ComparisonRecordingsTests: XCTestCase {
         XCTAssertEqual(try AudioClip(contentsOf: stem.appendingPathExtension("wav")).samples.count, clip.samples.count)
     }
 
+    /// Ruling T22-3: the archive holds what the engine said, not the text
+    /// Danny's rules made of it.
+    func testKeepsTheEngineTextNotTheReplacedText() throws {
+        preferences.keepComparisonRecordings = true
+        let replaced = DictationOutcome(date: date, clip: clip, rawText: "my GV70", engineText: "my gv seventy",
+                                        text: "my GV70", model: .appleSpeech, transcribeSeconds: 0.2,
+                                        appName: "Notes", status: .pasted)
+
+        recordings().keep(replaced)
+        queue.sync {}
+
+        let stem = directory.appendingPathComponent("1762900000500")
+        XCTAssertEqual(try String(contentsOf: stem.appendingPathExtension("txt"), encoding: .utf8), "my gv seventy")
+    }
+
     func testFailedOutcomeKeepsItsClipWithEmptyText() throws {
         preferences.keepComparisonRecordings = true
 
@@ -68,7 +83,7 @@ final class ComparisonRecordingsTests: XCTestCase {
         let reported = expectation(description: "the clip is reported")
         var endedAt: Date?
         pipeline.onOutcome = { _ in XCTFail("an empty text is not an outcome") }
-        pipeline.onNothingHeard = { clip, date in
+        pipeline.onNothingHeard = { clip, date, _ in
             recordings.keep(clip, rawText: "", date: date)
             endedAt = date
             reported.fulfill()

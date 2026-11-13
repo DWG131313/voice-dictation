@@ -36,13 +36,18 @@ public enum Replacements {
             .sorted { ($0.element.from.count, $1.offset) > ($1.element.from.count, $0.offset) }
             .map(\.element)
 
-        let parts = usable.map { rule in
-            rule.from.split(whereSeparator: \.isWhitespace)
+        // A boundary is asserted only on a side where `from` begins or ends
+        // with a word character, so ".net" and "(tm)" can follow a letter.
+        let wordCharacter = "[\\p{L}\\p{N}\\p{M}_]"
+        let parts = usable.map { rule -> String in
+            let body = rule.from.split(whereSeparator: \.isWhitespace)
                 .map { NSRegularExpression.escapedPattern(for: String($0)) }
                 .joined(separator: "\\s+")
+            let before = rule.from.first.map(isWordCharacter) == true ? "(?<!\(wordCharacter))" : ""
+            let after = rule.from.last.map(isWordCharacter) == true ? "(?!\(wordCharacter))" : ""
+            return "(?:\(before)\(body)\(after))"
         }
-        let wordCharacter = "[\\p{L}\\p{N}_]"
-        let pattern = "(?<!\(wordCharacter))(?:\(parts.joined(separator: "|")))(?!\(wordCharacter))"
+        let pattern = parts.joined(separator: "|")
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return text }
 
         let source = text as NSString
@@ -56,6 +61,13 @@ public enum Replacements {
         }
         result += source.substring(from: position)
         return result
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character == "_" || character.isLetter || character.isNumber
+            || character.unicodeScalars.contains {
+                [.nonspacingMark, .spacingMark, .enclosingMark].contains($0.properties.generalCategory)
+            }
     }
 
     /// The rule that matched `found`: the first, longest, whose `from`

@@ -63,14 +63,65 @@ final class VocabularyStoreTests: XCTestCase {
         XCTAssertEqual(store.words, ["Tailscale"])
     }
 
+    /// A file that is there but is not valid is moved aside, never
+    /// overwritten by a later save.
     @MainActor
-    func testUnreadableFileLoadsEmptyAndStaysInPlace() throws {
+    func testUndecodableFileIsMovedAsideAndSurvivesLaterSaves() throws {
         let url = try fileURL()
-        try Data("not json {".utf8).write(to: url)
+        let bad = Data("{ \"words\": [oops".utf8)
+        try bad.write(to: url)
+
         let store = VocabularyStore(fileURL: url)
         XCTAssertEqual(store.words, [])
         XCTAssertEqual(store.replacements, [])
-        XCTAssertEqual(try Data(contentsOf: url), Data("not json {".utf8), "loading leaves the bad file alone")
+        store.addWord("Tailscale")
+        store.save()
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path).sorted()
+        XCTAssertEqual(names.count, 2)
+        let broken = try XCTUnwrap(names.first { $0.hasPrefix("vocabulary.json.broken-") })
+        XCTAssertEqual(try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent(broken)), bad)
+        XCTAssertEqual(VocabularyStore(fileURL: url).words, ["Tailscale"])
+    }
+
+    /// An error reading the file moves nothing aside, and saves nothing this session.
+    @MainActor
+    func testReadErrorMovesNothingAndNeverSaves() throws {
+        let url = try fileURL()
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)  // unreadable as a file
+        let store = VocabularyStore(fileURL: url)
+        XCTAssertEqual(store.words, [])
+        store.addWord("Tailscale")
+        store.save()
+
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue, "nothing replaced it")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path), ["vocabulary.json"])
+    }
+
+    /// Rows have identities that outlive edits and removals.
+    @MainActor
+    func testRowsKeepTheirIdentityThroughEditsAndRemovals() throws {
+        let store = VocabularyStore(fileURL: try fileURL())
+        store.addWord("one"); store.addWord("two"); store.addWord("three")
+        let ids = store.wordRows.map(\.id)
+        XCTAssertEqual(Set(ids).count, 3)
+
+        store.wordRows[1].text = "tw"            // being edited...
+        store.removeWord(id: ids[0])             // ...while another row goes
+        store.wordRows[0].text = "two!"          // the edited row, now first
+
+        XCTAssertEqual(store.wordRows.map(\.id), [ids[1], ids[2]])
+        XCTAssertEqual(store.words, ["two!", "three"])
+        store.removeWord(id: ids[0])             // already gone: harmless
+        XCTAssertEqual(store.words, ["two!", "three"])
+
+        store.addReplacement(from: "a", to: "b"); store.addReplacement(from: "c", to: "d")
+        let ruleIDs = store.ruleRows.map(\.id)
+        store.removeRule(id: ruleIDs[0])
+        XCTAssertEqual(store.replacements, [Replacement(from: "c", to: "d")])
+        XCTAssertEqual(store.ruleRows.map(\.id), [ruleIDs[1]])
     }
 
     @MainActor

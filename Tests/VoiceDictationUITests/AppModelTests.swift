@@ -193,6 +193,26 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(paster.pasted, ["set up Tailscale"])
     }
 
+    /// Ruling T22-3: the transcript keeps the replaced text as its raw text;
+    /// the comparison archive keeps what the engine said.
+    @MainActor
+    func testComparisonArchiveKeepsTheEngineTextWhileTheTranscriptKeepsTheReplacedText() async throws {
+        preferences.keepComparisonRecordings = true
+        let apple = appleEngine()
+        apple.result = "my gv seventy"
+        let model = makeModel([apple])
+        model.vocabulary.replacements = [Replacement(from: "gv seventy", to: "GV70")]
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+
+        try await waitUntil("the transcript is kept") { !model.store.search("", scope: .all).isEmpty }
+        XCTAssertEqual(try XCTUnwrap(model.store.search("", scope: .all).first).rawText, "my GV70")
+        try await waitUntil("the recording is kept for comparison") { self.comparisonFiles().count == 2 }
+        let text = try XCTUnwrap(comparisonFiles().first { $0.hasSuffix(".txt") })
+        XCTAssertEqual(try String(contentsOf: comparisonDirectory.appendingPathComponent(text), encoding: .utf8), "my gv seventy")
+    }
+
     /// The window's actions use the app's own parts: Copy goes through the
     /// paster dictation uses (a fake here, never the clipboard).
     @MainActor

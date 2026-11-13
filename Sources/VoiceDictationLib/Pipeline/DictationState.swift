@@ -32,6 +32,10 @@ public struct DictationOutcome: Sendable {
     public let clip: AudioClip?
     /// The model's text; empty for a failure.
     public let rawText: String
+    /// What the engine said (after `OutputFilter`), before Danny's
+    /// replacement rules; the comparison archive keeps this (Ruling T22-3).
+    /// Nil where there were no rules to apply: `rawText` then.
+    public let engineText: String?
     public let cleanedText: String?
     /// What was pasted (or left on the clipboard); empty for a failure.
     public var text: String
@@ -46,13 +50,17 @@ public struct DictationOutcome: Sendable {
     /// Why it failed, for `.failed`.
     public let failure: String?
 
-    public init(id: UUID = UUID(), date: Date, clip: AudioClip?, rawText: String, cleanedText: String? = nil,
+    /// What the comparison archive keeps: the engine's own text.
+    public var comparisonText: String { engineText ?? rawText }
+
+    public init(id: UUID = UUID(), date: Date, clip: AudioClip?, rawText: String, engineText: String? = nil, cleanedText: String? = nil,
                 text: String, model: ModelID, transcribeSeconds: Double, cleanupSeconds: Double? = nil,
                 appName: String?, status: Status, failure: String? = nil) {
         self.id = id
         self.date = date
         self.clip = clip
         self.rawText = rawText
+        self.engineText = engineText
         self.cleanedText = cleanedText
         self.text = text
         self.model = model

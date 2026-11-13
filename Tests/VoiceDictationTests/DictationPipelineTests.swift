@@ -76,7 +76,7 @@ final class DictationPipelineTests: XCTestCase {
         let apple = FakeEngine(kind: .appleSpeech)
         let pipeline = makePipeline([apple])
         var heard: [(clip: AudioClip, date: Date)] = []
-        pipeline.onNothingHeard = { clip, date in heard.append((clip, date)) }
+        pipeline.onNothingHeard = { clip, date, _ in heard.append((clip, date)) }
 
         apple.result = ""
         let before = Date()

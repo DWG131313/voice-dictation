@@ -30,11 +30,12 @@ public struct ComparisonRecordings {
         self.queue = queue
     }
 
-    /// Keeps an outcome's recording and its raw text (empty for a failure).
+    /// Keeps an outcome's recording and the engine's own text, before any
+    /// replacement rules (empty for a failure).
     /// Writes nothing for an outcome without a clip.
     public func keep(_ outcome: DictationOutcome) {
         guard let clip = outcome.clip else { return }
-        keep(clip, rawText: outcome.rawText, date: outcome.date)
+        keep(clip, rawText: outcome.comparisonText, date: outcome.date)
     }
 
     /// Writes `<stem>.wav` and `<stem>.txt`, holding the model's raw text

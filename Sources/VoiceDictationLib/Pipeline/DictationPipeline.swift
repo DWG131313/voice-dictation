@@ -83,7 +83,9 @@ public final class DictationPipeline {
     /// clip and when its recording ended. It pastes nothing and has no
     /// outcome, but the engine did transcribe the clip, so the comparison
     /// recordings keep it (Ruling T9-2).
-    @ObservationIgnored public var onNothingHeard: ((_ clip: AudioClip, _ endedAt: Date) -> Void)?
+    /// The third value is the engine's text: empty when it heard nothing, or
+    /// what a replacement rule then emptied.
+    @ObservationIgnored public var onNothingHeard: ((_ clip: AudioClip, _ endedAt: Date, _ engineText: String) -> Void)?
     /// Called at most once for a dictation whose raw text pasted at the time
     /// limit, when its cleanup comes back afterwards and the guard accepts
     /// it: with the outcome's id, the cleaned text and the cleanup's seconds.
@@ -393,11 +395,17 @@ public final class DictationPipeline {
         case .success(let result):
             guard !result.text.isEmpty else {
                 Log.info("[PIPELINE] \(result.model.storageKey) heard nothing; nothing pasted")
-                onNothingHeard?(dictation.clip, dictation.date)
+                onNothingHeard?(dictation.clip, dictation.date, "")
                 return
             }
             // The service's text has been through OutputFilter (Ruling P3).
             let rawText = applyingReplacements(to: result.text)
+            // A rule can empty the text: then there is nothing to paste or keep.
+            guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                Log.info("[PIPELINE] \(result.model.storageKey): replacements left no text; nothing pasted")
+                onNothingHeard?(dictation.clip, dictation.date, result.text)
+                return
+            }
             var cleanedText: String?
             var cleanupSeconds: Double?
             var stillCleaning: Task<CleanerRun, Error>?
@@ -426,7 +434,7 @@ public final class DictationPipeline {
             lastText = text
             onOutcome?(DictationOutcome(
                 id: dictation.id, date: dictation.date, clip: dictation.clip,
-                rawText: rawText, cleanedText: cleanedText, text: text, model: result.model,
+                rawText: rawText, engineText: result.text, cleanedText: cleanedText, text: text, model: result.model,
                 transcribeSeconds: result.elapsed, cleanupSeconds: cleanupSeconds,
                 appName: appName, status: pasted ? .pasted : .copied
             ))
