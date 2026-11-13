@@ -300,6 +300,25 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertNil(broken.notice)
     }
 
+    /// Task 23: the empty list names the key that dictates, as the sidebar
+    /// footer does.
+    @MainActor
+    func testTheEmptyListNamesTheChosenHotkey() {
+        let library = LibraryModel(store: memoryStore(), service: TranscriptionService(engines: [], selected: .appleSpeech),
+                                   paster: FakePaster(), hotkey: { .rightCommand }, system: FakeApps().system)
+        library.windowOpened()
+        XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Right Command and speak.")
+    }
+
+    /// The sidebar's footer says which key dictates and, with hands-free
+    /// on, how to lock.
+    func testTheSidebarFooterNamesTheHotkeyAndTheLock() {
+        XCTAssertEqual(Sidebar.hotkeyReminder(for: .globe, handsFree: false), "Hold Globe to dictate")
+        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightOption, handsFree: false), "Hold Right Option to dictate")
+        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightCommand, handsFree: true),
+                       "Hold Right Command to dictate · double-tap to lock")
+    }
+
     /// Ruling T18-1: a store started anew after a damaged one was moved aside
     /// works as usual; its message shows as a notice above the list.
     @MainActor

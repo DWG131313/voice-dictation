@@ -26,7 +26,8 @@ public struct MainWindow: View {
     public var body: some View {
         let library = model.library
         HStack(spacing: 0) {
-            Sidebar(library: library, models: model.models, selectedModel: model.selectedModel)
+            Sidebar(library: library, models: model.models, selectedModel: model.selectedModel,
+                    hotkey: model.hotkey, handsFree: model.handsFreeEnabled)
                 .frame(width: Self.sidebarWidth)
             column
             if library.section.scope != nil {

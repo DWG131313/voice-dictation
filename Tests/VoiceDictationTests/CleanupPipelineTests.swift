@@ -620,9 +620,12 @@ final class CleanupPipelineTests: XCTestCase {
     private func makePipelineAndService(_ engine: FakeEngine, replacements: @escaping () -> [Replacement] = { [] })
         -> (pipeline: DictationPipeline, service: TranscriptionService) {
         let service = TranscriptionService(engines: [engine], selected: .appleSpeech)
+        // Paste last's source stands in for the store: the newest outcome
+        // with text, as `TranscriptStore.latest` skips a failed one.
         let pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster, cleaner: cleaner,
                                          replacements: replacements, vocabulary: { [] },
-                                         cleanupEnabled: { [weak self] in self?.cleanupOn ?? false })
+                                         cleanupEnabled: { [weak self] in self?.cleanupOn ?? false },
+                                         latestText: { [weak self] in self?.outcomes.last { !$0.text.isEmpty }?.text })
         pipeline.onOutcome = { [weak self] outcome in self?.outcomes.append(outcome) }
         pipeline.onLateCleanup = { [weak self] id, text, seconds in self?.lateCleanups.append((id, text, seconds)) }
         return (pipeline, service)

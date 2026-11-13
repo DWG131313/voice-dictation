@@ -108,6 +108,8 @@ public final class LibraryModel {
     @ObservationIgnored private let vocabulary: () -> [String]
     /// Danny's rules, which a re-transcription's text gets as a dictation's does.
     @ObservationIgnored private let replacements: () -> [Replacement]
+    /// The key that dictates, which the empty list names.
+    @ObservationIgnored private let hotkey: () -> HotkeyChoice
     /// Which apps are in front, and hiding this one, for Paste again.
     @ObservationIgnored private let system: PasteAgainSystem
     /// How long after the last keystroke an edit saves itself.
@@ -124,6 +126,7 @@ public final class LibraryModel {
     /// pass their own.
     init(store: TranscriptStore, service: TranscriptionService, paster: Pasting,
          vocabulary: @escaping () -> [String] = { [] }, replacements: @escaping () -> [Replacement] = { [] },
+         hotkey: @escaping () -> HotkeyChoice = { .globe },
          system: PasteAgainSystem,
          editSaveDelay: Duration = .milliseconds(500)) {
         self.store = store
@@ -131,6 +134,7 @@ public final class LibraryModel {
         self.paster = paster
         self.vocabulary = vocabulary
         self.replacements = replacements
+        self.hotkey = hotkey
         self.system = system
         self.editSaveDelay = editSaveDelay
     }
@@ -582,7 +586,7 @@ public final class LibraryModel {
         switch section {
         case .today where anyKept: return "Nothing dictated today."
         case .pinned where anyKept: return "No pinned transcripts."
-        default: return "Nothing dictated yet. Hold Globe and speak."
+        default: return "Nothing dictated yet. Hold \(hotkey().displayName) and speak."
         }
     }
 

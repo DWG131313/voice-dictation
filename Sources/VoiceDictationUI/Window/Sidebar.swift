@@ -10,6 +10,9 @@ struct Sidebar: View {
     /// As `AppModel` last listed them.
     let models: [ModelDescriptor]
     let selectedModel: ModelID?
+    /// The key that dictates, and whether a double tap locks it, as saved.
+    let hotkey: HotkeyChoice
+    let handsFree: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -69,7 +72,7 @@ struct Sidebar: View {
     }
 
     /// The model dictation uses (once the models are listed) and how to
-    /// dictate. Task 23 lets the hotkey change.
+    /// dictate with the chosen key.
     private var footer: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
             if let selectedModel {
@@ -77,7 +80,7 @@ struct Sidebar: View {
                     .font(Theme.Font.ui(12, medium: true))
                     .foregroundStyle(Theme.Color.text)
             }
-            Text("Hold Globe to dictate")
+            Text(Self.hotkeyReminder(for: hotkey, handsFree: handsFree))
                 .font(Theme.Font.ui(12))
                 .foregroundStyle(Theme.Color.textMuted)
         }
@@ -85,5 +88,12 @@ struct Sidebar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Hairline() }
         .accessibilityElement(children: .combine)
+    }
+
+    /// "Hold Right Option to dictate", and with hands-free on
+    /// "· double-tap to lock" after it.
+    static func hotkeyReminder(for hotkey: HotkeyChoice, handsFree: Bool) -> String {
+        let hold = "Hold \(hotkey.displayName) to dictate"
+        return handsFree ? hold + " · double-tap to lock" : hold
     }
 }

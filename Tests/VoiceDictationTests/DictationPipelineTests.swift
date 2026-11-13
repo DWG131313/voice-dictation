@@ -509,38 +509,77 @@ final class DictationPipelineTests: XCTestCase {
 
     // MARK: - Paste last (Ruling P4)
 
+    /// Paste last pastes what its source says is the latest text, which the
+    /// app points at the store's latest transcript, so an edit made in the
+    /// window is what pastes. The pipeline keeps no text of its own: a
+    /// dictation it just pasted changes nothing until the source has it.
+    /// With no text there is nothing to paste, and the menu item is off.
     @MainActor
-    func testPasteLastPastesTheLastDictationAgain() async throws {
+    func testPasteLastPastesTheLatestTextItIsGiven() async throws {
+        var latest: String?
+        let pipeline = makePipeline([FakeEngine(kind: .appleSpeech)], latestText: { latest })
+        XCTAssertFalse(pipeline.canPasteLast)
+        pipeline.pasteLast()
+        XCTAssertEqual(paster.pasted, [], "nothing to paste")
+
+        latest = "Edited in the window."
+        XCTAssertTrue(pipeline.canPasteLast)
+        pipeline.pasteLast()
+        XCTAssertEqual(paster.pasted, ["Edited in the window."])
+
+        dictate(clip, on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+        pipeline.pasteLast()
+
+        XCTAssertEqual(paster.pasted, ["Edited in the window.", "hello", "Edited in the window."])
+        XCTAssertEqual(outcomes.count, 1, "pasting again is not a dictation")
+        latest = ""
+        XCTAssertFalse(pipeline.canPasteLast, "an empty text is nothing to paste")
+    }
+
+    // MARK: - A tap with hands-free on (Task 23)
+
+    /// A tap is no dictation: the recording the press started is thrown
+    /// away and leaves no trace, and a dictation made before it still pastes.
+    @MainActor
+    func testDiscardTapThrowsTheRecordingAwayAndNothingElse() async throws {
         let apple = FakeEngine(kind: .appleSpeech)
+        apple.isHeld = true
         let pipeline = makePipeline([apple])
-        pipeline.pasteLast()
-        XCTAssertEqual(paster.pasted, [], "nothing dictated yet")
-
-        apple.result = "First one."
         dictate(clip, on: pipeline)
-        try await waitUntil("the first finishes") { outcomes.count == 1 }
-        apple.result = "Second one."
-        dictate(clip, on: pipeline)
-        try await waitUntil("the second finishes") { outcomes.count == 2 }
-        pipeline.pasteLast()
+        try await waitUntil("the earlier dictation reaches the engine") { apple.transcribedClips.count == 1 }
 
-        XCTAssertEqual(paster.pasted, ["First one.", "Second one.", "Second one."])
-        XCTAssertEqual(outcomes.count, 2, "pasting again is not a dictation")
+        pipeline.hotkeyDown()
+        recorder.nextClip = clip
+        pipeline.discardTap()
+        XCTAssertEqual(recorder.cancelCount, 1)
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertEqual(pipeline.state, .transcribing)
+        apple.isHeld = false
+        try await waitUntil("the earlier dictation finishes") { outcomes.count == 1 }
+
+        XCTAssertEqual(paster.pasted, ["hello"])
+        XCTAssertEqual(apple.transcribedClips.count, 1, "the tap's recording reached the engine")
+        XCTAssertEqual(pipeline.dictationsInFlight, 0)
+        XCTAssertEqual(pipeline.state, .idle)
     }
 
     // MARK: - Helpers
 
     @MainActor
-    private func makePipeline(_ engines: [FakeEngine], selected: ModelID = .appleSpeech) -> DictationPipeline {
-        makePipelineAndService(engines, selected: selected).pipeline
+    private func makePipeline(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
+                              latestText: @escaping () -> String? = { nil }) -> DictationPipeline {
+        makePipelineAndService(engines, selected: selected, latestText: latestText).pipeline
     }
 
     @MainActor
-    private func makePipelineAndService(_ engines: [FakeEngine], selected: ModelID = .appleSpeech)
+    private func makePipelineAndService(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
+                                        latestText: @escaping () -> String? = { nil })
         -> (pipeline: DictationPipeline, service: TranscriptionService) {
         let service = TranscriptionService(engines: engines, selected: selected)
         let pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
-                                         cleaner: nil, replacements: { [] }, vocabulary: { [] })
+                                         cleaner: nil, replacements: { [] }, vocabulary: { [] },
+                                         latestText: latestText)
         pipeline.onOutcome = { [weak self] outcome in self?.outcomes.append(outcome) }
         return (pipeline, service)
     }

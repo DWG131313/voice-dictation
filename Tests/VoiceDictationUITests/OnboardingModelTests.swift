@@ -99,6 +99,31 @@ final class OnboardingModelTests: XCTestCase {
         XCTAssertEqual(opened.map(\.absoluteString), ["x-apple.systempreferences:com.apple.Keyboard-Settings.extension"])
     }
 
+    /// Ruling P7 (the test Task 14 left to Task 23): the Globe key step
+    /// applies only while the hotkey is Globe. With a right-hand key nothing
+    /// in Keyboard settings needs changing, so the step is left out, and a
+    /// Globe key that still shows emoji keeps nothing from being complete.
+    func testGlobeKeyStepAppliesOnlyWhenTheHotkeyIsGlobe() {
+        let model = makeModel()
+        model.recordOutcome(pasted(.pasted))
+        globeKeyUsage = 2
+        model.refresh()
+        XCTAssertEqual(model.steps.map(\.id), [.microphone, .accessibility, .globeKey, .speechModel, .tryIt])
+        XCTAssertFalse(model.isComplete)
+        XCTAssertTrue(model.shouldShowAtLaunch(firstLaunch: false))
+
+        for choice in [HotkeyChoice.rightOption, .rightCommand] {
+            preferences.hotkey = choice
+            XCTAssertEqual(model.steps.map(\.id), [.microphone, .accessibility, .speechModel, .tryIt], "\(choice)")
+            XCTAssertTrue(model.isComplete, "\(choice)")
+            XCTAssertFalse(model.shouldShowAtLaunch(firstLaunch: false), "\(choice)")
+        }
+
+        preferences.hotkey = .globe
+        XCTAssertEqual(model.state(of: .globeKey), .needed, "back on Globe, the step applies again")
+        XCTAssertFalse(model.isComplete)
+    }
+
     // MARK: - Speech model
 
     func testSpeechModelStepNeededWhenAssetsMissing() async throws {

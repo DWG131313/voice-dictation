@@ -31,9 +31,12 @@ public struct MenuBarContent: View {
             NSApp.activate()
             openWindow(id: AppModel.mainWindowID)
         }
+        // The store's latest transcript with text (Ruling P4); off until one
+        // is kept. Control-Option-V does the same when its shortcut is on.
         Button("Paste Last Transcript") {
             model.pipeline.pasteLast()
         }
+        .disabled(!model.pipeline.canPasteLast)
         Divider()
         modelMenu
         Divider()

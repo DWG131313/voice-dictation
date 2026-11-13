@@ -94,14 +94,19 @@ public final class OnboardingModel {
 
     // MARK: - Steps
 
-    public var steps: [Step] { Step.ID.allCases.map(step) }
+    /// The steps that apply, in order. The Globe key step applies only while
+    /// the hotkey is Globe (ruling P7): a right-hand key needs nothing changed
+    /// in Keyboard settings.
+    public var steps: [Step] { Step.ID.allCases.filter(applies).map(step) }
 
     public var isComplete: Bool { steps.allSatisfy { $0.state == .done } }
 
     func state(of id: Step.ID) -> Step.State { step(id).state }
 
-    /// The Globe key step always applies for now: the hotkey is always Globe
-    /// until Task 23 adds the choice (ruling P7).
+    private func applies(_ id: Step.ID) -> Bool {
+        id != .globeKey || preferences.hotkey == .globe
+    }
+
     func step(_ id: Step.ID) -> Step {
         switch id {
         case .microphone:

@@ -77,7 +77,10 @@ public final class DictationPipeline {
     public private(set) var state: DictationState = .idle
     /// The latest input peak while recording (0...1), for the indicator.
     public private(set) var level: Float = 0
-    /// Called once for every finished dictation; a cancelled one has none.
+    /// Called once for every finished dictation: pasted, left on the
+    /// clipboard, failed or skipped. A cancelled one has none, and one whose
+    /// text came back empty, or that replacements emptied, goes to
+    /// `onNothingHeard` instead.
     @ObservationIgnored public var onOutcome: ((DictationOutcome) -> Void)?
     /// Called once for every dictation whose text came back empty, with its
     /// clip and when its recording ended. It pastes nothing and has no
@@ -115,6 +118,9 @@ public final class DictationPipeline {
     /// Read for each dictation: Danny's replacement rules and his words.
     @ObservationIgnored private let replacements: () -> [Replacement]
     @ObservationIgnored private let vocabulary: () -> [String]
+    /// Read at each Paste last: the text to paste again (Ruling P4). The app
+    /// points it at the store's latest transcript; the pipeline owns no store.
+    @ObservationIgnored private let latestText: () -> String?
 
     /// The dictation being recorded, from key-down until its recording ends.
     @ObservationIgnored private var capture: Capture?
@@ -134,12 +140,11 @@ public final class DictationPipeline {
     @ObservationIgnored private var errorTimer: Task<Void, Never>?
     /// Models being chosen, by name, latest last.
     @ObservationIgnored private var modelsPreparing: [String] = []
-    /// What `pasteLast` pastes: the text of the last dictation that had one.
-    @ObservationIgnored private var lastText: String?
 
+    /// `latestText` is what Paste last pastes; nil, the default, is nothing.
     public init(recorder: Recording, service: TranscriptionService, paster: Pasting,
                 cleaner: TextCleaner?, replacements: @escaping () -> [Replacement], vocabulary: @escaping () -> [String],
-                cleanupEnabled: @escaping () -> Bool = { true }) {
+                cleanupEnabled: @escaping () -> Bool = { true }, latestText: @escaping () -> String? = { nil }) {
         self.recorder = recorder
         self.service = service
         self.paster = paster
@@ -147,6 +152,7 @@ public final class DictationPipeline {
         self.cleanupEnabled = cleanupEnabled
         self.replacements = replacements
         self.vocabulary = vocabulary
+        self.latestText = latestText
         recorder.delegate = self
         recorder.onLevel = { [weak self] level in
             guard let self, self.capture != nil else { return }
@@ -194,18 +200,31 @@ public final class DictationPipeline {
         recorder.stopRecording()
     }
 
-    /// A key pressed while the hotkey is held (Globe used as a modifier, or
-    /// Escape): cancels this hold's dictation and nothing else. That is the
+    /// The hotkey's own cancel, for this hold only: a key pressed while the
+    /// hotkey is held, the hotkey used as a modifier (Globe+Right Arrow is
+    /// End). It cancels this hold's dictation and nothing else. That is the
     /// recording under way or, when the recorder ended it by itself while
     /// the key stayed down (five minutes, or the input changed), the
     /// dictation it became, wherever that is in line, or while it is cleaned
     /// up. When the recorder failed to start or threw the recording away, the
-    /// hold has no dictation and nothing is cancelled. Unlike `cancel()`, it
-    /// never touches a dictation made before this hold. The cancelled
-    /// dictation leaves no trace, as with `cancel()`.
+    /// hold has no dictation and nothing is cancelled. Unlike `cancel()`,
+    /// Escape's cancel, it never touches a dictation made before this hold.
+    /// The cancelled dictation leaves no trace, as with `cancel()`.
     public func cancelHold() {
+        cancelThisHold(because: "a key was pressed while the hotkey was held")
+    }
+
+    /// The hotkey was tapped, not held, with hands-free on: maybe the first
+    /// tap of a double tap, never a dictation. The recording the press
+    /// started is thrown away as `cancelHold()` would, leaving no trace, and
+    /// nothing made before it is touched.
+    public func discardTap() {
+        cancelThisHold(because: "the hotkey was tapped, not held")
+    }
+
+    private func cancelThisHold(because reason: String) {
         if capture != nil {
-            Log.info("[PIPELINE] Cancelled the recording: a key was pressed while the hotkey was held")
+            Log.info("[PIPELINE] Cancelled the recording: \(reason)")
             cancelCapture()
             return
         }
@@ -222,15 +241,17 @@ public final class DictationPipeline {
         settle()
     }
 
-    /// Cancels what the pipeline is doing, not just the current hold's
-    /// dictation (Task 23's Escape while working). While recording, cancels
-    /// the recording only, so dictations already in line still paste.
-    /// Otherwise cancels the dictation being cleaned up and every dictation
-    /// in line. The hotkey uses `cancelHold()` instead, which never reaches a
-    /// dictation made before the current hold. A cancelled dictation pastes
-    /// nothing, reports no outcome, not even a late cleanup, and leaves no
-    /// audio behind. A dictation already pasted is not cancelled: its late
-    /// cleanup, if any, is still kept.
+    /// Escape's cancel (Task 23): Escape while the app is recording,
+    /// transcribing or cleaning up, hands-free locked or not. It cancels what
+    /// the pipeline is doing, not just the current hold's dictation. While
+    /// recording, it cancels the recording only, so dictations already in
+    /// line still paste. Otherwise it cancels the dictation being cleaned up
+    /// and every dictation in line. A key pressed with the hotkey held uses
+    /// `cancelHold()` instead, which never reaches a dictation made before
+    /// the current hold. A cancelled dictation pastes nothing, reports no
+    /// outcome, not even a late cleanup, and leaves no audio behind. A
+    /// dictation already pasted is not cancelled: its late cleanup, if any,
+    /// is still kept.
     public func cancel() {
         if capture != nil {
             cancelCapture()
@@ -266,16 +287,26 @@ public final class DictationPipeline {
         settle()
     }
 
-    /// Pastes the text of the last dictation again (Ruling P4: kept in
-    /// memory; Task 23 points this at the transcript store).
+    /// Pastes the latest text again, as `latestText` gives it (Ruling P4):
+    /// the store's latest transcript, as it reads now, edits included, and
+    /// never a failed dictation's empty text. From the menu and from
+    /// Control-Option-V. It is no dictation: nothing is reported.
     public func pasteLast() {
-        guard let text = lastText else {
-            Log.info("[PIPELINE] Paste last: nothing dictated yet")
+        guard let text = textToPasteLast else {
+            Log.info("[PIPELINE] Paste last: nothing to paste")
             return
         }
         if !paster.paste(text: text) {
             Log.info("[PIPELINE] Paste last: could not paste, text left on the clipboard")
         }
+    }
+
+    /// Whether `pasteLast` has a text to paste; the menu item is off without.
+    public var canPasteLast: Bool { textToPasteLast != nil }
+
+    private var textToPasteLast: String? {
+        guard let text = latestText(), !text.isEmpty else { return nil }
+        return text
     }
 
     // MARK: - Choosing a model
@@ -431,7 +462,6 @@ public final class DictationPipeline {
             Log.info("[TIMING] \(timer.summary)")
             let cleanup = cleanupSeconds.map { ", cleaned up in \(String(format: "%.2f", $0)) s" } ?? ""
             Log.info("[PIPELINE] \(pasted ? "Pasted" : "Could not paste, left on the clipboard:") \(text.count) chars from \(result.model.storageKey) in \(String(format: "%.2f", result.elapsed)) s\(cleanup)")
-            lastText = text
             onOutcome?(DictationOutcome(
                 id: dictation.id, date: dictation.date, clip: dictation.clip,
                 rawText: rawText, engineText: result.text, cleanedText: cleanedText, text: text, model: result.model,

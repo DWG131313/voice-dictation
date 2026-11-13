@@ -33,6 +33,11 @@ public final class AppModel {
     /// A short note for a model's row in the Models section: why its last
     /// download, delete or switch failed. Cleared when the next one starts.
     public private(set) var modelMessages: [ModelID: String] = [:]
+    /// The key that dictates, as saved, which the window names. The event
+    /// tap took it when it started (`makeHotkeyStrategy`).
+    public var hotkey: HotkeyChoice { preferences.hotkey }
+    /// Whether a double tap of the hotkey locks a recording, as saved.
+    public var handsFreeEnabled: Bool { preferences.handsFreeEnabled }
     /// The downloads under way, which Cancel cancels.
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
     /// The state each row's note was made in.
@@ -105,14 +110,18 @@ public final class AppModel {
         // One vocabulary for dictation and re-transcription alike (Ruling T22-2).
         let vocabulary = VocabularyStore(fileURL: dataDirectory.appendingPathComponent("vocabulary.json"))
         self.vocabulary = vocabulary
+        // Paste last pastes the store's latest transcript, edits included
+        // (Ruling P4); the pipeline owns no store.
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
                                           cleaner: cleaner, replacements: { vocabulary.activeReplacements },
                                           vocabulary: { vocabulary.activeWords },
-                                          cleanupEnabled: { preferences.cleanupEnabled })
+                                          cleanupEnabled: { preferences.cleanupEnabled },
+                                          latestText: { store.latest?.text })
         self.store = store
         self.library = LibraryModel(store: store, service: service, paster: paster,
                                     vocabulary: { vocabulary.activeWords },
                                     replacements: { vocabulary.activeReplacements },
+                                    hotkey: { preferences.hotkey },
                                     system: pasteAgain ?? .live())
         self.permissions = PermissionManager()
         // Tests pass a fake: the live one reads the real HIToolbox settings.
@@ -140,8 +149,8 @@ public final class AppModel {
     }
 
     /// Starts the app; called once, when launching has finished. Imports the
-    /// old history, asks for missing permissions, arms the Globe key and
-    /// loads the model dictation uses and the cleanup model.
+    /// old history, asks for missing permissions, arms the hotkey and loads
+    /// the model dictation uses and the cleanup model.
     public func start() {
         Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
 
@@ -470,9 +479,22 @@ public final class AppModel {
             Log.info("[START] Waiting for Accessibility")
             return
         }
-        hotkeys.start()
+        let strategy = makeHotkeyStrategy()
+        hotkeys.start(strategy: strategy)
         isListening = true
-        Log.info("[START] Listening for Globe key")
+        Log.info("[START] Listening for \(strategy.choice.displayName) key")
+    }
+
+    /// The hotkey's event tap, as the preferences have it. The key is read
+    /// now, so another choice takes a new tap (`HotkeyManager.start` again);
+    /// hands-free and the Paste last shortcut are read at each press, and
+    /// what the pipeline is doing at each key. No tap exists until it starts.
+    func makeHotkeyStrategy() -> ModifierKeyStrategy {
+        let preferences = preferences
+        return ModifierKeyStrategy(choice: preferences.hotkey,
+                                   handsFree: { preferences.handsFreeEnabled },
+                                   pasteLastShortcut: { preferences.pasteLastHotkeyEnabled },
+                                   appState: { [weak self] in self?.pipeline.state ?? .idle })
     }
 
     private func stopListening() {
@@ -511,10 +533,24 @@ extension AppModel: @preconcurrency HotkeyDelegate {
         pipeline.hotkeyUp()
     }
 
-    /// A key pressed with the hotkey held cancels this hold's dictation and
-    /// nothing else; `cancel()` is Task 23's cancel-everything.
+    /// The hotkey's own cancel: a key pressed with the hotkey held cancels
+    /// this hold's dictation and nothing else.
     public func hotkeyCancelled() {
         pipeline.cancelHold()
+    }
+
+    /// A lone tap with hands-free on is no dictation.
+    public func hotkeyDidTap() {
+        pipeline.discardTap()
+    }
+
+    /// Escape's cancel: everything the pipeline is doing, not just a hold.
+    public func escapePressedWhileWorking() {
+        pipeline.cancel()
+    }
+
+    public func pasteLastShortcutPressed() {
+        pipeline.pasteLast()
     }
 }
 

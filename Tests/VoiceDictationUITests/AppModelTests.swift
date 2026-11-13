@@ -331,6 +331,112 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.store.search("", scope: .all).count, 1)
     }
 
+    // MARK: - The hotkey (Task 23)
+
+    /// Escape while the app works is Escape's cancel, `cancel()`: unlike the
+    /// hotkey's own cancel it reaches the dictation being transcribed, which
+    /// then leaves no trace.
+    @MainActor
+    func testEscapeWhileWorkingCancelsTheDictationInLine() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let model = makeModel([apple])
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the dictation is being transcribed") { apple.calls.contains(.transcribe(.appleSpeech)) }
+
+        model.escapePressedWhileWorking()
+        XCTAssertEqual(model.pipeline.state, .idle)
+        apple.isHeld = false
+        // Time for a stray paste or transcript to show up.
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(paster.pasted, [])
+        XCTAssertTrue(model.store.search("", scope: .all).isEmpty, "a cancelled dictation is not kept")
+    }
+
+    /// A lone tap with hands-free on is no dictation: its recording is
+    /// thrown away, and nothing is pasted or kept.
+    @MainActor
+    func testATapThrowsItsRecordingAway() async throws {
+        let model = makeModel([appleEngine()])
+        model.hotkeyDidStartPress()
+        XCTAssertTrue(recorder.isRecording)
+
+        model.hotkeyDidTap()
+
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertEqual(model.pipeline.state, .idle)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(paster.pasted, [])
+        XCTAssertTrue(model.store.search("", scope: .all).isEmpty)
+    }
+
+    /// Control-Option-V pastes the latest transcript, as the menu item does.
+    @MainActor
+    func testThePasteLastShortcutPastesTheLatestTranscript() async throws {
+        let model = makeModel([appleEngine()])
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the transcript is kept") { model.store.latest != nil }
+
+        model.pasteLastShortcutPressed()
+
+        XCTAssertEqual(paster.pasted, ["Hello there.", "Hello there."])
+    }
+
+    /// The tap the app arms follows the preferences: the key saved when it is
+    /// made, and hands-free and the Paste last shortcut as they are at each
+    /// press. It reads what the pipeline is doing at each key. Making one
+    /// creates no event tap; only `start()` does.
+    @MainActor
+    func testTheHotkeyFollowsThePreferences() {
+        preferences.hotkey = .rightCommand
+        let model = makeModel([appleEngine()])
+
+        let strategy = model.makeHotkeyStrategy()
+
+        XCTAssertEqual(strategy.choice, .rightCommand)
+        XCTAssertFalse(strategy.handsFree())
+        XCTAssertFalse(strategy.pasteLastShortcut())
+        preferences.handsFreeEnabled = true
+        preferences.pasteLastHotkeyEnabled = true
+        XCTAssertTrue(strategy.handsFree())
+        XCTAssertTrue(strategy.pasteLastShortcut())
+        XCTAssertEqual(strategy.appState(), .idle)
+        model.pipeline.missingPermission = "Microphone"
+        XCTAssertEqual(strategy.appState(), .needsPermission("Microphone"))
+    }
+
+    // MARK: - Paste last (Ruling P4)
+
+    /// Paste last pastes the store's latest transcript as it reads now: an
+    /// edit made in the window, not the text that was pasted, and never a
+    /// newer failed dictation, which has no text. With nothing kept there is
+    /// nothing to paste, and the menu item is off.
+    @MainActor
+    func testPasteLastUsesLatestTranscript() async throws {
+        let model = makeModel([appleEngine()])
+        XCTAssertFalse(model.pipeline.canPasteLast)
+        model.pipeline.pasteLast()
+        XCTAssertEqual(paster.pasted, [], "nothing kept yet")
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the transcript is kept") { model.store.latest != nil }
+        let transcript = try XCTUnwrap(model.store.latest)
+        model.store.updateText(transcript, "Hello there, Danny.")
+        XCTAssertNotNil(model.store.add(DictationOutcome(
+            date: Date().addingTimeInterval(60), clip: nil, rawText: "", text: "", model: .appleSpeech,
+            transcribeSeconds: 0, appName: "TextEdit", status: .failed, failure: "Apple Speech language files are not installed")))
+        XCTAssertTrue(model.pipeline.canPasteLast)
+
+        model.pipeline.pasteLast()
+
+        XCTAssertEqual(paster.pasted, ["Hello there.", "Hello there, Danny."])
+        XCTAssertEqual(model.store.search("", scope: .all).count, 2, "pasting again keeps nothing new")
+    }
+
     // MARK: - The indicator
 
     /// "Listening" while the key is held, "Transcribing" after, then gone

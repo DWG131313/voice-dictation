@@ -30,6 +30,9 @@ public class PreferencesManager {
         static let hasLaunchedBefore = "hasLaunchedBefore"
         static let onboardingTriedIt = "onboardingTriedIt"
         static let cleanupEnabled = "cleanupEnabled"
+        static let hotkey = "hotkey"
+        static let handsFreeEnabled = "handsFreeEnabled"
+        static let pasteLastHotkeyEnabled = "pasteLastHotkeyEnabled"
     }
 
     // MARK: - Available Models
@@ -163,6 +166,28 @@ public class PreferencesManager {
             return defaults.bool(forKey: Keys.cleanupEnabled)
         }
         set { defaults.set(newValue, forKey: Keys.cleanupEnabled) }
+    }
+
+    /// The key held to dictate (Task 23), saved by its raw value. Globe
+    /// until another is chosen; a saved value this version does not know
+    /// reads as Globe. The event tap reads it when it starts.
+    public var hotkey: HotkeyChoice {
+        get { defaults.string(forKey: Keys.hotkey).flatMap(HotkeyChoice.init(rawValue:)) ?? .globe }
+        set { defaults.set(newValue.rawValue, forKey: Keys.hotkey) }
+    }
+
+    /// Hands-free lock: a quick double tap of the hotkey records until the
+    /// next press (Task 23). Off until switched on; read at each press.
+    public var handsFreeEnabled: Bool {
+        get { defaults.bool(forKey: Keys.handsFreeEnabled) }
+        set { defaults.set(newValue, forKey: Keys.handsFreeEnabled) }
+    }
+
+    /// Control-Option-V pastes the last transcript, as the menu's Paste Last
+    /// Transcript does (Task 23). Off until switched on; read at each key.
+    public var pasteLastHotkeyEnabled: Bool {
+        get { defaults.bool(forKey: Keys.pasteLastHotkeyEnabled) }
+        set { defaults.set(newValue, forKey: Keys.pasteLastHotkeyEnabled) }
     }
 
     /// The app uses `shared`, on the standard defaults.
