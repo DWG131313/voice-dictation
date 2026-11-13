@@ -308,7 +308,7 @@ final class WhisperCppEngineTests: XCTestCase {
         case .success(let text):
             XCTFail("finished instead of timing out: \(text.prefix(40))")
         case .failure(let error):
-            // The CLI path's words for a timeout (WhisperCLIEngine).
+            // The words the app has always used for a timeout, whisper-cli's.
             XCTAssertEqual(error as? TranscriptionError,
                            .failed("Transcription timed out — try a shorter recording or a smaller model"))
         }
@@ -350,13 +350,170 @@ final class WhisperCppEngineTests: XCTestCase {
         _ = await preparing.result
     }
 
-    func testDownloadWaitsForTask27A() async {
+    // MARK: - Downloads (a fake fetcher, in the temporary folder only)
+
+    func testDownloadShowsProgressThenReady() async throws {
+        let gate = AsyncStream.makeStream(of: Void.self)
+        defer { gate.continuation.finish() }
+        let engine = WhisperCppEngine(directory: directory, fetcher: { model, folder, progress in
+            progress(0.5)
+            for await _ in gate.stream {}
+            try Self.makeSparseFile(folder.appendingPathComponent(model.fileName), bytes: UInt64(model.bytes))
+        })
+        let reported = Values()
+
+        let download = Task { try await engine.download(base) { reported.append($0) } }
+        try await waitUntil(engine, shows: base, as: .downloading(0.5))
+        let during = await engine.models().first { $0.id == base }
+        XCTAssertEqual(during?.state, .downloading(0.5))
+        XCTAssertNil(during?.bytesOnDisk)
+
+        gate.continuation.finish()
+        try await download.value
+
+        let after = await engine.models().first { $0.id == base }
+        XCTAssertEqual(after?.state, .ready)
+        XCTAssertEqual(after?.bytesOnDisk, 147_964_211)
+        XCTAssertEqual(reported.all, [0.5, 1])
+    }
+
+    func testDownloadOfAPresentModelReturnsAtOnce() async throws {
+        try makeFile("ggml-base.en.bin", bytes: 147_964_211)
+        let fetches = Calls()
+        let engine = WhisperCppEngine(directory: directory, fetcher: { _, _, _ in fetches.add() })
+        let reported = Values()
+
+        try await engine.download(base) { reported.append($0) }
+
+        XCTAssertEqual(reported.all, [1])
+        XCTAssertEqual(fetches.value, 0)
+    }
+
+    func testDeleteWhileDownloadingIsRefused() async throws {
+        let gate = AsyncStream.makeStream(of: Void.self)
+        defer { gate.continuation.finish() }
+        // The whole file is there before the download has finished.
+        let engine = WhisperCppEngine(directory: directory, fetcher: { model, folder, progress in
+            try Self.makeSparseFile(folder.appendingPathComponent(model.fileName), bytes: UInt64(model.bytes))
+            progress(0.5)
+            for await _ in gate.stream {}
+        })
+        let download = Task { try await engine.download(base) { _ in } }
+        try await waitUntil(engine, shows: base, as: .downloading(0.5))
+
         do {
-            try await WhisperCppEngine(directory: directory).download(base) { _ in }
+            try await engine.delete(base)
+            XCTFail("delete should be refused while base.en downloads")
+        } catch {
+            XCTAssertEqual(error as? TranscriptionError, .failed("whisper.cpp base.en is still downloading"))
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("ggml-base.en.bin").path))
+        gate.continuation.finish()
+        try await download.value
+    }
+
+    /// A load must not start under a download, which may still fail and
+    /// leave no file.
+    func testPrepareWhileDownloadingIsRefused() async throws {
+        let gate = AsyncStream.makeStream(of: Void.self)
+        defer { gate.continuation.finish() }
+        let loads = Calls()
+        let engine = WhisperCppEngine(directory: directory, loader: { _ in
+            loads.add()
+            return nil
+        }, fetcher: { model, folder, progress in
+            // The whole file is there before the download has finished.
+            try Self.makeSparseFile(folder.appendingPathComponent(model.fileName), bytes: UInt64(model.bytes))
+            progress(0.5)
+            for await _ in gate.stream {}
+        })
+        let download = Task { try await engine.download(base) { _ in } }
+        try await waitUntil(engine, shows: base, as: .downloading(0.5))
+
+        do {
+            try await engine.prepare(base)
+            XCTFail("prepare should be refused while base.en downloads")
+        } catch {
+            XCTAssertEqual(error as? TranscriptionError, .modelNotReady("whisper.cpp base.en is still downloading"))
+        }
+
+        XCTAssertEqual(loads.value, 0)
+        gate.continuation.finish()
+        try await download.value
+    }
+
+    /// The fetcher's own words reach the Models row as they are; a
+    /// cancelled download ends in `CancellationError`. Either way the model
+    /// reads Not downloaded after.
+    func testAFailedOrCancelledDownloadLeavesTheModelNotDownloaded() async throws {
+        let failing = WhisperCppEngine(directory: directory, fetcher: { _, _, _ in
+            throw TranscriptionError.failed("whisper.cpp base.en could not be downloaded: HTTP 404")
+        })
+        do {
+            try await failing.download(base) { _ in }
             XCTFail("download should throw")
         } catch {
-            XCTAssertEqual(error as? TranscriptionError, .failed("whisper.cpp models cannot be downloaded yet"))
+            XCTAssertEqual(error as? TranscriptionError, .failed("whisper.cpp base.en could not be downloaded: HTTP 404"))
         }
+        let afterFailure = await failing.models().first { $0.id == base }?.state
+        XCTAssertEqual(afterFailure, .notDownloaded)
+
+        let waiting = WhisperCppEngine(directory: directory, fetcher: { _, _, progress in
+            progress(0.1)
+            try await Task.sleep(for: .seconds(60))
+        })
+        let download = Task { try await waiting.download(base) { _ in } }
+        try await waitUntil(waiting, shows: base, as: .downloading(0.1))
+        download.cancel()
+        do {
+            try await download.value
+            XCTFail("download should throw")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "threw \(error)")
+        }
+        let afterCancel = await waiting.models().first { $0.id == base }?.state
+        XCTAssertEqual(afterCancel, .notDownloaded)
+    }
+
+    // MARK: - Deleting and downloading again (Ruling T27-4)
+
+    /// In Task 27 a deleted whisper.cpp model could not come back. Now one
+    /// that is not in use is deleted, reads Not downloaded, and downloads
+    /// again.
+    func testADeletedModelDownloadsAgain() async throws {
+        let tiny = ModelID(engine: .whisperCpp, name: "tiny.en")
+        try makeFile("ggml-tiny.en.bin", bytes: 77_704_715)
+        let fetches = Calls()
+        let engine = WhisperCppEngine(directory: directory, fetcher: { model, folder, progress in
+            fetches.add()
+            try Self.makeSparseFile(folder.appendingPathComponent(model.fileName), bytes: UInt64(model.bytes))
+            progress(1)
+        })
+        let service = TranscriptionService(engines: [engine], selected: base)
+
+        try await service.delete(tiny)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("ggml-tiny.en.bin").path))
+        let deleted = await engine.models().first { $0.id == tiny }?.state
+        XCTAssertEqual(deleted, .notDownloaded)
+
+        try await service.download(tiny) { _ in }
+
+        XCTAssertEqual(fetches.value, 1)
+        let downloaded = await engine.models().first { $0.id == tiny }
+        XCTAssertEqual(downloaded?.state, .ready)
+        XCTAssertEqual(downloaded?.bytesOnDisk, 77_704_715)
+    }
+
+    // MARK: - The time limit
+
+    /// whisper-cli's limit, kept when its code went (Task 27A): 20 s at
+    /// least, else three times the recording.
+    func testTimeoutIsThreeTimesTheRecordingWithATwentySecondFloor() {
+        XCTAssertEqual(WhisperCppEngine.timeout(recordingDuration: 1.0), 20.0)
+        XCTAssertEqual(WhisperCppEngine.timeout(recordingDuration: 5.0), 20.0)
+        XCTAssertEqual(WhisperCppEngine.timeout(recordingDuration: 10.0), 30.0)
     }
 
     // MARK: - Helpers
@@ -379,15 +536,41 @@ final class WhisperCppEngineTests: XCTestCase {
         return engine
     }
 
-    /// A file of `bytes` bytes, made sparse, so nothing is written.
+    /// A file of `bytes` bytes in the temporary folder, made sparse, so
+    /// nothing is written.
     private func makeFile(_ name: String, bytes: UInt64) throws {
-        let url = directory.appendingPathComponent(name)
+        try Self.makeSparseFile(directory.appendingPathComponent(name), bytes: bytes)
+    }
+
+    /// A file of `bytes` bytes at `url`, made sparse; a fake fetcher's
+    /// download.
+    private static func makeSparseFile(_ url: URL, bytes: UInt64) throws {
         if !FileManager.default.fileExists(atPath: url.path) {
-            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
         }
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
         try handle.truncate(atOffset: bytes)
+    }
+
+    /// Counts calls made from any thread.
+    private final class Calls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        var value: Int { lock.withLock { count } }
+        func add() { lock.withLock { count += 1 } }
+    }
+
+    /// Progress reported from any thread, in order.
+    private final class Values: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Double] = []
+
+        var all: [Double] { lock.withLock { values } }
+        func append(_ value: Double) { lock.withLock { values.append(value) } }
     }
 
     /// Waits at most 2 s for `models()` to show `id` in `state`.

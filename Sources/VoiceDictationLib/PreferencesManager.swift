@@ -27,7 +27,6 @@ public class PreferencesManager {
 
     // MARK: - Keys
     private enum Keys {
-        static let selectedModel = "selectedModel"
         static let selectedModelID = "selectedModelID"
         static let launchAtLogin = "launchAtLogin"
         static let keptRecordings = "keptRecordings"
@@ -41,72 +40,25 @@ public class PreferencesManager {
         static let soundsEnabled = "soundsEnabled"
     }
 
-    // MARK: - Available Models
-    public struct WhisperModel: Codable, Equatable {
-        public let id: String        // e.g. "base.en"
-        public let fileName: String  // e.g. "ggml-base.en.bin"
-        public let displayName: String
-        public let sizeDescription: String
-        public let downloadURL: URL
-
-        public static let available: [WhisperModel] = [
-            WhisperModel(
-                id: "tiny.en",
-                fileName: "ggml-tiny.en.bin",
-                displayName: "Tiny (English)",
-                sizeDescription: "~75 MB — fastest, lower accuracy",
-                downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin")!
-            ),
-            WhisperModel(
-                id: "base.en",
-                fileName: "ggml-base.en.bin",
-                displayName: "Base (English)",
-                sizeDescription: "~150 MB — good balance",
-                downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")!
-            ),
-            WhisperModel(
-                id: "small.en",
-                fileName: "ggml-small.en.bin",
-                displayName: "Small (English)",
-                sizeDescription: "~500 MB — best accuracy, slower",
-                downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin")!
-            ),
-        ]
-    }
-
     // MARK: - Properties
-    public var selectedModelId: String {
-        get {
-            access(keyPath: \.selectedModelId)
-            return defaults.string(forKey: Keys.selectedModel) ?? "base.en"
-        }
-        set { withMutation(keyPath: \.selectedModelId) { defaults.set(newValue, forKey: Keys.selectedModel) } }
-    }
 
-    public var selectedModel: WhisperModel {
-        WhisperModel.available.first { $0.id == selectedModelId } ?? WhisperModel.available[1]
-    }
-
-    /// The model dictation uses, saved as its `storageKey`. Until one is
-    /// saved, a whisper-cli model chosen in the old app carries over.
+    /// The model dictation uses, saved as its `storageKey`.
     public var selectedModelID: ModelID {
         get {
             access(keyPath: \.selectedModelID)
-            return Self.selectedModelID(saved: defaults.string(forKey: Keys.selectedModelID),
-                                        legacy: defaults.string(forKey: Keys.selectedModel))
+            return Self.selectedModelID(saved: defaults.string(forKey: Keys.selectedModelID))
         }
         set { withMutation(keyPath: \.selectedModelID) { defaults.set(newValue.storageKey, forKey: Keys.selectedModelID) } }
     }
 
-    /// A saved choice wins. Otherwise the old app's `selectedModel` becomes
-    /// that whisper-cli model, so the app keeps working on first run even if
-    /// Apple's language files are missing. Anything else is Apple Speech.
-    static func selectedModelID(saved: String?, legacy: String?) -> ModelID {
-        if let saved, let id = ModelID(storageKey: saved) { return id }
-        if let legacy, WhisperModel.available.contains(where: { $0.id == legacy }) {
-            return ModelID(engine: .whisperCLI, name: legacy)
-        }
-        return .appleSpeech
+    /// The saved choice when it names an engine that still runs. A
+    /// whisper-cli choice, an unreadable one or none at all gives
+    /// whisper.cpp base.en, the default (D2): whisper-cli is retired (Task
+    /// 27A), and whisper.cpp reads the same `ggml-base.en.bin` and gives the
+    /// same text. The old app's `selectedModel` key is no longer read.
+    static func selectedModelID(saved: String?) -> ModelID {
+        guard let saved, let id = ModelID(storageKey: saved), id.engine != .whisperCLI else { return .whisperCppBase }
+        return id
     }
 
     /// Whether the user wants the app to open at login. Defaults to off; the

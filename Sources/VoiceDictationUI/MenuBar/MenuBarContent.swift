@@ -52,19 +52,16 @@ public struct MenuBarContent: View {
         .keyboardShortcut("q")
     }
 
-    /// The models, one group per engine, with the one dictation uses checked.
-    /// `AppModel` lists them again whenever a menu opens.
+    /// The models, one group per engine with no heading, the default's
+    /// first, and the one dictation uses checked. `AppModel` lists them
+    /// again whenever a menu opens.
     private var modelMenu: some View {
         Menu(Self.modelMenuTitle(models: model.models, selected: model.selectedModel)) {
             if model.models.isEmpty {
                 Text("Loading models…")
             }
             ForEach(Self.modelSections(model.models)) { section in
-                if let header = section.header {
-                    Section(header) { modelItems(section.models) }
-                } else {
-                    Section { modelItems(section.models) }
-                }
+                Section { modelItems(section.models) }
             }
         }
     }
@@ -113,11 +110,10 @@ public struct MenuBarContent: View {
         var models: [ModelDescriptor]
 
         var id: EngineKind { engine }
-        /// The old whisper-cli models sit under "Previous engine".
-        var header: String? { engine == .whisperCLI ? "Previous engine" : nil }
     }
 
-    /// The models grouped by engine, in the order they are listed.
+    /// The models grouped by engine, in the order they are listed, which is
+    /// the order of `AppModel.engines()`.
     static func modelSections(_ models: [ModelDescriptor]) -> [ModelSection] {
         var sections: [ModelSection] = []
         for model in models {

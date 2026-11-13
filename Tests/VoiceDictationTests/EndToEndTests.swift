@@ -16,7 +16,28 @@ final class EndToEndTests: XCTestCase {
     @MainActor
     func testSampleFlowsFromClipToStore() async throws {
         try await skipUnlessAppleSpeechInstalled()
-        let rig = try makeRig(engine: AppleSpeechEngine(), selected: .appleSpeech)
+        try await assertSampleFlowsFromClipToStore(engine: AppleSpeechEngine(), selected: .appleSpeech)
+    }
+
+    /// The same run with the default, whisper.cpp base.en, read from the
+    /// app's own models folder, which this test only reads.
+    @MainActor
+    func testSampleFlowsFromClipToStoreWithWhisperCppBase() async throws {
+        let models = try FileManager.default
+            .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+            .appending(path: "VoiceDictation/models", directoryHint: .isDirectory)
+        let engine = WhisperCppEngine(directory: models)
+        guard await engine.models().first(where: { $0.id == .whisperCppBase })?.state == .ready else {
+            throw XCTSkip("ggml-base.en.bin is not in \(models.path)")
+        }
+        try await assertSampleFlowsFromClipToStore(engine: engine, selected: .whisperCppBase)
+    }
+
+    /// The sample recorded, transcribed by `engine`'s `selected` model,
+    /// cleaned up, pasted once and kept in the store with its recording.
+    @MainActor
+    private func assertSampleFlowsFromClipToStore(engine: TranscriptionEngine, selected: ModelID) async throws {
+        let rig = try makeRig(engine: engine, selected: selected)
         let cleaner = FakeCleaner()
         let pipeline = rig.pipeline(cleaner: cleaner, cleanupEnabled: { true })
         rig.recorder.nextClip = try sample()
@@ -35,6 +56,7 @@ final class EndToEndTests: XCTestCase {
         let transcript = try XCTUnwrap(rig.store.latest)
         XCTAssertEqual(transcript.status, .pasted)
         XCTAssertEqual(transcript.text, pasted)
+        XCTAssertEqual(transcript.modelKey, selected.storageKey)
         XCTAssertGreaterThan(transcript.transcribeSeconds, 0)
         let fileName = try XCTUnwrap(transcript.audioFileName, "the recording was saved")
         XCTAssertTrue(FileManager.default.fileExists(atPath: rig.audio.url(for: fileName).path))

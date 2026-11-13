@@ -112,8 +112,8 @@ final class TranscriptionServiceTests: XCTestCase {
         XCTAssertNil(cleared)
     }
 
-    /// A saved choice can outlive its engine, as a whisper-cli one will once
-    /// Task 27 retires it: `prepareSelected` keeps that, as for any failure.
+    /// A selection no engine runs, such as a model of the retired whisper-cli:
+    /// `prepareSelected` keeps that, as for any failure.
     func testPrepareSelectedKeepsAMissingEngine() async {
         let service = TranscriptionService(engines: [FakeEngine(kind: .appleSpeech)], selected: cliBase)
 
@@ -521,77 +521,82 @@ final class TranscriptionServiceTests: XCTestCase {
     func testIdleUnloadWaitsForTheRetranscriptionLaneToEmpty() async throws {
         let apple = FakeEngine(kind: .appleSpeech)
         let whisper = FakeEngine(kind: .whisperKit)
-        let cli = FakeEngine(kind: .whisperCLI)
+        let cpp = FakeEngine(kind: .whisperCpp)
+        let cppBase = ModelID.whisperCppBase
         whisper.isHeld = true
-        cli.isHeld = true
+        cpp.isHeld = true
         let delay = Duration.milliseconds(100)
-        let service = TranscriptionService(engines: [apple, whisper, cli], selected: .appleSpeech, idleUnloadDelay: 0.1)
+        let service = TranscriptionService(engines: [apple, whisper, cpp], selected: .appleSpeech, idleUnloadDelay: 0.1)
         await service.prepareSelected()
         var retranscriptions: [Task<TranscriptionResult, Error>] = []
 
-        // WhisperKit, then whisper-cli, which keeps the lane while WhisperKit sits unused.
+        // WhisperKit, then whisper.cpp, which keeps the lane while WhisperKit sits unused.
         retranscriptions.append(Task { try await service.transcribe(clip, with: whisperBase, vocabulary: []) })
         try await waitUntil("WhisperKit transcribes") { self.transcriptions(whisper).count == 1 }
-        retranscriptions.append(Task { try await service.transcribe(clip, with: cliBase, vocabulary: []) })
-        try await waitUntil("the whisper-cli re-transcription is in line") { await service.retranscriptionsInLine == 2 }
+        retranscriptions.append(Task { try await service.transcribe(clip, with: cppBase, vocabulary: []) })
+        try await waitUntil("the whisper.cpp re-transcription is in line") { await service.retranscriptionsInLine == 2 }
         whisper.isHeld = false
-        try await waitUntil("whisper-cli transcribes") { self.transcriptions(cli).count == 1 }
+        try await waitUntil("whisper.cpp transcribes") { self.transcriptions(cpp).count == 1 }
         try await Task.sleep(for: delay * 3)
 
-        // WhisperKit again, which keeps the lane while whisper-cli sits unused.
+        // WhisperKit again, which keeps the lane while whisper.cpp sits unused.
         whisper.isHeld = true
         retranscriptions.append(Task { try await service.transcribe(clip, with: whisperBase, vocabulary: []) })
         try await waitUntil("WhisperKit is in line again") { await service.retranscriptionsInLine == 2 }
-        cli.isHeld = false
+        cpp.isHeld = false
         try await waitUntil("WhisperKit transcribes again") { self.transcriptions(whisper).count == 2 }
         try await Task.sleep(for: delay * 3)
 
         XCTAssertEqual(whisper.calls, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase)],
                        "unloaded while the lane was busy")
-        XCTAssertEqual(cli.calls, [.prepare(cliBase), .transcribe(cliBase)], "unloaded while the lane was busy")
+        XCTAssertEqual(cpp.calls, [.prepare(cppBase), .transcribe(cppBase)], "unloaded while the lane was busy")
 
         // The lane empties after this release, so the delay runs from later than now.
         let released = ContinuousClock.now
         whisper.isHeld = false
         for task in retranscriptions { try await finish(task, within: 2, "a re-transcription") }
-        try await waitUntil("an engine is unloaded") { whisper.calls.contains(.unload) || cli.calls.contains(.unload) }
+        try await waitUntil("an engine is unloaded") { whisper.calls.contains(.unload) || cpp.calls.contains(.unload) }
         XCTAssertGreaterThanOrEqual(released.duration(to: .now), delay, "unloaded before the delay")
-        try await waitUntil("both engines are unloaded") { whisper.calls.contains(.unload) && cli.calls.contains(.unload) }
+        try await waitUntil("both engines are unloaded") { whisper.calls.contains(.unload) && cpp.calls.contains(.unload) }
 
         XCTAssertEqual(whisper.calls, [.prepare(whisperBase), .transcribe(whisperBase), .transcribe(whisperBase), .unload])
-        XCTAssertEqual(cli.calls, [.prepare(cliBase), .transcribe(cliBase), .unload])
+        XCTAssertEqual(cpp.calls, [.prepare(cppBase), .transcribe(cppBase), .unload])
         XCTAssertEqual(apple.calls, [.prepare(.appleSpeech)], "unloaded the engine of the selected model")
     }
 
     // MARK: - Saved selection
 
-    func testSelectedModelIDMigratesTheOldWhisperChoice() {
-        for name in ["tiny.en", "base.en", "small.en"] {
-            XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil, legacy: name),
-                           ModelID(engine: .whisperCLI, name: name))
+    func testSelectedModelIDDefaultsToWhisperCppBase() {
+        XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil), .whisperCppBase)
+        XCTAssertEqual(PreferencesManager.selectedModelID(saved: "garbage"), .whisperCppBase)
+    }
+
+    /// whisper-cli is retired (Task 27A); whisper.cpp base.en reads the same
+    /// `ggml-base.en.bin` and gives the same text.
+    func testSelectedModelIDMovesWhisperCLIChoicesToWhisperCppBase() {
+        for saved in ["whisperCLI/tiny.en", "whisperCLI/base.en", "whisperCLI/small.en"] {
+            XCTAssertEqual(PreferencesManager.selectedModelID(saved: saved), .whisperCppBase, saved)
         }
-        XCTAssertEqual(PreferencesManager.selectedModelID(saved: "whisperKit/base.en", legacy: "small.en"),
-                       whisperBase, "a saved choice wins over the old one")
     }
 
-    func testSelectedModelIDDefaultsToAppleSpeech() {
-        XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil, legacy: nil), .appleSpeech)
-        XCTAssertEqual(PreferencesManager.selectedModelID(saved: nil, legacy: "medium.en"), .appleSpeech)
-        XCTAssertEqual(PreferencesManager.selectedModelID(saved: "garbage", legacy: nil), .appleSpeech)
+    func testSelectedModelIDKeepsOtherChoices() {
+        for saved in ["appleSpeech/en-US", "whisperKit/base.en", "whisperCpp/small.en"] {
+            XCTAssertEqual(PreferencesManager.selectedModelID(saved: saved), ModelID(storageKey: saved), saved)
+        }
     }
 
-    /// The choice is saved as its `storageKey` under `selectedModelID`, and
-    /// from then on it wins over the old app's choice.
+    /// The choice is saved as its `storageKey` under `selectedModelID`. The
+    /// old app's `selectedModel` key no longer counts.
     func testSelectedModelIDIsSavedAsItsStorageKey() {
         let store = MemoryPreferenceStore()
+        store.set("small.en", forKey: "selectedModel")
         let preferences = PreferencesManager(defaults: store)
-        preferences.selectedModelId = "small.en"
-        XCTAssertEqual(preferences.selectedModelID, ModelID(engine: .whisperCLI, name: "small.en"))
+        XCTAssertEqual(preferences.selectedModelID, .whisperCppBase)
 
         preferences.selectedModelID = whisperBase
 
         XCTAssertEqual(store.string(forKey: "selectedModelID"), "whisperKit/base.en")
-        XCTAssertEqual(preferences.selectedModelID, whisperBase, "the old app's choice won over the saved one")
+        XCTAssertEqual(preferences.selectedModelID, whisperBase)
     }
 
     // MARK: - The fake

@@ -22,6 +22,7 @@ final class OnboardingModelTests: XCTestCase {
     private let preferences = PreferencesManager(defaults: MemoryPreferenceStore())
     private let engine = FakeEngine(kind: .appleSpeech)
     private let whisperKitEngine = FakeEngine(kind: .whisperKit)
+    private let whisperCppEngine = FakeEngine(kind: .whisperCpp)
 
     // MARK: - Completeness
 
@@ -180,6 +181,40 @@ final class OnboardingModelTests: XCTestCase {
         XCTAssertEqual(engine.calls, [])
     }
 
+    /// The default model since Task 27A. It is fetched only when Danny presses
+    /// the step's Download, never by itself.
+    func testSpeechModelStepDownloadsWhisperCppBase() async throws {
+        models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .notDownloaded)]
+        selected = .whisperCppBase
+        let gate = AsyncStream.makeStream(of: Void.self)
+        whisperCppEngine.onDownload = { _, progress in
+            progress(0.42)
+            for await _ in gate.stream {}
+        }
+        let model = makeModel()
+        XCTAssertEqual(model.state(of: .speechModel), .needed)
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download whisper.cpp base.en")
+        XCTAssertEqual(whisperCppEngine.calls, [], "nothing downloads until Download is pressed")
+
+        let download = Task { await model.downloadSelectedModel() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while model.step(.speechModel).detail != "Downloading… 42%", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.step(.speechModel).detail, "Downloading… 42%")
+        XCTAssertEqual(whisperCppEngine.calls, [.download(.whisperCppBase)])
+
+        onRefresh = { [self] in
+            models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .ready)]
+        }
+        gate.continuation.finish()
+        await download.value
+
+        XCTAssertEqual(model.state(of: .speechModel), .done)
+        XCTAssertEqual(model.step(.speechModel).detail, "whisper.cpp base.en is ready.")
+        XCTAssertEqual(engine.calls, [], "Apple Speech was not asked")
+    }
+
     /// Preparing is the normal state at launch, not a reason to interrupt.
     func testAPreparingModelDoesNotOpenTheWindowAtLaunch() {
         let model = makeModel()
@@ -253,7 +288,8 @@ final class OnboardingModelTests: XCTestCase {
             refreshPermissions: {}
         )
         return OnboardingModel(system: system,
-                               service: TranscriptionService(engines: [engine, whisperKitEngine], selected: selected ?? .appleSpeech),
+                               service: TranscriptionService(engines: [whisperCppEngine, engine, whisperKitEngine],
+                                                             selected: selected ?? .appleSpeech),
                                models: { [self] in models },
                                selected: { [self] in selected },
                                refreshModels: { [self] in refreshes += 1; onRefresh() },

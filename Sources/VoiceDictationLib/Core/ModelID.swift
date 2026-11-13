@@ -1,7 +1,14 @@
 import Foundation
 
 public enum EngineKind: String, Codable, Sendable, CaseIterable {
-    case appleSpeech, whisperKit, whisperCLI, whisperCpp
+    case appleSpeech, whisperKit
+    /// Retired in Task 27A: no engine runs it. The kind stays because old
+    /// transcripts name its models, and so does the old app's `history.json`,
+    /// which `HistoryImporter` brings in. `TranscriptionService` answers it
+    /// with "No engine runs whisperCLI/…", and the window names its models
+    /// "whisper-cli <name>" (`LibraryModel.modelName`).
+    case whisperCLI
+    case whisperCpp
 }
 
 /// Names one speech model of one engine, e.g. `appleSpeech/en-US`.

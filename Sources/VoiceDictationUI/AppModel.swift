@@ -94,7 +94,7 @@ public final class AppModel {
     /// When the recording `indicatorLine` belongs to started.
     @ObservationIgnored private var indicatorRecordingStart: Date?
 
-    /// The app's parts: the four engines with the model saved for dictation,
+    /// The app's parts: the three engines with the model saved for dictation,
     /// the microphone saved in Settings, the paste, the on-device cleaner,
     /// the hotkey's event tap, and the store with its kept recordings in
     /// `~/Library/Application Support/VoiceDictation/`.
@@ -437,16 +437,16 @@ public final class AppModel {
             .appendingPathComponent("VoiceDictation", isDirectory: true)
     }
 
-    /// The engines dictation can use. WhisperKit keeps its models under
-    /// Application Support; whisper.cpp reads the ggml files whisper-cli used,
-    /// from the same `models` folder; whisper-cli stays until Task 27A.
-    private static func engines() -> [TranscriptionEngine] {
+    /// The engines dictation can use, the default's first, so its models
+    /// head the Model submenu and the Models section. whisper.cpp keeps its
+    /// ggml files in the `models` folder, where the old app kept them;
+    /// WhisperKit keeps its models in `whisperkit`.
+    static func engines() -> [TranscriptionEngine] {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return [
+            WhisperCppEngine(directory: Self.dataDirectory.appendingPathComponent("models", isDirectory: true)),
             AppleSpeechEngine(),
             WhisperKitEngine(root: support.appendingPathComponent("VoiceDictation/whisperkit", isDirectory: true)),
-            WhisperCppEngine(directory: Self.dataDirectory.appendingPathComponent("models", isDirectory: true)),
-            WhisperCLIEngine(),
         ]
     }
 

@@ -230,6 +230,18 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(LibraryModel.facts(t, models: models).map(\.value), ["—", "—", "Apple Speech", "22"])
     }
 
+    /// No engine lists whisper-cli's models any more (Task 27A), but old
+    /// transcripts and the imported history still name them.
+    func testRetiredWhisperCLIModelReadsAsWords() {
+        XCTAssertEqual(LibraryModel.modelName("whisperCLI/base.en", in: []), "whisper-cli base.en")
+        XCTAssertEqual(LibraryModel.modelName("whisperCLI/small.en", in: []), "whisper-cli small.en")
+        // A listed model still reads as the engine names it, and any other
+        // unlisted key as itself.
+        let listed = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .ready)]
+        XCTAssertEqual(LibraryModel.modelName("whisperCpp/base.en", in: listed), "whisper.cpp base.en")
+        XCTAssertEqual(LibraryModel.modelName("whisperKit/gone", in: []), "whisperKit/gone")
+    }
+
     /// Task 21: a cleaned transcript has a fifth fact, "Cleaned in 0.4s".
     @MainActor
     func testFactsAddCleanedInForACleanedTranscript() throws {

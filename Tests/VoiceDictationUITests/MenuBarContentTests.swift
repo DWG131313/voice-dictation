@@ -45,15 +45,18 @@ final class MenuBarContentTests: XCTestCase {
 
     // MARK: - The submenu's layout
 
-    /// One group per engine, in the order the service lists them; the old
-    /// whisper-cli models sit under a "Previous engine" header.
-    func testModelsAreGroupedByEngineWithTheOldEngineLabelled() {
-        let sections = MenuBarContent.modelSections(models)
+    /// One group per engine, with no heading, in the order the service lists
+    /// them, which is the order of the app's engines: whisper.cpp, the
+    /// default, first.
+    @MainActor
+    func testModelsAreGroupedByEngineWithNoHeadings() {
+        let listed = AppModel.engines().map(\.kind).flatMap { kind in models.filter { $0.id.engine == kind } }
 
-        XCTAssertEqual(sections.map(\.engine), [.appleSpeech, .whisperKit, .whisperCLI])
-        XCTAssertEqual(sections.map(\.header), [nil, nil, "Previous engine"])
+        let sections = MenuBarContent.modelSections(listed)
+
+        XCTAssertEqual(sections.map(\.engine), [.whisperCpp, .appleSpeech, .whisperKit])
         XCTAssertEqual(sections.map { $0.models.map(\.displayName) },
-                       [["Apple Speech", "Apple Dictation"], ["tiny.en", "base.en"], ["Base (English)"]])
+                       [["whisper.cpp base.en"], ["Apple Speech", "Apple Dictation"], ["tiny.en", "base.en"]])
     }
 
     func testModelSubmenuIsTitledWithTheModelInUse() {
@@ -114,14 +117,13 @@ final class MenuBarContentTests: XCTestCase {
 
     private var models: [ModelDescriptor] {
         [
+            ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .ready),
             ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: .ready),
             ModelDescriptor(id: .appleDictation, displayName: "Apple Dictation", detail: "", state: .notDownloaded),
             ModelDescriptor(id: ModelID(engine: .whisperKit, name: "openai_whisper-tiny.en"), displayName: "tiny.en",
                             detail: "", state: .ready),
             ModelDescriptor(id: ModelID(engine: .whisperKit, name: "openai_whisper-base.en"), displayName: "base.en",
                             detail: "", state: .notDownloaded),
-            ModelDescriptor(id: ModelID(engine: .whisperCLI, name: "base.en"), displayName: "Base (English)",
-                            detail: "", state: .ready),
         ]
     }
 }

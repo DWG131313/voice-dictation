@@ -1,67 +1,25 @@
 # VoiceDictation
 
-A macOS menu bar app for system-wide push-to-talk voice transcription. Hold the Globe key, speak, release — your words are transcribed and pasted into whatever app has focus.
+Hold a key, say what you mean, let go: your words appear in whatever app you are typing in. VoiceDictation lives in the menu bar and turns speech into text on the Mac itself. It was built for talking to Claude Code, and it works anywhere you can type.
 
-Built for dictating prompts to Claude Code, but works anywhere.
+## Install
 
-## Requirements
+VoiceDictation needs macOS 26 or later.
 
-- macOS 26 or later; building needs Xcode
-- whisper-cpp: `brew install whisper-cpp`
+A release is a signed, notarised zip that opens without a warning. `./scripts/release.sh` makes one as `dist/VoiceDictation-<version>.zip` (the one-time setup is in `docs/release.md`). Unzip it, drag VoiceDictation into Applications and open it.
 
-## Setup
+To build it yourself you need Xcode and XcodeGen (`brew install xcodegen`). Then `./scripts/run-dev.sh` builds the app and opens it.
 
-1. Build and run:
-   ```bash
-   ./scripts/run-dev.sh
-   ```
+The first time it opens, the Welcome window walks through what it needs, with a button for each: the microphone, Accessibility (so it can hear the hotkey and paste), the Globe key set to "Do Nothing", and the speech model. That model is whisper.cpp base.en, 148 MB, and it downloads only when you press Download in the Speech model step, never by itself. A Mac that ran the old VoiceDictation already has it, and its history comes across too.
 
-2. The Welcome window opens on the first run, and again whenever a step is left. It walks through Microphone, Accessibility, the Globe key ("Press Globe key to" set to "Do Nothing") and the speech model, with a button for each. Nothing is asked for before you press it.
+## Dictate
 
-3. The app will download the Whisper base.en model (~150MB) on first launch.
+Hold the hotkey to dictate, or double-tap it with "Double-tap to dictate" on. The hotkey is Globe unless you choose Right Option or Right Command in Settings. Speak, let go, and the text pastes where your cursor is. Escape cancels while recording, transcribing or cleaning up.
 
-## Usage
+The menu bar icon has the rest: the window with every transcript, Paste Last Transcript, the model in use, and Settings.
 
-- **Hold Globe key** to record
-- **Release** to transcribe and paste
-- **Escape** while holding to cancel
-- **Click menu bar icon** to see status, recent transcriptions, and preferences
+## What stays on your Mac
 
-## Model Selection
+All of it. whisper.cpp runs inside the app, so your voice becomes text without going anywhere, and so do Apple's speech models and WhisperKit's if you pick one in Models. Cleanup, which drops filler words and fixes punctuation and capitals, runs on Apple Intelligence's on-device model, never the cloud one. Transcripts and recent recordings stay in `~/Library/Application Support/VoiceDictation/`. The app goes online only to download a speech model you asked for.
 
-Open **Preferences** (click menu bar icon > Preferences..., or Cmd+,) to switch between Whisper models:
-
-- **Tiny (English)** — ~75 MB, fastest, lower accuracy
-- **Base (English)** — ~150 MB, good balance (default)
-- **Small (English)** — ~500 MB, best accuracy, slower
-
-Models are downloaded automatically when selected.
-
-## Transcription History
-
-Recent transcriptions appear in the menu bar dropdown under "Recent Transcriptions." Click any entry to copy it to the clipboard. History can be toggled on/off in Preferences.
-
-## Bundling whisper-cli
-
-To bundle the whisper-cli binary with the build (eliminates Homebrew dependency at runtime):
-
-```bash
-swift build && ./scripts/bundle-whisper.sh
-```
-
-The app will look for a bundled binary first, then fall back to Homebrew.
-
-## How It Works
-
-Records audio via AVAudioEngine, transcribes with whisper.cpp (locally, on-device), and pastes via clipboard simulation. No data leaves your machine.
-
-A few things happen quietly to keep it dependable:
-
-- Taps shorter than half a second, and recordings that are effectively silent, are discarded instead of sent to whisper (which otherwise invents words like "you" from silence).
-- A recording stops on its own after five minutes, or if your audio device changes mid-sentence, so a lost key-up can never leave the mic open.
-- Whatever was on your clipboard before a paste (text, images, files) is put back half a second later, unless you copied something new in between.
-- The Globe key listener checks itself every 15 seconds and after the Mac wakes from sleep, and re-arms if macOS has quietly disabled it.
-
-## Troubleshooting
-
-The app writes a log to `~/Library/Logs/VoiceDictation.log` (open it in Console.app or `tail -f` it). Every key event, recording, whisper run, and error lands there.
+If something seems off, the app keeps a log at `~/Library/Logs/VoiceDictation.log`.

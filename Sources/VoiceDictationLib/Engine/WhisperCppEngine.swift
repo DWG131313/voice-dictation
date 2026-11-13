@@ -4,7 +4,9 @@ import whisper
 /// whisper.cpp in this process, behind `TranscriptionEngine`: the ggml models
 /// whisper-cli used, read from the same folder, decoded with the settings the
 /// app ran whisper-cli with, so it gives the text whisper-cli gave (Task 27;
-/// the settings are read from v1.9.5's `examples/cli/cli.cpp`).
+/// the settings are read from v1.9.5's `examples/cli/cli.cpp`). The default
+/// engine since Task 27A, which retired whisper-cli and lets this engine
+/// download its models (`GGMLDownload`).
 ///
 /// whisper.cpp blocks while it loads and decodes, so both run on a global
 /// dispatch queue, never on a Swift concurrency thread. No context is used by
@@ -19,10 +21,14 @@ public actor WhisperCppEngine: TranscriptionEngine {
     typealias Loader = @Sendable (URL) -> WhisperContext?
     /// How long a clip of this many seconds may decode. Tests pass a short one.
     typealias Timeout = @Sendable (TimeInterval) -> TimeInterval
+    /// Puts a model's whole, checked file in a folder, reporting progress.
+    /// Tests pass a fake.
+    typealias Fetcher = @Sendable (GGMLModel, URL, @escaping @Sendable (Double) -> Void) async throws -> Void
 
     private let directory: URL
     private let loader: Loader
     private let timeout: Timeout
+    private let fetcher: Fetcher
     /// Every model loaded since the last `unload()`. Preparing one model never
     /// evicts another.
     private var loaded: [ModelID: WhisperContext] = [:]
@@ -31,25 +37,42 @@ public actor WhisperCppEngine: TranscriptionEngine {
     /// `unload()` has given up on it, its context is freed unless the model is
     /// asked for again first.
     private var loading: [ModelID: (task: Task<Void, Error>, wanted: Bool)] = [:]
+    /// Downloads in flight and how far each has got.
+    private var downloads: [ModelID: DownloadProgress] = [:]
 
     /// `directory` holds the `ggml-*.bin` files; the app and vd-bench pass
     /// `~/Library/Application Support/VoiceDictation/models/`.
     public init(directory: URL) {
-        self.init(directory: directory, loader: { WhisperContext.open($0) }, timeout: { Self.timeout(recordingDuration: $0) })
+        self.init(directory: directory, loader: { WhisperContext.open($0) },
+                  timeout: { Self.timeout(recordingDuration: $0) }, fetcher: Self.fetchFromHuggingFace)
     }
 
     init(directory: URL, loader: @escaping Loader) {
-        self.init(directory: directory, loader: loader, timeout: { Self.timeout(recordingDuration: $0) })
+        self.init(directory: directory, loader: loader,
+                  timeout: { Self.timeout(recordingDuration: $0) }, fetcher: Self.fetchFromHuggingFace)
     }
 
     init(directory: URL, timeout: @escaping Timeout) {
-        self.init(directory: directory, loader: { WhisperContext.open($0) }, timeout: timeout)
+        self.init(directory: directory, loader: { WhisperContext.open($0) },
+                  timeout: timeout, fetcher: Self.fetchFromHuggingFace)
     }
 
-    private init(directory: URL, loader: @escaping Loader, timeout: @escaping Timeout) {
+    init(directory: URL, loader: @escaping Loader = { WhisperContext.open($0) }, fetcher: @escaping Fetcher) {
+        self.init(directory: directory, loader: loader,
+                  timeout: { Self.timeout(recordingDuration: $0) }, fetcher: fetcher)
+    }
+
+    private init(directory: URL, loader: @escaping Loader, timeout: @escaping Timeout, fetcher: @escaping Fetcher) {
         self.directory = directory
         self.loader = loader
         self.timeout = timeout
+        self.fetcher = fetcher
+    }
+
+    /// The real download, off the actor: `models()` and transcriptions go on
+    /// while the bytes arrive.
+    private static let fetchFromHuggingFace: Fetcher = { model, directory, progress in
+        try await GGMLDownload.fetch(model, into: directory, progress: progress)
     }
 
     /// The models loaded now.
@@ -105,16 +128,44 @@ public actor WhisperCppEngine: TranscriptionEngine {
         }
     }
 
-    /// Downloads come with Task 27A.
+    /// Fetches the model's ggml file into the models folder (`GGMLDownload`),
+    /// shown as `.downloading` meanwhile. A model whose file is there whole
+    /// returns at once. A failed or cancelled download leaves no file, and
+    /// the model reads Not downloaded again.
     public func download(_ id: ModelID, progress: @escaping @Sendable (Double) -> Void) async throws {
-        throw TranscriptionError.failed("whisper.cpp models cannot be downloaded yet")
+        let model = try Self.model(id)
+        if size(of: model) == model.bytes {
+            progress(1)
+            return
+        }
+        guard downloads[id] == nil else {
+            throw TranscriptionError.failed("\(model.displayName) is already downloading")
+        }
+        let latest = DownloadProgress()
+        downloads[id] = latest
+        defer { downloads[id] = nil }
+        do {
+            try await fetcher(model, directory) { fraction in
+                latest.fraction = fraction
+                progress(fraction)
+            }
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            // `GGMLDownload`'s own words already name the model.
+            if error is TranscriptionError { throw error }
+            throw TranscriptionError.failed("\(model.displayName) could not be downloaded: \(error.localizedDescription)")
+        }
+        progress(1)
     }
 
-    /// Unloads the model and removes its file. Refused while the model loads.
-    /// Until Task 27A whisper-cli reads the same files, so this also removes
-    /// the whisper-cli model of the same name.
+    /// Unloads the model and removes its file. Refused while the model
+    /// downloads or loads. The service refuses the model in use before it
+    /// gets here.
     public func delete(_ id: ModelID) async throws {
         let model = try Self.model(id)
+        guard downloads[id] == nil else {
+            throw TranscriptionError.failed("\(model.displayName) is still downloading")
+        }
         guard loading[id] == nil else {
             throw TranscriptionError.failed("\(model.displayName) is still preparing")
         }
@@ -205,15 +256,14 @@ public actor WhisperCppEngine: TranscriptionEngine {
         }
     }
 
-    /// whisper-cli's time limit (`Transcriber.calculateTimeout`, moved here
-    /// because Task 27A deletes `Transcriber`). A generous floor: the first
-    /// run after a cold start pays for model loading and Metal shader
-    /// compilation.
+    /// whisper-cli's time limit, kept when its code went (Task 27A). A
+    /// generous floor: the first run after a cold start pays for model
+    /// loading and Metal shader compilation.
     static func timeout(recordingDuration: TimeInterval) -> TimeInterval {
         max(20.0, recordingDuration * 3.0)
     }
 
-    /// The words whisper-cli's path gave for a timeout (`WhisperCLIEngine`).
+    /// The words the app has always shown for a timeout, whisper-cli's.
     static let timedOut = "Transcription timed out — try a shorter recording or a smaller model"
 
     // MARK: - Loading
@@ -244,6 +294,11 @@ public actor WhisperCppEngine: TranscriptionEngine {
     /// caller can stop waiting without stopping the load. The context is
     /// published only once its warm-up has run.
     private func startLoading(_ model: GGMLModel) throws -> Task<Void, Error> {
+        // A download may still fail and remove what it wrote, so a load
+        // never starts under one.
+        guard downloads[model.id] == nil else {
+            throw TranscriptionError.modelNotReady("\(model.displayName) is still downloading")
+        }
         guard size(of: model) == model.bytes else {
             throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")
         }
@@ -276,6 +331,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
     // MARK: - Files
 
     private func state(of model: GGMLModel, whole: Bool) -> ModelDescriptor.State {
+        if let download = downloads[model.id] { return .downloading(download.fraction) }
         if loading[model.id] != nil { return .preparing }
         return (loaded[model.id] != nil || whole) ? .ready : .notDownloaded
     }
@@ -295,5 +351,17 @@ public actor WhisperCppEngine: TranscriptionEngine {
             throw TranscriptionError.modelNotReady("Unknown model \(id.storageKey)")
         }
         return model
+    }
+
+    /// The latest fraction a download reported, written from the fetcher's
+    /// progress callback and read by `models()`.
+    private final class DownloadProgress: @unchecked Sendable {
+        private let lock = NSLock()
+        private var latest: Double = 0
+
+        var fraction: Double {
+            get { lock.withLock { latest } }
+            set { lock.withLock { latest = newValue } }
+        }
     }
 }

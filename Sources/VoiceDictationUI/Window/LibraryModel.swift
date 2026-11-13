@@ -691,9 +691,14 @@ public final class LibraryModel {
         seconds > 0 && seconds.isFinite ? String(format: "%.1fs", seconds) : "—"
     }
 
-    /// A model's display name from `models`, or its storage key when it is not listed.
+    /// A model's display name from `models`, or its storage key when it is
+    /// not listed. whisper-cli, retired in Task 27A, lists nothing, but old
+    /// transcripts and the imported history name its models: those read
+    /// "whisper-cli base.en".
     nonisolated static func modelName(_ storageKey: String, in models: [ModelDescriptor]) -> String {
-        models.first { $0.id.storageKey == storageKey }?.displayName ?? storageKey
+        if let listed = models.first(where: { $0.id.storageKey == storageKey }) { return listed.displayName }
+        if let id = ModelID(storageKey: storageKey), id.engine == .whisperCLI { return "whisper-cli \(id.name)" }
+        return storageKey
     }
 
     /// The status in a word: status is words, never colour (Prism). A

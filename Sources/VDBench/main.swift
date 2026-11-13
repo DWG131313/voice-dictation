@@ -49,7 +49,6 @@ let engines: [any TranscriptionEngine] = [
     AppleSpeechEngine(),
     WhisperKitEngine(root: support.appendingPathComponent("whisperkit", isDirectory: true)),
     WhisperCppEngine(directory: support.appendingPathComponent("models", isDirectory: true)),
-    WhisperCLIEngine(),
 ]
 
 /// Ruling T10-1: macOS reserves Apple's language files per process, so in a

@@ -291,19 +291,53 @@ final class ModelsModelTests: XCTestCase {
 
     // MARK: - Order
 
-    func testSectionsKeepApplesFirstThenWhisperKitThenThePreviousEngine() {
+    /// whisper.cpp, the default, comes first; no group has a heading.
+    func testSectionsPutWhisperCppFirst() {
+        let cppTiny = ModelID(engine: .whisperCpp, name: "tiny.en")
         let all = [descriptor(.appleSpeech, .ready), descriptor(base, .ready),
-                   descriptor(ModelID(engine: .whisperCLI, name: "base.en"), .ready),
-                   descriptor(.whisperCppBase, .ready),
+                   descriptor(cppTiny, .notDownloaded), descriptor(.whisperCppBase, .ready),
                    descriptor(.appleDictation, .ready), descriptor(tiny, .ready)]
         let sections = ModelsView.sections(all)
-        XCTAssertEqual(sections.map(\.engine), [.appleSpeech, .whisperKit, .whisperCpp, .whisperCLI])
-        guard sections.count == 4 else { return }
-        XCTAssertEqual(sections[0].models.map(\.id), [.appleSpeech, .appleDictation])
-        XCTAssertEqual(sections[1].models.map(\.id), [base, tiny], "the engine's order is kept: it lists smallest first")
-        XCTAssertEqual(sections[2].models.map(\.id), [.whisperCppBase])
-        XCTAssertNil(sections[2].title)
-        XCTAssertEqual(sections[3].title, "Previous engine")
+        XCTAssertEqual(sections.map(\.engine), [.whisperCpp, .appleSpeech, .whisperKit])
+        guard sections.count == 3 else { return }
+        XCTAssertEqual(sections[0].models.map(\.id), [cppTiny, .whisperCppBase], "the engine's order is kept")
+        XCTAssertEqual(sections[1].models.map(\.id), [.appleSpeech, .appleDictation])
+        XCTAssertEqual(sections[2].models.map(\.id), [base, tiny], "the engine's order is kept: it lists smallest first")
+    }
+
+    // MARK: - The model in use keeps its file (Ruling T27-4)
+
+    /// whisper-cli read the same `ggml-base.en.bin` as whisper.cpp base.en,
+    /// so in Task 27 a saved whisper-cli choice left that file deletable from
+    /// the Models section. That choice now reads as whisper.cpp base.en, the
+    /// model in use: no Delete is offered for it, and the service refuses it.
+    @MainActor
+    func testTheWhisperCppModelInUseCannotBeDeleted() async throws {
+        let saved = MemoryPreferenceStore()
+        saved.set("whisperCLI/base.en", forKey: "selectedModelID")
+        let preferences = PreferencesManager(defaults: saved)
+        let models = directory.appendingPathComponent("models", isDirectory: true)
+        let file = models.appendingPathComponent("ggml-base.en.bin")
+        try Self.makeSparseFile(file, bytes: 147_964_211)
+        let model = AppModel(service: TranscriptionService(engines: [WhisperCppEngine(directory: models)],
+                                                           selected: preferences.selectedModelID),
+                             recorder: recorder, paster: paster,
+                             store: TranscriptStore(directory: directory, inMemory: true),
+                             preferences: preferences, hotkeys: FakeHotkeys(), settingsSystem: FakeSettingsSystem().system,
+                             dataDirectory: directory, onboardingSystem: .fake(), indicator: nil,
+                             pasteAgain: FakeApps().system)
+        await model.refreshModels()
+
+        XCTAssertEqual(model.selectedModel, .whisperCppBase)
+        let row = try XCTUnwrap(model.models.first { $0.id == .whisperCppBase })
+        XCTAssertEqual(row.state, .ready)
+        XCTAssertEqual(ModelsView.actions(for: row, selected: model.selectedModel, cancellable: false), [.inUse])
+
+        await model.deleteModel(.whisperCppBase)
+
+        XCTAssertEqual(model.modelMessages[.whisperCppBase], "The model used for dictation cannot be deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the model in use lost its file")
+        XCTAssertEqual(model.models.first { $0.id == .whisperCppBase }?.state, .ready)
     }
 
     func testButtonsFitTheState() {
@@ -319,8 +353,9 @@ final class ModelsModelTests: XCTestCase {
         XCTAssertEqual(actions(tiny, .preparing), [])
         XCTAssertEqual(actions(tiny, .unavailable("x")), [])
         XCTAssertEqual(actions(tiny, .notDownloaded), [.download])
-        let cli = ModelID(engine: .whisperCLI, name: "base.en")
-        XCTAssertEqual(actions(cli, .unavailable("Previous engine: model not downloaded")), [])
+        // A whisper.cpp model not in use can be deleted, and downloaded again.
+        XCTAssertEqual(actions(.whisperCppBase, .ready), [.use, .delete])
+        XCTAssertEqual(actions(.whisperCppBase, .notDownloaded), [.download])
     }
 
     func testStateWords() {
@@ -336,8 +371,11 @@ final class ModelsModelTests: XCTestCase {
     private let apple = FakeEngine(kind: .appleSpeech)
     private let whisperKit = FakeEngine(kind: .whisperKit)
 
+    /// The model in use is the saved choice, as when the app starts; with
+    /// nothing saved the choice would read as the default, whisper.cpp base.en.
     @MainActor
     private func makeModel(selected: ModelID) -> AppModel {
+        preferences.selectedModelID = selected
         apple.modelList = [descriptor(.appleSpeech, .ready), descriptor(.appleDictation, .notDownloaded)]
         if whisperKit.modelList.isEmpty {
             whisperKit.modelList = [descriptor(tiny, .ready), descriptor(base, .notDownloaded)]
@@ -352,6 +390,15 @@ final class ModelsModelTests: XCTestCase {
 
     private func descriptor(_ id: ModelID, _ state: ModelDescriptor.State) -> ModelDescriptor {
         ModelDescriptor(id: id, displayName: id.name, detail: "", state: state)
+    }
+
+    /// A file of `bytes` bytes, made sparse, so nothing is written.
+    private static func makeSparseFile(_ url: URL, bytes: UInt64) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: bytes)
     }
 
     /// Holds a fake download until the test lets it go.
