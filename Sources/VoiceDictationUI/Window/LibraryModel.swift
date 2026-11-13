@@ -56,11 +56,12 @@ public final class LibraryModel {
         didSet { if query != oldValue { listRows() } }
     }
     /// The transcript the detail shows. Choosing another saves the edit being
-    /// typed and stops the recording playing.
+    /// typed, stops the recording playing, and shows its main text.
     public var selection: Transcript.ID? {
         didSet {
             guard selection != oldValue else { return }
             textSelection = nil
+            versionShown = nil
             commitEdit()
             player.stop()
             if let message, message.transcript == oldValue { self.message = nil }
@@ -73,6 +74,9 @@ public final class LibraryModel {
     private var counts: [Section: Int] = [:]
     /// The pinned transcript whose deletion waits for Danny's yes.
     public private(set) var deletionToConfirm: Transcript.ID?
+    /// Where Danny turned the selected transcript's Raw / Cleaned switch;
+    /// nil shows its main text's side (`versionShowing`).
+    private var versionShown: TextVersion?
     /// Danny's text for a transcript as he types it, until it is saved.
     private var draft: Draft?
     /// The models re-transcribing each transcript now.
@@ -248,9 +252,13 @@ public final class LibraryModel {
         }
     }
 
-    /// The text the detail shows for `t`: the edit being typed, or else its
-    /// main text.
+    /// The text the detail shows for `t`: the other version when the Raw /
+    /// Cleaned switch is turned to it, otherwise the edit being typed, or
+    /// else its main text.
     func shownText(_ t: Transcript) -> String {
+        if !showsMainText(t) {
+            return versionShowing(t) == .raw ? t.rawText : t.cleanedText ?? t.text
+        }
         if let draft, draft.transcript.id == t.id { return draft.text }
         return t.text
     }
@@ -376,6 +384,7 @@ public final class LibraryModel {
         commitEdit(of: t)
         let wasFailed = t.status == .failed
         store.promote(alternate, in: t)
+        showMainText(of: t)
         guard wasFailed, !t.text.isEmpty else { return }
         if Self.copiesResult(clipboardWhenAsked: clipboardWhenAsked, clipboardNow: paster.clipboardChangeCount) {
             paster.copy(text: t.text)
@@ -391,6 +400,7 @@ public final class LibraryModel {
     public func useCleaned(_ t: Transcript) {
         commitEdit(of: t)
         store.useCleaned(t)
+        showMainText(of: t)
     }
 
     /// "Revert to raw": the dictation's own raw text becomes the main text
@@ -398,6 +408,59 @@ public final class LibraryModel {
     public func revertToRaw(_ t: Transcript) {
         commitEdit(of: t)
         store.revertToRaw(t)
+        showMainText(of: t)
+    }
+
+    // MARK: - Raw and cleaned (Task 21)
+
+    /// The two sides of the detail's Raw / Cleaned switch.
+    public enum TextVersion: Sendable {
+        case raw, cleaned
+    }
+
+    /// Turns the Raw / Cleaned switch to `version` for `t`, the selected
+    /// transcript: the detail shows that version, the main text included
+    /// when it is on that side (`showsMainText`). Nothing about `t` changes.
+    /// The edit being typed is saved first. Only a turn to the other side is
+    /// remembered; the main text's side follows the main text, so an edit
+    /// that moves it there stays on show.
+    public func show(_ version: TextVersion, of t: Transcript) {
+        commitEdit(of: t)
+        guard t.id == selection, version != versionShowing(t) else { return }
+        versionShown = version == Self.mainTextVersion(t) ? nil : version
+        // It was a selection in the other text.
+        textSelection = nil
+    }
+
+    /// After an action gives `t` another main text: the detail shows it.
+    private func showMainText(of t: Transcript) {
+        if t.id == selection { versionShown = nil }
+    }
+
+    /// The side the switch is on for `t`: where Danny turned it for the
+    /// selected transcript, otherwise the main text's side.
+    func versionShowing(_ t: Transcript) -> TextVersion {
+        if t.id == selection, let versionShown { return versionShown }
+        return Self.mainTextVersion(t)
+    }
+
+    /// Whether the detail shows `t`'s main text, which Danny can edit,
+    /// rather than the other version, which he can only read and copy.
+    func showsMainText(_ t: Transcript) -> Bool {
+        !Self.offersRawCleanedSwitch(t) || versionShowing(t) == Self.mainTextVersion(t)
+    }
+
+    /// The Raw / Cleaned switch is offered when cleanup changed the text.
+    nonisolated static func offersRawCleanedSwitch(_ t: Transcript) -> Bool {
+        guard let cleaned = t.cleanedText, !isBlank(cleaned) else { return false }
+        return cleaned != t.rawText
+    }
+
+    /// The side the main text is on: Raw while it is the raw text, as after
+    /// "Revert to raw" or a cleanup that came late; otherwise Cleaned, which
+    /// is the cleaned text or what Danny made of it.
+    nonisolated static func mainTextVersion(_ t: Transcript) -> TextVersion {
+        t.text == t.rawText ? .raw : .cleaned
     }
 
     // MARK: - Re-transcribing
@@ -524,10 +587,11 @@ public final class LibraryModel {
     }
 
     /// What ⌘C copies: the selected part of the detail's text, or else the
-    /// whole selected transcript; nil when it has no text (Ruling T18-3).
+    /// whole of it; nil when it has no text (Ruling T18-3). That is the
+    /// selected transcript, or the version the Raw / Cleaned switch shows.
     var copyCommandText: String? {
         guard let t = selectedTranscript else { return nil }
-        return Self.textToCopy(t.text, selectedRange: textSelection)
+        return Self.textToCopy(shownText(t), selectedRange: textSelection)
     }
 
     // MARK: - Words for a transcript
@@ -595,15 +659,20 @@ public final class LibraryModel {
         return rest == 0 ? "\(minutes)m" : "\(minutes)m \(rest)s"
     }
 
-    /// The detail's four facts. `models` (as `AppModel.models` lists them)
-    /// name the model; one not listed shows its storage key. A time the
+    /// The detail's four facts, and a fifth, "Cleaned in", for a transcript
+    /// that was cleaned up (Task 21). `models` (as `AppModel.models` lists
+    /// them) name the model; one not listed shows its storage key. A time the
     /// transcript does not know (imported history, a failed dictation's
     /// transcription) reads "—".
     nonisolated static func facts(_ t: Transcript, models: [ModelDescriptor] = []) -> [(label: String, value: String)] {
-        [("Length", tenths(t.recordingSeconds)),
-         ("Transcribed in", tenths(t.transcribeSeconds)),
-         ("Model", modelName(t.modelKey, in: models)),
-         ("Words", String(t.text.split(whereSeparator: \.isWhitespace).count))]
+        var facts: [(label: String, value: String)] = [
+            ("Length", tenths(t.recordingSeconds)),
+            ("Transcribed in", tenths(t.transcribeSeconds)),
+            ("Model", modelName(t.modelKey, in: models)),
+            ("Words", String(t.text.split(whereSeparator: \.isWhitespace).count)),
+        ]
+        if let cleanup = t.cleanupSeconds { facts.append(("Cleaned in", tenths(cleanup))) }
+        return facts
     }
 
     /// Seconds to a tenth, "14.2s"; "—" when not known.
@@ -688,10 +757,12 @@ public final class LibraryModel {
         return t.text == t.rawText && cleaned != t.rawText
     }
 
-    /// An edited transcript keeps "Revert to raw", which brings back the
-    /// dictation's own raw text. (Task 21 adds it for a cleaned one.)
+    /// "Revert to raw" brings back the dictation's own raw text: offered for
+    /// an edited transcript, and for one cleanup changed (Task 21), while the
+    /// main text is not the raw text already.
     nonisolated static func offersRevertToRaw(_ t: Transcript) -> Bool {
-        t.isEdited && !isBlank(t.rawText) && t.text != t.rawText
+        guard !isBlank(t.rawText), t.text != t.rawText else { return false }
+        return t.isEdited || offersRawCleanedSwitch(t)
     }
 
     /// The row that takes the place of `id` when it leaves the list: the next

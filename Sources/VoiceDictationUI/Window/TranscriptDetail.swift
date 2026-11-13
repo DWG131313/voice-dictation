@@ -3,9 +3,10 @@ import SwiftUI
 import VoiceDictationLib
 
 /// The right column, from mockup D: the selected transcript's title (app and
-/// time, the screen's one Jost title), its status word, four facts, its text,
-/// which Danny can edit, the actions under it, and the comparison when it has
-/// other versions. Empty while nothing is selected.
+/// time, the screen's one Jost title), its status word, four facts (five for
+/// a cleaned one), the Raw / Cleaned switch when cleanup changed the text,
+/// its text, which Danny can edit, the actions under it, and the comparison
+/// when it has other versions. Empty while nothing is selected.
 struct TranscriptDetail: View {
     let library: LibraryModel
     /// As `AppModel.models` lists them, to name the transcript's model and
@@ -30,11 +31,16 @@ struct TranscriptDetail: View {
 
     private func content(_ t: Transcript) -> some View {
         let shown = LibraryModel.displayText(t)
+        let offersSwitch = LibraryModel.offersRawCleanedSwitch(t)
         return VStack(alignment: .leading, spacing: 0) {
             header(t)
             facts(t)
             // The text's only frame: no border around it.
             Hairline()
+            if offersSwitch {
+                VersionSwitch(library: library, transcript: t)
+                    .padding(.top, Theme.Space.md)
+            }
             Group {
                 if shown.isReason {
                     // A failed dictation has no text: why it failed, muted.
@@ -42,10 +48,11 @@ struct TranscriptDetail: View {
                         .font(Theme.Font.ui(Self.textSize))
                         .foregroundStyle(Theme.Color.textMuted)
                 } else {
-                    TranscriptText(transcript: t, text: library.shownText(t), library: library)
+                    TranscriptText(transcript: t, text: library.shownText(t),
+                                   isMainText: library.showsMainText(t), library: library)
                 }
             }
-            .padding(.top, Theme.Space.md)
+            .padding(.top, offersSwitch ? Theme.Space.sm : Theme.Space.md)
             .frame(maxWidth: .infinity, minHeight: Self.minimumTextHeight, maxHeight: .infinity, alignment: .topLeading)
             DetailActions(library: library, transcript: t, models: models)
                 .padding(.top, Theme.Space.md)
@@ -92,7 +99,8 @@ struct TranscriptDetail: View {
         }
     }
 
-    /// Length, Transcribed in, Model and Words: muted labels over DM Mono values.
+    /// Length, Transcribed in, Model and Words, and Cleaned in for a cleaned
+    /// transcript: muted labels over DM Mono values.
     private func facts(_ t: Transcript) -> some View {
         HStack(alignment: .top, spacing: Theme.Space.lg) {
             ForEach(LibraryModel.facts(t, models: models), id: \.label) { fact in
@@ -111,12 +119,53 @@ struct TranscriptDetail: View {
     }
 }
 
+/// The Raw / Cleaned switch above a cleaned transcript's text (Task 21): two
+/// words, the side showing in the text colour and the other muted, with
+/// nothing filled, as the sidebar marks the section showing. Raw shows the
+/// text as dictated; Cleaned, the cleanup or what Danny made of it. The side
+/// the main text is on shows it to edit; the other side, to read and copy.
+private struct VersionSwitch: View {
+    let library: LibraryModel
+    let transcript: Transcript
+
+    var body: some View {
+        let showing = library.versionShowing(transcript)
+        HStack(spacing: Theme.Space.xs) {
+            side("Raw", .raw, showing: showing)
+            Text("/")
+                .font(Theme.Font.ui(12, medium: true))
+                .foregroundStyle(Theme.Color.textMuted)
+                .accessibilityHidden(true)
+            side("Cleaned", .cleaned, showing: showing)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Version shown")
+    }
+
+    private func side(_ title: String, _ version: LibraryModel.TextVersion,
+                      showing: LibraryModel.TextVersion) -> some View {
+        let isShowing = version == showing
+        return Button {
+            library.show(version, of: transcript)
+        } label: {
+            Text(title)
+                .font(Theme.Font.ui(12, medium: true))
+                .foregroundStyle(isShowing ? Theme.Color.text : Theme.Color.textMuted)
+                .padding(.vertical, Theme.Space.xs)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(version == .raw ? "Show the text as dictated" : "Show the cleaned-up text")
+        .accessibilityAddTraits(isShowing ? .isSelected : [])
+    }
+}
+
 /// The actions under the text, from mockup D with Delete added: Copy, Paste
 /// again, Play audio, Re-transcribe with…, Pin and Delete, then Revert to raw
-/// for an edit and Use cleaned for a cleanup that came late. They wrap onto
-/// another line in a narrow column. Under them, in muted words: why Play and
-/// Re-transcribe are unavailable, what is being re-transcribed, and what the
-/// last action has to say.
+/// for an edit or a cleanup, and Use cleaned for a cleanup that came late.
+/// They wrap onto another line in a narrow column. Under them, in muted
+/// words: why Play and Re-transcribe are unavailable, what is being
+/// re-transcribed, and what the last action has to say.
 private struct DetailActions: View {
     let library: LibraryModel
     let transcript: Transcript
@@ -247,11 +296,15 @@ private struct FlowLayout: Layout {
 /// `LibraryModel.edit`, which saves it shortly after typing stops; the edit
 /// ends at once when the text view stops being edited. It reports its text
 /// selection to the library, so ⌘C in the list copies the selected words too
-/// (Ruling T18-3).
+/// (Ruling T18-3). The other side of the Raw / Cleaned switch shows here to
+/// read and copy only.
 struct TranscriptText: NSViewRepresentable {
     let transcript: Transcript
-    /// What it shows: the edit being typed, or else the main text.
+    /// What it shows: the edit being typed, or else the main text, or the
+    /// other version the Raw / Cleaned switch is turned to.
     let text: String
+    /// True for the main text, the one Danny can edit.
+    let isMainText: Bool
     let library: LibraryModel
 
     func makeCoordinator() -> Coordinator {
@@ -303,18 +356,21 @@ struct TranscriptText: NSViewRepresentable {
         return scrollView
     }
 
-    /// Puts the text in when another transcript is shown, or when the text
-    /// changed other than by typing (an empty edit restored, Use this one,
-    /// Revert to raw). While Danny types, the text is already what he typed.
+    /// Puts the text in when another transcript, or the other side of the
+    /// Raw / Cleaned switch, is shown, or when the text changed other than by
+    /// typing (an empty edit restored, Use this one, Revert to raw). While
+    /// Danny types, the text is already what he typed.
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.library = library
         coordinator.transcript = transcript
         guard let textView = scrollView.documentView as? TranscriptTextView else { return }
-        let isAnotherTranscript = coordinator.shown != transcript.id
-        guard isAnotherTranscript || textView.string != text else { return }
+        textView.isEditable = isMainText
+        let isAnotherText = coordinator.shown != transcript.id || coordinator.showsMainText != isMainText
+        guard isAnotherText || textView.string != text else { return }
         coordinator.shown = transcript.id
-        textView.show(text, fromTheTop: isAnotherTranscript)
+        coordinator.showsMainText = isMainText
+        textView.show(text, fromTheTop: isAnotherText)
     }
 
     @MainActor
@@ -323,6 +379,8 @@ struct TranscriptText: NSViewRepresentable {
         /// The transcript whose text the view holds.
         var transcript: Transcript?
         var shown: Transcript.ID?
+        /// Whether the view holds the main text, or the other version.
+        var showsMainText = true
 
         init(library: LibraryModel) {
             self.library = library

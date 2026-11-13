@@ -117,6 +117,44 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.onboarding.state(of: .tryIt), .done)
     }
 
+    /// Task 21: a cleanup in time is kept with the raw text it replaced; one
+    /// that comes back after the paste reaches the store too, through
+    /// `onLateCleanup`, beside the pasted raw text, for "Use cleaned".
+    /// Nothing is pasted twice.
+    @MainActor
+    func testCleanupsInTimeAndLateAreKept() async throws {
+        let engine = appleEngine()
+        engine.result = "um so ship the new build"
+        let cleaner = FakeCleaner()
+        cleaner.reply = { _ in "So ship the new build." }
+        let model = makeModel([engine], cleaner: cleaner)
+
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the cleaned dictation is kept") { model.store.search("", scope: .all).count == 1 }
+        let inTime = try XCTUnwrap(model.store.search("", scope: .all).first)
+        XCTAssertEqual(inTime.text, "So ship the new build.")
+        XCTAssertEqual(inTime.rawText, "um so ship the new build")
+        XCTAssertEqual(inTime.cleanedText, "So ship the new build.")
+        XCTAssertNotNil(inTime.cleanupSeconds)
+
+        model.pipeline.cleanupLimitSeconds = 0.1
+        cleaner.delay = 0.4
+        model.hotkeyDidStartPress()
+        model.hotkeyDidEndPress()
+        try await waitUntil("the raw text is kept") { model.store.search("", scope: .all).count == 2 }
+        let late = try XCTUnwrap(model.store.search("", scope: .all).first { $0.id != inTime.id })
+        XCTAssertEqual(late.text, "um so ship the new build")
+        XCTAssertNil(late.cleanedText)
+        try await waitUntil("the late cleanup is kept") { late.cleanedText != nil }
+
+        XCTAssertEqual(late.cleanedText, "So ship the new build.")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(late.cleanupSeconds), 0.4)
+        XCTAssertEqual(late.text, "um so ship the new build", "the pasted text stays the main text")
+        XCTAssertTrue(LibraryModel.offersUseCleaned(late))
+        XCTAssertEqual(paster.pasted, ["So ship the new build.", "um so ship the new build"])
+    }
+
     /// With the window open its list shows a dictation as soon as it is
     /// kept, selected when nothing else was. Closed, the library does no
     /// work for it; the window lists it when it opens.
@@ -481,14 +519,14 @@ final class AppModelTests: XCTestCase {
     @MainActor
     private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
                            system: OnboardingSystem = .fake(), indicator: FakeIndicator? = nil,
-                           apps: FakeApps? = nil) -> AppModel {
+                           apps: FakeApps? = nil, cleaner: TextCleaner? = nil) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences,
                  comparison: ComparisonRecordings(directory: comparisonDirectory, preferences: preferences, queue: queue),
                  dataDirectory: directory, onboardingSystem: system, indicator: indicator,
-                 pasteAgain: (apps ?? FakeApps()).system)
+                 pasteAgain: (apps ?? FakeApps()).system, cleaner: cleaner)
     }
 
     /// Whether `line` strays from the centre anywhere a moment from now.

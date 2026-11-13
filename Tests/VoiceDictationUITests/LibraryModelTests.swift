@@ -230,6 +230,21 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(LibraryModel.facts(t, models: models).map(\.value), ["—", "—", "Apple Speech", "22"])
     }
 
+    /// Task 21: a cleaned transcript has a fifth fact, "Cleaned in 0.4s".
+    @MainActor
+    func testFactsAddCleanedInForACleanedTranscript() throws {
+        let store = memoryStore()
+        let t = try XCTUnwrap(store.add(outcome("Ship it now.", at: base, transcribeSeconds: 0.3)))
+        t.recordingSeconds = 2.4
+        XCTAssertEqual(LibraryModel.facts(t).map(\.label), ["Length", "Transcribed in", "Model", "Words"])
+
+        t.cleanupSeconds = 0.42
+
+        let facts = LibraryModel.facts(t)
+        XCTAssertEqual(facts.map(\.label), ["Length", "Transcribed in", "Model", "Words", "Cleaned in"])
+        XCTAssertEqual(facts.map(\.value), ["2.4s", "0.3s", "appleSpeech/en-US", "3", "0.4s"])
+    }
+
     /// Status is a word. A failed dictation has no text, so it shows why.
     @MainActor
     func testStatusWordAndAFailedTranscriptShowsItsReason() throws {

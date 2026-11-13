@@ -68,8 +68,8 @@ public final class AppModel {
     @ObservationIgnored private var indicatorRecordingStart: Date?
 
     /// The app's parts: the three engines with the model saved for dictation,
-    /// the microphone, the paste, and the store with its kept recordings in
-    /// `~/Library/Application Support/VoiceDictation/`.
+    /// the microphone, the paste, the on-device cleaner, and the store with
+    /// its kept recordings in `~/Library/Application Support/VoiceDictation/`.
     public convenience init() {
         let directory = Self.dataDirectory
         let preferences = PreferencesManager.shared
@@ -85,25 +85,27 @@ public final class AppModel {
             preferences: preferences,
             comparison: ComparisonRecordings(),
             dataDirectory: directory,
-            indicator: IndicatorPanel()
+            indicator: IndicatorPanel(),
+            cleaner: FoundationModelCleaner()
         )
     }
 
     /// Connects the parts, with no side effects: `start()` asks for
     /// permissions and arms the hotkey. Tests pass fakes, an in-memory store
-    /// and preferences kept in memory.
+    /// and preferences kept in memory; with no cleaner, nothing is cleaned up.
     init(service: TranscriptionService, recorder: Recording, paster: Pasting, store: TranscriptStore,
          preferences: PreferencesManager, comparison: ComparisonRecordings, dataDirectory: URL,
          onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil,
-         pasteAgain: PasteAgainSystem? = nil) {
+         pasteAgain: PasteAgainSystem? = nil, cleaner: TextCleaner? = nil) {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
         Fonts.registerAll()
         self.service = service
         // Task 22 adds the vocabulary, for dictation and re-transcription alike.
         let vocabulary: () -> [String] = { [] }
-        // Tasks 21 and 22 add the cleaner and the replacements.
+        // Task 22 adds the replacements.
         self.pipeline = DictationPipeline(recorder: recorder, service: service, paster: paster,
-                                          cleaner: nil, replacements: { [] }, vocabulary: vocabulary)
+                                          cleaner: cleaner, replacements: { [] }, vocabulary: vocabulary,
+                                          cleanupEnabled: { preferences.cleanupEnabled })
         self.store = store
         self.library = LibraryModel(store: store, service: service, paster: paster, vocabulary: vocabulary,
                                     system: pasteAgain ?? .live())
@@ -119,6 +121,10 @@ public final class AppModel {
         permissions.delegate = self
         hotkeys.delegate = self
         pipeline.onOutcome = { [weak self] outcome in self?.finished(outcome) }
+        // A cleanup that came back after its raw text pasted: kept beside it.
+        pipeline.onLateCleanup = { [weak self] id, cleanedText, seconds in
+            self?.store.setLateCleanup(id: id, cleanedText: cleanedText, seconds: seconds)
+        }
         // No outcome, but the engine did transcribe the clip (Ruling T9-2).
         pipeline.onNothingHeard = { [weak self] clip, endedAt in
             self?.comparisonRecordings.keep(clip, rawText: "", date: endedAt)
@@ -130,7 +136,7 @@ public final class AppModel {
 
     /// Starts the app; called once, when launching has finished. Imports the
     /// old history, asks for missing permissions, arms the Globe key and
-    /// loads the model dictation uses.
+    /// loads the model dictation uses and the cleanup model.
     public func start() {
         Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
 
@@ -156,6 +162,10 @@ public final class AppModel {
         // A dictation needs no model ready to start (Review Focus 1): it
         // waits for the model, or fails and is kept with its audio.
         startListening()
+
+        // Loads the cleanup model, so a dictation soon after launch is not
+        // slowed by the load. The pipeline readies it again after each one.
+        pipeline.prewarmCleanup()
 
         // Read now, before anything can be marked as launched.
         let firstLaunch = !preferences.hasLaunchedBefore

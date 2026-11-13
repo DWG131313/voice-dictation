@@ -588,6 +588,38 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(replaced.modelKey, "whisperKit/base.en")
     }
 
+    /// Task 21: a cleanup that came back after the paste is kept beside the
+    /// transcript, for "Use cleaned". It sets the cleaned text and its time
+    /// only: the main text, the raw text and `isEdited` stay, so an edit made
+    /// meanwhile is kept. An unknown id changes nothing.
+    @MainActor
+    func testSetLateCleanupKeepsTextAndEdits() throws {
+        let store = memoryStore()
+        let pasted = try XCTUnwrap(store.add(outcome("um so ship it friday", at: base)))
+        let edited = try XCTUnwrap(store.add(outcome("um so ship the build", at: base.addingTimeInterval(60))))
+        store.updateText(edited, "Ship the build today.")
+
+        store.setLateCleanup(id: pasted.id, cleanedText: "So ship it Friday.", seconds: 2.7)
+        store.setLateCleanup(id: edited.id, cleanedText: "So ship the build.", seconds: 3.1)
+
+        XCTAssertEqual(pasted.cleanedText, "So ship it Friday.")
+        XCTAssertEqual(pasted.cleanupSeconds, 2.7)
+        XCTAssertEqual(pasted.text, "um so ship it friday", "the pasted text stays the main text")
+        XCTAssertEqual(pasted.rawText, "um so ship it friday")
+        XCTAssertFalse(pasted.isEdited)
+        XCTAssertEqual(edited.cleanedText, "So ship the build.")
+        XCTAssertEqual(edited.cleanupSeconds, 3.1)
+        XCTAssertEqual(edited.text, "Ship the build today.", "Danny's edit stays")
+        XCTAssertEqual(edited.rawText, "um so ship the build")
+        XCTAssertTrue(edited.isEdited)
+        XCTAssertFalse(try XCTUnwrap(store.container).mainContext.hasChanges, "saved at once")
+
+        store.setLateCleanup(id: UUID(), cleanedText: "Nobody's.", seconds: 1)
+
+        XCTAssertEqual(store.search("", scope: .all).map(\.cleanedText), ["So ship the build.", "So ship it Friday."])
+        XCTAssertEqual(store.search("", scope: .all).map(\.text), ["Ship the build today.", "um so ship it friday"])
+    }
+
     @MainActor
     func testDeleteRemovesTheTranscriptAndItsAlternates() throws {
         let store = memoryStore()

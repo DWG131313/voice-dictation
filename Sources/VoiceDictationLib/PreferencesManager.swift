@@ -29,6 +29,7 @@ public class PreferencesManager {
         static let keptRecordings = "keptRecordings"
         static let hasLaunchedBefore = "hasLaunchedBefore"
         static let onboardingTriedIt = "onboardingTriedIt"
+        static let cleanupEnabled = "cleanupEnabled"
     }
 
     // MARK: - Available Models
@@ -151,6 +152,17 @@ public class PreferencesManager {
     public var onboardingTriedIt: Bool {
         get { defaults.bool(forKey: Keys.onboardingTriedIt) }
         set { defaults.set(newValue, forKey: Keys.onboardingTriedIt) }
+    }
+
+    /// "Clean up transcripts": dictations are cleaned up on the Mac before
+    /// they paste (Task 21). On until switched off; while Apple Intelligence
+    /// is unavailable the cleaner is skipped whatever this says.
+    public var cleanupEnabled: Bool {
+        get {
+            guard defaults.object(forKey: Keys.cleanupEnabled) != nil else { return true }
+            return defaults.bool(forKey: Keys.cleanupEnabled)
+        }
+        set { defaults.set(newValue, forKey: Keys.cleanupEnabled) }
     }
 
     /// The app uses `shared`, on the standard defaults.

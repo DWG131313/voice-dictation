@@ -156,6 +156,88 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     func unload() async { record(.unload) }
 }
 
+/// A scriptable cleaner. All state sits behind one lock: the pipeline calls
+/// it off the main thread.
+final class FakeCleaner: TextCleaner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _reply: (@Sendable (String) -> String)?
+    private var _error: Error?
+    private var _delay: TimeInterval = 0
+    private var _isHeld = false
+    private var _ignoresCancellation = false
+    private var _isAvailable = true
+    private var _onClean: (@Sendable (String) -> Void)?
+    private var _given: [String] = []
+    private var _finishedCount = 0
+    private var _prewarmCount = 0
+
+    /// What it makes of a text; nil gives the text back unchanged.
+    var reply: (@Sendable (String) -> String)? {
+        get { lock.withLock { _reply } }
+        set { lock.withLock { _reply = newValue } }
+    }
+    /// When set, each cleanup throws it instead of replying.
+    var error: Error? {
+        get { lock.withLock { _error } }
+        set { lock.withLock { _error = newValue } }
+    }
+    /// How long each cleanup takes, in seconds, once it is let go.
+    var delay: TimeInterval {
+        get { lock.withLock { _delay } }
+        set { lock.withLock { _delay = newValue } }
+    }
+    /// While true, each cleanup waits once it has started, before its `delay`.
+    var isHeld: Bool {
+        get { lock.withLock { _isHeld } }
+        set { lock.withLock { _isHeld = newValue } }
+    }
+    /// When true, a cancelled cleanup carries on and replies all the same, as
+    /// a model that does not stop at once.
+    var ignoresCancellation: Bool {
+        get { lock.withLock { _ignoresCancellation } }
+        set { lock.withLock { _ignoresCancellation = newValue } }
+    }
+    var isAvailable: Bool {
+        get { lock.withLock { _isAvailable } }
+        set { lock.withLock { _isAvailable = newValue } }
+    }
+    /// Called with each text as its cleanup starts.
+    var onClean: (@Sendable (String) -> Void)? {
+        get { lock.withLock { _onClean } }
+        set { lock.withLock { _onClean = newValue } }
+    }
+    /// The texts it was given, in the order the cleanups started.
+    var given: [String] { lock.withLock { _given } }
+    /// Cleanups that have replied or thrown.
+    var finishedCount: Int { lock.withLock { _finishedCount } }
+    var prewarmCount: Int { lock.withLock { _prewarmCount } }
+
+    func prewarm() { lock.withLock { _prewarmCount += 1 } }
+
+    func clean(_ raw: String) async throws -> String {
+        lock.withLock { _given.append(raw) }
+        onClean?(raw)
+        defer { lock.withLock { _finishedCount += 1 } }
+        if ignoresCancellation {
+            while isHeld { await Self.sleepThroughCancellation(0.002) }
+            await Self.sleepThroughCancellation(delay)
+        } else {
+            while isHeld { try await Task.sleep(nanoseconds: 2_000_000) }
+            if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        }
+        if let error { throw error }
+        return reply?(raw) ?? raw
+    }
+
+    /// Waits `seconds` whether or not the task is cancelled.
+    private static func sleepThroughCancellation(_ seconds: TimeInterval) async {
+        guard seconds > 0 else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { continuation.resume() }
+        }
+    }
+}
+
 /// A recorder that calls its delegate the way `AudioRecorder` does, without
 /// a microphone. Use from the main thread, as the real one.
 final class FakeRecorder: Recording {

@@ -42,20 +42,33 @@ public protocol Pasting {
 
 /// Runs each dictation from key press to paste. It records while the hotkey
 /// is held, has the service transcribe each recording with the selected
-/// model, in the order they were made, and pastes the text into the frontmost
-/// app. Every dictation that is not cancelled is reported once: through
-/// `onOutcome`, or through `onNothingHeard` when its text came back empty.
-/// Use from the main thread.
+/// model, in the order they were made, cleans the text up, and pastes it into
+/// the frontmost app. Every dictation that is not cancelled is reported once:
+/// through `onOutcome`, or through `onNothingHeard` when its text came back
+/// empty. Use from the main thread.
 ///
 /// At most `maximumWaiting` recordings wait behind the one being transcribed.
 /// When another arrives, the oldest waiting one is skipped: not pasted, and
 /// reported as Failed with its audio (Review Focus 4). It normally never
 /// reaches the engine; `enqueue` describes the one narrow exception.
+///
+/// Each text goes through, in order: `OutputFilter` (in the service, Ruling
+/// P3), Danny's replacements, the cleaner and `CleanupGuard`, then the paste
+/// (Ruling T21-1). Cleanup that changes more than fillers, punctuation and
+/// case, fails, or is still running at `cleanupTimeLimit` gives way to the
+/// raw text, with no error shown (Review Focus 3). One still running then is
+/// left to finish, and if the guard accepts it, `onLateCleanup` keeps it
+/// beside the transcript; nothing is pasted again.
 @MainActor @Observable
 public final class DictationPipeline {
     public static let maximumWaiting = 3
     /// The failure reported for a dictation skipped from a full line.
     public static let skippedFailure = "Skipped: too many dictations waiting"
+    /// How long the paste waits for cleanup, in seconds; then the raw text
+    /// pastes. The spec's starting value, to tune once it is measured.
+    public static let cleanupTimeLimit: TimeInterval = 2.0
+    /// A text with fewer words than this pastes without cleanup.
+    public static let cleanupMinimumWords = 4
 
     /// What the app is doing. An error shows for `errorDisplaySeconds`, then
     /// the state returns to the true one.
@@ -69,6 +82,12 @@ public final class DictationPipeline {
     /// outcome, but the engine did transcribe the clip, so the comparison
     /// recordings keep it (Ruling T9-2).
     @ObservationIgnored public var onNothingHeard: ((_ clip: AudioClip, _ endedAt: Date) -> Void)?
+    /// Called at most once for a dictation whose raw text pasted at the time
+    /// limit, when its cleanup comes back afterwards and the guard accepts
+    /// it: with the outcome's id, the cleaned text and the cleanup's seconds.
+    /// A late result the guard rejects, or a failure, is dropped, and a
+    /// cancelled dictation never gets here.
+    @ObservationIgnored public var onLateCleanup: ((_ id: UUID, _ cleanedText: String, _ cleanupSeconds: Double) -> Void)?
     /// A permission dictation lacks ("Accessibility", "Microphone"). It shows
     /// as `.needsPermission` whenever there is nothing else to show.
     public var missingPermission: String? {
@@ -77,15 +96,19 @@ public final class DictationPipeline {
 
     /// How long an error stays on show.
     @ObservationIgnored var errorDisplaySeconds: TimeInterval = 5
+    /// How long the paste waits for cleanup; tests shorten it.
+    @ObservationIgnored var cleanupLimitSeconds: TimeInterval = DictationPipeline.cleanupTimeLimit
     /// The marks of the dictation pasted last, as logged.
     @ObservationIgnored private(set) var lastTiming: StageTimer?
 
     @ObservationIgnored private let recorder: Recording
     @ObservationIgnored private let service: TranscriptionService
     @ObservationIgnored private let paster: Pasting
-    // Tasks 21 and 22 add cleanup and replacements between the service's
-    // text and the paste; until then the app passes no cleaner and no rules.
+    /// Nil pastes every text as it is.
     @ObservationIgnored private let cleaner: TextCleaner?
+    /// Read for each dictation: the app's "Clean up transcripts" setting.
+    @ObservationIgnored private let cleanupEnabled: () -> Bool
+    // Task 22 adds the rules that apply the replacements.
     @ObservationIgnored private let replacements: () -> [Replacement]
     @ObservationIgnored private let vocabulary: () -> [String]
 
@@ -98,6 +121,9 @@ public final class DictationPipeline {
     /// Recordings handed to the service, oldest first: the first is being
     /// transcribed, the rest wait.
     @ObservationIgnored private var line: [Dictation] = []
+    /// The dictation being cleaned up, out of the line and not yet pasted.
+    /// The next one in line is transcribed meanwhile, and pastes after it.
+    @ObservationIgnored private var cleaning: Cleaning?
     /// Whether `finishLine` is running.
     @ObservationIgnored private var isFinishingLine = false
     @ObservationIgnored private var errorMessage: String?
@@ -108,11 +134,13 @@ public final class DictationPipeline {
     @ObservationIgnored private var lastText: String?
 
     public init(recorder: Recording, service: TranscriptionService, paster: Pasting,
-                cleaner: TextCleaner?, replacements: @escaping () -> [Replacement], vocabulary: @escaping () -> [String]) {
+                cleaner: TextCleaner?, replacements: @escaping () -> [Replacement], vocabulary: @escaping () -> [String],
+                cleanupEnabled: @escaping () -> Bool = { true }) {
         self.recorder = recorder
         self.service = service
         self.paster = paster
         self.cleaner = cleaner
+        self.cleanupEnabled = cleanupEnabled
         self.replacements = replacements
         self.vocabulary = vocabulary
         recorder.delegate = self
@@ -162,11 +190,11 @@ public final class DictationPipeline {
     /// Escape): cancels this hold's dictation and nothing else. That is the
     /// recording under way or, when the recorder ended it by itself while
     /// the key stayed down (five minutes, or the input changed), the
-    /// dictation it became, wherever that is in line. When the recorder
-    /// failed to start or threw the recording away, the hold has no
-    /// dictation and nothing is cancelled. Unlike `cancel()`, it never
-    /// touches a dictation made before this hold. The cancelled dictation
-    /// leaves no trace, as with `cancel()`.
+    /// dictation it became, wherever that is in line, or while it is cleaned
+    /// up. When the recorder failed to start or threw the recording away, the
+    /// hold has no dictation and nothing is cancelled. Unlike `cancel()`, it
+    /// never touches a dictation made before this hold. The cancelled
+    /// dictation leaves no trace, as with `cancel()`.
     public func cancelHold() {
         if capture != nil {
             Log.info("[PIPELINE] Cancelled the recording: a key was pressed while the hotkey was held")
@@ -175,9 +203,13 @@ public final class DictationPipeline {
         }
         guard let id = dictationOfThisHold else { return }
         dictationOfThisHold = nil
-        // Gone from the line means it has already finished, or was skipped.
-        guard let index = line.firstIndex(where: { $0.id == id }) else { return }
-        line.remove(at: index).transcription.cancel()
+        if cleaning?.id == id {
+            cancelCleanup()
+        } else {
+            // Gone from the line means it has already finished, or was skipped.
+            guard let index = line.firstIndex(where: { $0.id == id }) else { return }
+            line.remove(at: index).transcription.cancel()
+        }
         Log.info("[PIPELINE] Cancelled the dictation the recorder stopped while the hotkey was held")
         settle()
     }
@@ -185,21 +217,36 @@ public final class DictationPipeline {
     /// Cancels what the pipeline is doing, not just the current hold's
     /// dictation (Task 23's Escape while working). While recording, cancels
     /// the recording only, so dictations already in line still paste.
-    /// Otherwise cancels every dictation in line. The hotkey uses
-    /// `cancelHold()` instead, which never reaches a dictation made before
-    /// the current hold. A cancelled dictation pastes nothing, reports no
-    /// outcome, and leaves no audio behind.
+    /// Otherwise cancels the dictation being cleaned up and every dictation
+    /// in line. The hotkey uses `cancelHold()` instead, which never reaches a
+    /// dictation made before the current hold. A cancelled dictation pastes
+    /// nothing, reports no outcome, not even a late cleanup, and leaves no
+    /// audio behind. A dictation already pasted is not cancelled: its late
+    /// cleanup, if any, is still kept.
     public func cancel() {
         if capture != nil {
             cancelCapture()
             return
         }
-        guard !line.isEmpty else { return }
+        guard !line.isEmpty || cleaning != nil else { return }
         let cancelled = line
         line.removeAll()
         cancelled.forEach { $0.transcription.cancel() }
-        Log.info("[PIPELINE] Cancelled \(cancelled.count) dictation(s) in line")
+        let wasCleaning = cancelCleanup()
+        Log.info("[PIPELINE] Cancelled \(cancelled.count) dictation(s) in line"
+                 + (wasCleaning ? " and the one being cleaned up" : ""))
         settle()
+    }
+
+    /// Stops the cleanup under way, if any: its dictation pastes nothing and
+    /// is not reported (`clean` sees it gone). Returns whether there was one.
+    @discardableResult
+    private func cancelCleanup() -> Bool {
+        guard let cleaning else { return false }
+        self.cleaning = nil
+        cleaning.work.cancel()
+        cleaning.wait.cancel()
+        return true
     }
 
     /// Ends the recording under way and throws it away.
@@ -306,20 +353,21 @@ public final class DictationPipeline {
     }
 
     /// Finishes the dictations in line one at a time, oldest first, so they
-    /// paste in the order they were made.
+    /// paste in the order they were made. While one is cleaned up, the next
+    /// is transcribed, and waits for that paste.
     private func finishLine() async {
         while let dictation = line.first {
             let transcription = await dictation.transcription.value
             // Gone means cancelled while it was transcribing.
             guard line.first?.id == dictation.id else { continue }
             line.removeFirst()
-            finish(dictation, transcription)
+            await finish(dictation, transcription)
         }
         isFinishingLine = false
         settle()
     }
 
-    private func finish(_ dictation: Dictation, _ transcription: Transcription) {
+    private func finish(_ dictation: Dictation, _ transcription: Transcription) async {
         var timer = dictation.timer
         timer.mark(.textReady)
         switch transcription.result {
@@ -329,18 +377,42 @@ public final class DictationPipeline {
                 onNothingHeard?(dictation.clip, dictation.date)
                 return
             }
+            // The service's text has been through OutputFilter (Ruling P3).
+            let rawText = applyingReplacements(to: result.text)
+            var cleanedText: String?
+            var cleanupSeconds: Double?
+            var stillCleaning: Task<CleanerRun, Error>?
+            if let cleaner = cleanerToRun(on: rawText) {
+                switch await clean(rawText, with: cleaner, for: dictation.id) {
+                case .cancelled:
+                    return
+                case .accepted(let run):
+                    cleanedText = run.text
+                    cleanupSeconds = run.seconds
+                case .rawText:
+                    break
+                case .timedOut(let work):
+                    stillCleaning = work
+                }
+                timer.mark(.cleaned)
+            }
+            let text = cleanedText ?? rawText
             let appName = paster.frontmostAppName
-            let pasted = paster.paste(text: result.text)
+            let pasted = paster.paste(text: text)
             timer.mark(.pasted)
             lastTiming = timer
             Log.info("[TIMING] \(timer.summary)")
-            Log.info("[PIPELINE] \(pasted ? "Pasted" : "Could not paste, left on the clipboard:") \(result.text.count) chars from \(result.model.storageKey) in \(String(format: "%.2f", result.elapsed)) s")
-            lastText = result.text
+            let cleanup = cleanupSeconds.map { ", cleaned up in \(String(format: "%.2f", $0)) s" } ?? ""
+            Log.info("[PIPELINE] \(pasted ? "Pasted" : "Could not paste, left on the clipboard:") \(text.count) chars from \(result.model.storageKey) in \(String(format: "%.2f", result.elapsed)) s\(cleanup)")
+            lastText = text
             onOutcome?(DictationOutcome(
                 id: dictation.id, date: dictation.date, clip: dictation.clip,
-                rawText: result.text, text: result.text, model: result.model,
-                transcribeSeconds: result.elapsed, appName: appName, status: pasted ? .pasted : .copied
+                rawText: rawText, cleanedText: cleanedText, text: text, model: result.model,
+                transcribeSeconds: result.elapsed, cleanupSeconds: cleanupSeconds,
+                appName: appName, status: pasted ? .pasted : .copied
             ))
+            if let stillCleaning { keepLateCleanup(stillCleaning, of: rawText, for: dictation.id) }
+            prewarmCleanup()
         case .failure(let error):
             let reason = Self.describe(error)
             Log.info("[PIPELINE] Transcription with \(transcription.model.storageKey) failed: \(reason)")
@@ -372,6 +444,125 @@ public final class DictationPipeline {
         ))
     }
 
+    // MARK: - Cleanup
+
+    /// Readies the cleaner for the next dictation, while cleanup is on and
+    /// the cleaner can run: the app calls it at launch, and the pipeline
+    /// after each pasted dictation.
+    public func prewarmCleanup() {
+        guard let cleaner, cleanupEnabled(), cleaner.isAvailable else { return }
+        cleaner.prewarm()
+    }
+
+    /// The second step of the order (Ruling T21-1): Danny's replacements,
+    /// on the service's text. What it returns is the dictation's raw text,
+    /// which the cleaner gets and the guard compares against.
+    private func applyingReplacements(to text: String) -> String {
+        Self.apply(replacements(), to: text)
+    }
+
+    /// An identity step until Task 22, which adds `Replacements.apply` and
+    /// calls it here.
+    private static func apply(_ rules: [Replacement], to text: String) -> String {
+        text
+    }
+
+    /// The cleaner, when `text` is to be cleaned up: cleanup is on, the text
+    /// has at least `cleanupMinimumWords` words, and the cleaner can run.
+    private func cleanerToRun(on text: String) -> TextCleaner? {
+        guard let cleaner, cleanupEnabled(),
+              CleanupGuard.tokens(text).count >= Self.cleanupMinimumWords,
+              cleaner.isAvailable else { return nil }
+        return cleaner
+    }
+
+    /// Cleans `raw` up, showing `.cleaning`, and waits at most
+    /// `cleanupLimitSeconds` for it. Only an accepted cleanup in time gives
+    /// text to paste; an error, a rejection or the time limit gives the raw
+    /// text, and none of them shows an error (Review Focus 3).
+    private func clean(_ raw: String, with cleaner: TextCleaner, for id: UUID) async -> CleanupEnd {
+        let work = Task { try await Self.run(cleaner, on: raw) }
+        let limit = cleanupLimitSeconds
+        let wait = Task { await Self.wait(for: work, upTo: limit) }
+        cleaning = Cleaning(id: id, work: work, wait: wait)
+        settle()
+        let waited = await wait.value
+        // Gone means cancelled while it was cleaned up (`cancelCleanup`),
+        // whatever the wait saw first.
+        guard cleaning?.id == id else { return .cancelled }
+        cleaning = nil
+        settle()
+        switch waited {
+        case .finished(.success(let run)):
+            guard CleanupGuard.accepts(raw: raw, cleaned: run.text) else {
+                Log.info("[PIPELINE] Cleanup changed more than fillers, punctuation and case; pasting the raw text")
+                return .rawText
+            }
+            return .accepted(run)
+        case .finished(.failure(let error)):
+            Log.info("[PIPELINE] Cleanup failed (\(error.localizedDescription)); pasting the raw text")
+            return .rawText
+        case .timedOut:
+            Log.info("[PIPELINE] Cleanup took longer than \(String(format: "%g", limit)) s; pasting the raw text")
+            return .timedOut(work)
+        case .cancelled:
+            // Only `cancelCleanup` ends the wait early, and it clears `cleaning` first.
+            return .cancelled
+        }
+    }
+
+    /// Lets a cleanup the time limit cut short finish. If the guard accepts
+    /// its text, `onLateCleanup` gets it, once; a rejected or failed result
+    /// is dropped. Its dictation has pasted, so nothing is pasted again.
+    private func keepLateCleanup(_ work: Task<CleanerRun, Error>, of raw: String, for id: UUID) {
+        Task { [weak self] in
+            guard let run = try? await work.value else {
+                Log.info("[PIPELINE] The late cleanup failed; the raw text stays")
+                return
+            }
+            guard CleanupGuard.accepts(raw: raw, cleaned: run.text) else {
+                Log.info("[PIPELINE] The late cleanup changed more than fillers, punctuation and case; dropped")
+                return
+            }
+            Log.info("[PIPELINE] Cleanup came back after \(String(format: "%.2f", run.seconds)) s; kept beside the pasted text")
+            self?.onLateCleanup?(id, run.text, run.seconds)
+        }
+    }
+
+    /// Runs the cleaner, off the main thread, and times it.
+    nonisolated private static func run(_ cleaner: TextCleaner, on raw: String) async throws -> CleanerRun {
+        let start = ContinuousClock.now
+        let text = try await cleaner.clean(raw)
+        let elapsed = start.duration(to: .now).components
+        return CleanerRun(text: text, seconds: Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18)
+    }
+
+    /// Waits for `work` until it ends, `seconds` pass, or this wait is
+    /// cancelled, whichever comes first. `work` itself is never cancelled
+    /// here: past the time limit it runs on, for a late result.
+    nonisolated private static func wait(for work: Task<CleanerRun, Error>, upTo seconds: TimeInterval) async -> Waited {
+        await withTaskGroup(of: Waited.self) { group in
+            group.addTask {
+                do {
+                    return .finished(.success(try await valueUnlessCancelled(of: work)))
+                } catch {
+                    return Task.isCancelled ? .cancelled : .finished(.failure(error))
+                }
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: .seconds(seconds))
+                    return .timedOut
+                } catch {
+                    return .cancelled
+                }
+            }
+            let first = await group.next() ?? .cancelled
+            group.cancelAll()
+            return first
+        }
+    }
+
     // MARK: - State
 
     /// Shows an error, then after `errorDisplaySeconds` the true state.
@@ -396,14 +587,17 @@ public final class DictationPipeline {
     }
 
     /// Sets the state to what is true now. Recording comes first, then an
-    /// error on show, then dictations in line, then a model being prepared,
-    /// then a missing permission.
+    /// error on show, then a cleanup under way (the dictation that pastes
+    /// next), then dictations in line, then a model being prepared, then a
+    /// missing permission.
     private func settle() {
         let next: DictationState
         if let since = capture?.startedAt {
             next = .recording(since: since)
         } else if let errorMessage {
             next = .error(errorMessage)
+        } else if cleaning != nil {
+            next = .cleaning
         } else if !line.isEmpty {
             next = .transcribing
         } else if let model = modelsPreparing.last {
@@ -432,8 +626,10 @@ public final class DictationPipeline {
 
     // MARK: - For tests
 
-    /// Dictations the pipeline holds: the one recording and those in line.
-    var dictationsInFlight: Int { (capture == nil ? 0 : 1) + line.count }
+    /// Dictations the pipeline holds: the one recording, the one being
+    /// cleaned up and those in line. A pasted dictation whose cleanup runs on
+    /// for a late result is not one of them.
+    var dictationsInFlight: Int { (capture == nil ? 0 : 1) + (cleaning == nil ? 0 : 1) + line.count }
 
     // MARK: - Types
 
@@ -462,6 +658,41 @@ public final class DictationPipeline {
         let result: Result<TranscriptionResult, Error>
         /// The model that ran, or for a failure the model selected then.
         let model: ModelID
+    }
+
+    /// The dictation being cleaned up.
+    private struct Cleaning {
+        let id: UUID
+        /// The cleaner's run. Past the time limit it runs on, for a late result.
+        let work: Task<CleanerRun, Error>
+        /// Waits for `work` up to the time limit; `cancelCleanup` ends it at once.
+        let wait: Task<Waited, Never>
+    }
+
+    /// What the cleaner gave back, and how long it took.
+    private struct CleanerRun: Sendable {
+        let text: String
+        let seconds: Double
+    }
+
+    /// What the wait for a cleanup saw first.
+    private enum Waited: Sendable {
+        case finished(Result<CleanerRun, Error>)
+        case timedOut
+        case cancelled
+    }
+
+    /// How a dictation's cleanup ended, for its paste.
+    private enum CleanupEnd {
+        /// The guard accepted it in time: its text pastes.
+        case accepted(CleanerRun)
+        /// Rejected, or failed: the raw text pastes.
+        case rawText
+        /// Still running at the time limit: the raw text pastes, and a late
+        /// result may follow.
+        case timedOut(Task<CleanerRun, Error>)
+        /// Cancelled with its dictation: nothing pastes.
+        case cancelled
     }
 }
 

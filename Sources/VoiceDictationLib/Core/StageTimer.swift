@@ -21,12 +21,15 @@ public struct StageTimer {
     }
 
     /// One line, e.g. `keyDown→firstAudio=120ms keyUp→text=800ms text→pasted=15ms`.
-    /// Intervals with a missing mark are left out.
+    /// Intervals with a missing mark are left out. Cleanup's interval,
+    /// `text→cleaned`, comes last and only when cleanup ran (Ruling P5), so
+    /// the first three read as they always have; `text→pasted` includes it.
     public var summary: String {
         let parts: [(String, Stage, Stage)] = [
             ("keyDown→firstAudio", .keyDown, .firstAudio),
             ("keyUp→text", .keyUp, .textReady),
             ("text→pasted", .textReady, .pasted),
+            ("text→cleaned", .textReady, .cleaned),
         ]
         return parts.compactMap { name, from, to in
             milliseconds(from: from, to: to).map { "\(name)=\($0)ms" }

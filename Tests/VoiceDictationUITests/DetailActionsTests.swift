@@ -459,6 +459,140 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertFalse(LibraryModel.offersUseCleaned(try XCTUnwrap(store.add(outcome("Hello there.")))))
     }
 
+    // MARK: - Raw and cleaned (Task 21)
+
+    /// A cleanup that changed the text offers the Raw / Cleaned switch. It
+    /// starts on the main text's side, which Danny can edit; the other side
+    /// shows the other version to read only. ⌘C copies what is shown, or the
+    /// selected part of it (Ruling T18-3); Copy copies the transcript.
+    /// Another transcript starts on its main text's side.
+    @MainActor
+    func testRawCleanedSwitchShowsEitherVersion() throws {
+        let (library, store) = try rig()
+        let other = try XCTUnwrap(store.add(outcome("Hello there.", at: base)))
+        let unchanged = try XCTUnwrap(store.add(outcome("Hello again.", at: base.addingTimeInterval(30),
+                                                        cleanedText: "Hello again.")))
+        let t = try XCTUnwrap(store.add(outcome("So ship it Friday.", at: base.addingTimeInterval(60),
+                                                rawText: "um so ship it friday", cleanedText: "So ship it Friday.")))
+        library.windowOpened()
+        XCTAssertEqual(library.selection, t.id)
+        XCTAssertTrue(LibraryModel.offersRawCleanedSwitch(t))
+        XCTAssertFalse(LibraryModel.offersRawCleanedSwitch(other), "no cleanup")
+        XCTAssertFalse(LibraryModel.offersRawCleanedSwitch(unchanged), "a cleanup that changed nothing")
+        XCTAssertEqual(library.versionShowing(t), .cleaned)
+        XCTAssertTrue(library.showsMainText(t))
+        XCTAssertEqual(library.shownText(t), "So ship it Friday.")
+
+        library.show(.raw, of: t)
+
+        XCTAssertEqual(library.versionShowing(t), .raw)
+        XCTAssertFalse(library.showsMainText(t), "the raw text is there to read, not to edit")
+        XCTAssertEqual(library.shownText(t), "um so ship it friday")
+        XCTAssertEqual(library.copyCommandText, "um so ship it friday")
+        library.textSelection = NSRange(location: 6, length: 7)
+        XCTAssertEqual(library.copyCommandText, "ship it")
+        library.copy(t)
+        XCTAssertEqual(paster.copied, ["So ship it Friday."], "Copy copies the transcript")
+        XCTAssertEqual(t.text, "So ship it Friday.", "showing the raw text changes nothing")
+        XCTAssertFalse(t.isEdited)
+
+        library.show(.cleaned, of: t)
+        XCTAssertNil(library.textSelection, "the selection belonged to the other text")
+        XCTAssertTrue(library.showsMainText(t))
+        XCTAssertEqual(library.shownText(t), "So ship it Friday.")
+
+        library.show(.raw, of: t)
+        library.selection = other.id
+        library.selection = t.id
+        XCTAssertEqual(library.versionShowing(t), .cleaned, "another transcript starts on its main text")
+    }
+
+    /// A cleanup that came late leaves the raw text the main one: the switch
+    /// starts on Raw, Cleaned shows the cleanup to read, and "Use cleaned"
+    /// makes it the main text, which then shows on Cleaned, to edit.
+    @MainActor
+    func testRawCleanedSwitchForALateCleanup() throws {
+        let (library, store) = try rig()
+        let t = try XCTUnwrap(store.add(outcome("um so ship it friday")))
+        store.setLateCleanup(id: t.id, cleanedText: "So ship it Friday.", seconds: 2.6)
+        library.windowOpened()
+        XCTAssertTrue(LibraryModel.offersRawCleanedSwitch(t))
+        XCTAssertEqual(library.versionShowing(t), .raw)
+        XCTAssertTrue(library.showsMainText(t))
+        XCTAssertFalse(LibraryModel.offersRevertToRaw(t), "the raw text is the main text already")
+
+        library.show(.cleaned, of: t)
+        XCTAssertFalse(library.showsMainText(t))
+        XCTAssertEqual(library.shownText(t), "So ship it Friday.")
+
+        library.useCleaned(t)
+        XCTAssertEqual(t.text, "So ship it Friday.")
+        XCTAssertTrue(library.showsMainText(t), "the cleaned text is the main text now")
+        XCTAssertTrue(LibraryModel.offersRevertToRaw(t))
+    }
+
+    /// Only a look at the other version is remembered: turning the switch
+    /// back, or an action that gives the transcript another main text, shows
+    /// the main text again. So an edit, which can move the main text from the
+    /// Raw side to the Cleaned one, always stays on show.
+    @MainActor
+    func testTheSwitchFollowsTheMainText() throws {
+        let (library, store) = try rig(editSaveDelay: .seconds(30))
+        let t = try XCTUnwrap(store.add(outcome("um so ship it friday")))
+        store.setLateCleanup(id: t.id, cleanedText: "So ship it Friday.", seconds: 2.6)
+        library.windowOpened()
+
+        library.show(.cleaned, of: t)
+        library.show(.raw, of: t)
+        library.edit(t, text: "Um, so ship it on Friday.")
+        library.commitEdit()
+        XCTAssertTrue(library.showsMainText(t), "the edit stays on show")
+        XCTAssertEqual(library.shownText(t), "Um, so ship it on Friday.")
+        XCTAssertEqual(library.versionShowing(t), .cleaned, "an edit is on the cleaned side")
+
+        library.show(.raw, of: t)
+        library.revertToRaw(t)
+        XCTAssertEqual(library.shownText(t), "um so ship it friday")
+        library.edit(t, text: "Um, so ship it.")
+        library.commitEdit()
+        XCTAssertTrue(library.showsMainText(t), "the edit after Revert to raw stays on show")
+        XCTAssertEqual(library.shownText(t), "Um, so ship it.")
+
+        library.show(.raw, of: t)
+        library.useCleaned(t)
+        XCTAssertTrue(library.showsMainText(t), "Use cleaned shows the cleaned text it made the main one")
+        XCTAssertEqual(library.shownText(t), "So ship it Friday.")
+    }
+
+    /// "Revert to raw" is offered for a cleaned transcript, not only an
+    /// edited one, and makes the raw text the main text; "Use cleaned" undoes
+    /// it, with nothing set aside. Turning the switch saves an edit being
+    /// typed first.
+    @MainActor
+    func testRevertToRawForACleanedTranscript() throws {
+        let (library, store) = try rig()
+        let t = try XCTUnwrap(store.add(outcome("So ship it Friday.", rawText: "um so ship it friday",
+                                                cleanedText: "So ship it Friday.")))
+        library.windowOpened()
+        XCTAssertTrue(LibraryModel.offersRevertToRaw(t))
+        XCTAssertFalse(LibraryModel.offersUseCleaned(t))
+
+        library.revertToRaw(t)
+
+        XCTAssertEqual(t.text, "um so ship it friday")
+        XCTAssertFalse(LibraryModel.offersRevertToRaw(t))
+        XCTAssertTrue(LibraryModel.offersUseCleaned(t))
+        XCTAssertEqual(t.alternates.count, 0, "both texts stay on the transcript")
+
+        library.useCleaned(t)
+        library.edit(t, text: "So ship it on Friday.")
+        library.show(.raw, of: t)
+
+        XCTAssertEqual(t.text, "So ship it on Friday.", "the edit was saved first")
+        XCTAssertTrue(t.isEdited)
+        XCTAssertEqual(library.shownText(t), "um so ship it friday")
+    }
+
     /// The text view is editable in Prism's face, with no spelling marks (the
     /// spectrum is the screen's only colour). ⌘Z undoes typing, and showing
     /// another transcript starts its undo afresh. The window is never shown.

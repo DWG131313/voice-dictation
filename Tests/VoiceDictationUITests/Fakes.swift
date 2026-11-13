@@ -93,6 +93,28 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     func unload() async {}
 }
 
+/// A cleaner that replies after `delay` seconds; state behind one lock.
+final class FakeCleaner: TextCleaner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _reply: (@Sendable (String) -> String)?
+    private var _delay: TimeInterval = 0
+
+    /// What it makes of a text; nil gives the text back unchanged.
+    var reply: (@Sendable (String) -> String)? {
+        get { lock.withLock { _reply } }
+        set { lock.withLock { _reply = newValue } }
+    }
+    var delay: TimeInterval {
+        get { lock.withLock { _delay } }
+        set { lock.withLock { _delay = newValue } }
+    }
+
+    func clean(_ raw: String) async throws -> String {
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        return reply?(raw) ?? raw
+    }
+}
+
 /// A recorder that calls its delegate the way `AudioRecorder` does, without
 /// a microphone. Use from the main thread, as the real one.
 final class FakeRecorder: Recording {

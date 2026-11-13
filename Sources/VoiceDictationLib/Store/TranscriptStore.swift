@@ -260,6 +260,32 @@ public final class TranscriptStore {
         save("the cleaned text")
     }
 
+    /// A cleanup that came back after its dictation was pasted (Task 21):
+    /// keeps it beside the transcript as `cleanedText` and `cleanupSeconds`,
+    /// for "Use cleaned". Nothing else changes: not the main text, which is
+    /// what was pasted or Danny's edit of it, nor `rawText` or `isEdited`. An
+    /// id the store does not know (a transcript deleted meanwhile) changes
+    /// nothing.
+    public func setLateCleanup(id: UUID, cleanedText: String, seconds: Double) {
+        guard let context else { return }
+        var descriptor = FetchDescriptor<Transcript>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        let found: Transcript?
+        do {
+            found = try context.fetch(descriptor).first
+        } catch {
+            Log.info("[STORE] Could not find the transcript of \(id) for its late cleanup: \(error)")
+            return
+        }
+        guard let t = found else {
+            Log.info("[STORE] No transcript of \(id) for its late cleanup")
+            return
+        }
+        t.cleanedText = cleanedText
+        t.cleanupSeconds = seconds
+        save("the late cleanup of \(id)")
+    }
+
     /// Sets the transcript's status. The window makes a failed dictation
     /// Copied once a re-transcription has given it a text and put that on
     /// the clipboard (Review Focus 1); its recording then prunes like any
