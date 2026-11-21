@@ -149,6 +149,9 @@ public final class LibraryModel {
     /// Paste again hid (Ruling T19-5).
     public func windowOpened() {
         isWindowOpen = true
+        // The app may have run for days without a dictation, which is when
+        // recordings past a week go otherwise.
+        store.pruneRecordings()
         reload()
         if section.scope != nil { selection = rows.first?.id }
     }
@@ -176,6 +179,7 @@ public final class LibraryModel {
     /// loading. It never takes the selection from another transcript: only
     /// with none selected is it selected, if it is listed.
     public func noteNewTranscript(_ t: Transcript) {
+        stopPlayingIfRemoved()
         guard isWindowOpen else { return }
         listRows(keepingSelection: true)
         countTranscripts()
@@ -545,6 +549,14 @@ public final class LibraryModel {
             Log.info("[LIBRARY] Could not play \(url.lastPathComponent): \(error)")
             show("The recording could not be played.", for: t.id)
         }
+    }
+
+    /// Stops the recording playing if keeping the latest dictation removed
+    /// its file: its transcript no longer names it, so its detail could not
+    /// stop it (code review, 2026-11-20).
+    private func stopPlayingIfRemoved() {
+        guard let url = player.playing, !FileManager.default.fileExists(atPath: url.path) else { return }
+        player.stop()
     }
 
     /// Whether the transcript's recording is the one playing.

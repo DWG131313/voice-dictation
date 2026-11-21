@@ -150,6 +150,26 @@ final class AudioArchiveTests: XCTestCase {
         XCTAssertNotNil(pinned.audioFileName, "a pinned one keeps its recording")
     }
 
+    /// `pruneRecordings` applies the store's own limits, judged now: a
+    /// recording that aged past a week since it was kept goes.
+    @MainActor
+    func testPruneRecordingsRemovesWhatAgedPastAWeek() throws {
+        let archive = AudioArchive(directory: try makeDirectory())
+        let unused = FileManager.default.temporaryDirectory.appendingPathComponent("vd-unused-\(UUID().uuidString)")
+        var now = base
+        let store = TranscriptStore(directory: unused, inMemory: true, now: base, audio: archive,
+                                    keptRecordings: { 50 }, recordingLifetime: TranscriptStore.weekOfRecordings,
+                                    clock: { now })
+        let t = try XCTUnwrap(store.add(outcome(0)))
+        XCTAssertNotNil(t.audioFileName)
+
+        now = base.addingTimeInterval(8 * 86_400)
+        store.pruneRecordings()
+
+        XCTAssertNil(t.audioFileName)
+        XCTAssertEqual(files(archive), [])
+    }
+
     /// The store the tests have always made keeps recordings of any age.
     @MainActor
     func testWithoutALifetimeNothingExpires() throws {

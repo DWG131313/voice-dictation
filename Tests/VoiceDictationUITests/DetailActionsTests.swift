@@ -798,6 +798,56 @@ final class DetailActionsTests: XCTestCase {
         XCTAssertEqual(ComparisonView.marks("a **b** c", against: ["a b d"]).map(\.word), ["a", "**b**", "c"])
     }
 
+    // MARK: - Recordings that go (code review, 2026-11-20)
+
+    /// A library over a store with its own limits and clock.
+    @MainActor
+    private func limitedRig(keeping: Int, now: @escaping () -> Date) throws -> (LibraryModel, TranscriptStore) {
+        let directory = try makeDirectory()
+        let store = TranscriptStore(directory: directory, inMemory: true, now: base,
+                                    audio: AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true)),
+                                    keptRecordings: { keeping }, recordingLifetime: TranscriptStore.weekOfRecordings,
+                                    clock: now)
+        let library = LibraryModel(store: store, service: TranscriptionService(engines: [], selected: .appleSpeech),
+                                   paster: paster, vocabulary: { [] }, replacements: { [] },
+                                   system: FakeApps().system, editSaveDelay: .seconds(30))
+        return (library, store)
+    }
+
+    /// The app can run for days without a dictation: opening the window
+    /// removes the recordings that aged past a week meanwhile.
+    @MainActor
+    func testOpeningTheWindowRemovesRecordingsOlderThanAWeek() throws {
+        var now = base
+        let (library, store) = try limitedRig(keeping: 50) { now }
+        let t = try XCTUnwrap(store.add(outcome("A week ago.", at: base)))
+        XCTAssertNotNil(t.audioFileName)
+
+        now = base.addingTimeInterval(8 * 86_400)
+        library.windowOpened()
+
+        XCTAssertNil(t.audioFileName)
+        XCTAssertEqual(LibraryModel.audioUnavailableReason(t), "Audio no longer kept")
+    }
+
+    /// A dictation that removes the recording playing stops it, so the
+    /// detail never shows a disabled Play while sound goes on.
+    @MainActor
+    func testARecordingRemovedWhilePlayingStops() throws {
+        let (library, store) = try limitedRig(keeping: 1) { self.base }
+        let first = try XCTUnwrap(store.add(outcome("First.", at: base)))
+        library.windowOpened()
+        let name = try XCTUnwrap(first.audioFileName)
+        // Stands in for playing it: no test plays audio.
+        library.player.playing = try XCTUnwrap(store.audio).url(for: name)
+
+        let second = try XCTUnwrap(store.add(outcome("Second.", at: base.addingTimeInterval(60))))
+        library.noteNewTranscript(second)
+
+        XCTAssertNil(first.audioFileName, "the newer dictation took its place")
+        XCTAssertNil(library.player.playing)
+    }
+
     // MARK: - Playing
 
     /// A recording that cannot be read is not played. (No test plays audio:

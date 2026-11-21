@@ -110,6 +110,13 @@ public final class TranscriptStore {
 
     // MARK: - Kept recordings
 
+    /// Prunes to the store's own limits: `keptRecordings()` newest, and
+    /// none older than `recordingLifetime`, judged now. For the moments no
+    /// dictation prunes: the app starting, and the window opening.
+    public func pruneRecordings() {
+        prune(keeping: keptRecordings())
+    }
+
     /// Keeps the recordings of the newest `limit` ordinary transcripts and
     /// removes the others', and those older than `recordingLifetime` when
     /// the store has one, judged at `now` or else the clock (their

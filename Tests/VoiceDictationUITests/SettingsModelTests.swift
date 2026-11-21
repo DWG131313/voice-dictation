@@ -135,6 +135,15 @@ final class SettingsModelTests: XCTestCase {
         }
     }
 
+    /// The note under "Recordings to keep" says what lasts: a week of
+    /// recordings, pinned and failed ones always, transcripts always.
+    func testTheRecordingsNoteSaysWhatKeepsItsAudio() {
+        let note = SettingsModel.keptRecordingsNote
+        for words in ["a week", "pinned", "failed", "transcripts"] {
+            XCTAssertTrue(note.contains(words), "\(words) is missing from: \(note)")
+        }
+    }
+
     /// The rows, in the brief's order.
     func testTheRowsAreInOrder() {
         XCTAssertEqual(SettingsModel.Row.allCases.map(\.title), [

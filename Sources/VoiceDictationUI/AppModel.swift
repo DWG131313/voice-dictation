@@ -198,7 +198,7 @@ public final class AppModel {
 
         // Recordings last a week (and "Recordings to keep" at most): those
         // that aged out while the app was not running go now.
-        store.prune(keeping: preferences.keptRecordings)
+        store.pruneRecordings()
 
         // Reconcile "open at login" with the user's preference. This is a
         // deliberate no-op for dev builds (anything under .build): registering

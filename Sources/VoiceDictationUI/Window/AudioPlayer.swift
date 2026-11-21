@@ -6,8 +6,9 @@ import Observation
 /// the first. Use from the main thread, where AVFoundation calls its delegate.
 @MainActor @Observable
 final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
-    /// The recording playing now; nil while nothing plays.
-    private(set) var playing: URL?
+    /// The recording playing now; nil while nothing plays. Set only here,
+    /// and by tests standing in for playback (no test plays audio).
+    var playing: URL?
     @ObservationIgnored private var player: AVAudioPlayer?
 
     /// Plays the recording at `url` from its start, stopping any other.

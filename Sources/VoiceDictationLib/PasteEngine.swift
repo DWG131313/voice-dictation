@@ -8,17 +8,30 @@ public class PasteEngine: Pasting {
     /// pasteboard a beat after receiving Cmd+V; restore too early and they
     /// paste the old contents.
     private let clipboardRestoreDelay: TimeInterval
+    /// Posts Cmd+V to the app in front; false if it could not.
+    private let postPaste: () -> Bool
+    /// The put-back still waiting: what the clipboard held before the
+    /// paste, and the change count the paste left. A paste made while one
+    /// waits, with the clipboard still as that paste left it, puts back the
+    /// same snapshot, not the earlier paste's text (code review, 2026-11-20).
+    private var pendingRestore: (snapshot: Snapshot, changeCount: Int)?
+    /// Counts the pastes, so only the latest one's put-back runs.
+    private var pasteCount = 0
 
     public convenience init() {
-        self.init(pasteboard: .general, isTrusted: { AXIsProcessTrusted() }, restoreDelay: 0.5)
+        self.init(pasteboard: .general, isTrusted: { AXIsProcessTrusted() }, restoreDelay: 0.5,
+                  postPaste: PasteEngine.postCmdV)
     }
 
-    /// Tests pass a pasteboard of their own and say whether Accessibility
-    /// access is granted.
-    init(pasteboard: NSPasteboard, isTrusted: @escaping () -> Bool, restoreDelay: TimeInterval) {
+    /// Tests pass a pasteboard of their own, say whether Accessibility
+    /// access is granted, and stand in for the keystroke, so nothing is
+    /// ever posted to the app in front.
+    init(pasteboard: NSPasteboard, isTrusted: @escaping () -> Bool, restoreDelay: TimeInterval,
+         postPaste: @escaping () -> Bool = { false }) {
         self.pasteboard = pasteboard
         self.isTrusted = isTrusted
         self.clipboardRestoreDelay = restoreDelay
+        self.postPaste = postPaste
     }
 
     public var frontmostAppName: String? {
@@ -34,7 +47,14 @@ public class PasteEngine: Pasting {
 
         // 1. Snapshot everything on the clipboard — images, files, rich text —
         //    not just the plain string, so nothing the user copied is lost.
-        let snapshot = Self.snapshot(of: pasteboard)
+        //    While an earlier paste's put-back waits and its text is still
+        //    there, that put-back's snapshot is the one to keep.
+        let snapshot: Snapshot
+        if let pending = pendingRestore, pending.changeCount == pasteboard.changeCount {
+            snapshot = pending.snapshot
+        } else {
+            snapshot = Self.snapshot(of: pasteboard)
+        }
 
         // 2. Set transcribed text
         pasteboard.clearContents()
@@ -47,11 +67,17 @@ public class PasteEngine: Pasting {
             Log.info("[PASTE] Accessibility not granted — text left on the clipboard")
             return false
         }
-        guard simulatePaste() else { return false }
+        guard postPaste() else { return false }
 
         // 4. Restore clipboard after delay — unless the user has already
-        //    copied something new in the meantime, which must win.
-        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
+        //    copied something new in the meantime, which must win, or a later
+        //    paste has taken over the put-back.
+        pasteCount += 1
+        let thisPaste = pasteCount
+        pendingRestore = (snapshot, ourChangeCount)
+        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) { [weak self] in
+            guard let self, self.pasteCount == thisPaste else { return }
+            self.pendingRestore = nil
             guard pasteboard.changeCount == ourChangeCount else { return }
             Self.restore(snapshot, to: pasteboard)
         }
@@ -127,7 +153,7 @@ public class PasteEngine: Pasting {
     }
 
     /// Sends Cmd+V; false if the events could not be made.
-    private func simulatePaste() -> Bool {
+    static func postCmdV() -> Bool {
         guard let keystrokes = Self.pasteKeystrokes() else {
             Log.info("[PASTE] Failed to create Cmd+V events — text left on the clipboard")
             return false
