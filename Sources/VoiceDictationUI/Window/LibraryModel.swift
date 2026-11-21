@@ -313,21 +313,28 @@ public final class LibraryModel {
         return place.map { .place($0) }
     }
 
-    /// Whether each day's rows sit under group headings: not while one
-    /// folder, or one app's transcripts without a folder, shows alone, as
-    /// every row is from that place.
+    /// Whether each day's rows sit under group headings. Always outside
+    /// Places. In Places, only while the rows listed come from more than one
+    /// place, as an app's from several folders do: a folder, or an app
+    /// without any, shows day headings only, since every row is from it.
     var showsGroupHeadings: Bool {
-        guard section == .places, case .place? = place else { return true }
-        return false
+        guard section == .places else { return true }
+        guard let first = rows.first.map(Place.init) else { return false }
+        return rows.contains { Place($0) != first }
     }
 
     /// The place showing, for the sidebar under "Projects & apps": its
-    /// folder, or else its app; nil when Places is not showing.
+    /// folder, or else its app; an app's transcripts without a folder read
+    /// "Terminal · No folder recorded". Nil when Places is not showing.
     var placeTitle: String? {
         guard section == .places, let place else { return nil }
         switch place {
-        case .app(let app): return TranscriptGroups.title(of: Place(app: app, project: nil)).name
-        case .place(let place): return TranscriptGroups.title(of: place).name
+        case .app(let app):
+            return TranscriptGroups.title(of: Place(app: app, project: nil)).name
+        case .place(let place) where place.project == nil:
+            return "\(TranscriptGroups.title(of: place).name) · No folder recorded"
+        case .place(let place):
+            return TranscriptGroups.title(of: place).name
         }
     }
 
@@ -357,7 +364,8 @@ public final class LibraryModel {
     /// The rows the list shows, in its order: by day, then by group, those
     /// not under a folded day nor, while group headings show, a folded group.
     var visibleRows: [Transcript] {
-        days.flatMap { day -> [Transcript] in
+        let showsGroupHeadings = showsGroupHeadings
+        return days.flatMap { day -> [Transcript] in
             guard !folded.contains(day.id) else { return [] }
             guard showsGroupHeadings else { return day.transcripts }
             return day.groups.flatMap { folded.contains($0.id) ? [] : $0.transcripts }
@@ -402,16 +410,21 @@ public final class LibraryModel {
     /// Danny said yes: the heading's transcripts go, in one save, and then
     /// their recordings. First each one's edit, playback and message end,
     /// as for a single deletion. A selected one hands the selection to the
-    /// nearest row left. Pinned transcripts never go.
+    /// nearest row left. Pinned transcripts never go. A heading it empties
+    /// away forgets its fold, and a day's groups theirs, so a dictation
+    /// that brings the heading back shows it open.
     public func confirmHeadingDeletion() {
         guard let deletion = headingDeletionToConfirm else { return }
         headingDeletionToConfirm = nil
         let ids = Set(deletion.ids)
         let doomed = deletable(rows.filter { ids.contains($0.id) })
         guard !doomed.isEmpty else { return }
+        let headings = [deletion.id] + (days.first { $0.id == deletion.id }?.groups.map(\.id) ?? [])
         for t in doomed { letGo(of: t) }
         store.delete(doomed)
         relist(afterRemoving: ids)
+        let remaining = Set(days.map(\.id) + days.flatMap { $0.groups.map(\.id) })
+        for heading in headings where !remaining.contains(heading) { folded.remove(heading) }
     }
 
     /// Danny kept them.
@@ -848,6 +861,7 @@ public final class LibraryModel {
         guard rows.isEmpty else { return nil }
         if !query.isEmpty { return "No transcripts match “\(query)”." }
         if length != .any { return "No transcripts of that length." }
+        if let placeTitle { return "No transcripts from \(placeTitle)." }
         let anyKept = (counts[.all] ?? 0) > 0
         switch section {
         case .today where anyKept: return "Nothing dictated today."

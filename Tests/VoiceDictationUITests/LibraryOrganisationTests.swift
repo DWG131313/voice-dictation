@@ -49,15 +49,50 @@ final class LibraryOrganisationTests: XCTestCase {
         XCTAssertNil(library.count(of: .places, models: []))
 
         library.show(.app("Terminal"))
-        XCTAssertTrue(library.showsGroupHeadings)
+        XCTAssertTrue(library.showsGroupHeadings, "Terminal's rows are from two folders")
         XCTAssertEqual(library.placeTitle, "Terminal")
         XCTAssertEqual(library.rows.map(\.text), ["Another repo.", "Today's fix.", "Yesterday's fix."])
+
+        library.show(.app("Notes"))
+        XCTAssertFalse(library.showsGroupHeadings, "every one of Notes' rows is from one place")
+        XCTAssertEqual(library.visibleRows.map(\.text), ["A note."])
 
         // Choosing All leaves the place.
         library.section = .all
         XCTAssertNil(library.place)
         XCTAssertNil(library.placeTitle)
+        XCTAssertTrue(library.showsGroupHeadings)
         XCTAssertEqual(library.rows.count, 4)
+    }
+
+    /// The sidebar names the place showing: its folder, or else its app,
+    /// and an app's transcripts without a folder say so. A place emptied by
+    /// deleting says so in the list, by that name.
+    @MainActor
+    func testAPlaceIsNamedAndSaysWhenItIsEmpty() throws {
+        let store = memoryStore()
+        store.add(outcome("A note.", at: noon, appName: "Notes"))
+        store.add(outcome("A fix.", at: noon.addingTimeInterval(60), appName: "Terminal", project: "Voice Dictation"))
+        let library = makeLibrary(store)
+        library.windowOpened()
+
+        library.show(.place(Place(app: "Terminal", project: "Voice Dictation")))
+        XCTAssertEqual(library.placeTitle, "Voice Dictation")
+        library.show(.place(Place(app: "Terminal", project: nil)))
+        XCTAssertEqual(library.placeTitle, "Terminal · No folder recorded")
+        XCTAssertEqual(library.emptyMessage, "No transcripts from Terminal · No folder recorded.")
+        library.show(.app(nil))
+        XCTAssertEqual(library.placeTitle, "Unknown app")
+
+        library.show(.app("Notes"))
+        XCTAssertEqual(library.placeTitle, "Notes")
+        XCTAssertNil(library.emptyMessage)
+        library.askToDelete(day: try XCTUnwrap(library.days.first))
+        library.confirmHeadingDeletion()
+        XCTAssertTrue(library.rows.isEmpty)
+        XCTAssertEqual(library.emptyMessage, "No transcripts from Notes.")
+        library.length = .short
+        XCTAssertEqual(library.emptyMessage, "No transcripts of that length.", "a length says so first")
     }
 
     @MainActor
@@ -155,6 +190,50 @@ final class LibraryOrganisationTests: XCTestCase {
         XCTAssertTrue(library.isFolded(group.id), "folds last while the app runs")
         XCTAssertFalse(library.visibleRows.contains { $0.id == fix.id })
         XCTAssertNotEqual(library.selection, fix.id, "the selection moves off a row that is folded away")
+    }
+
+    /// Heading ids last from day to day, so a heading deleted while folded
+    /// forgets its fold: the next dictation there shows, and is selected as
+    /// a new one is. A search that only hides a heading keeps its fold.
+    @MainActor
+    func testDeletingAFoldedHeadingForgetsItsFold() throws {
+        let store = memoryStore()
+        store.add(outcome("A note.", at: noon, appName: "Notes"))
+        store.add(outcome("A fix.", at: noon.addingTimeInterval(60), appName: "Terminal", project: "Voice Dictation"))
+        let library = makeLibrary(store)
+        library.windowOpened()
+        var today = try XCTUnwrap(library.days.first)
+        let notes = try XCTUnwrap(today.groups.first { $0.place.app == "Notes" })
+
+        library.toggleFold(notes.id)
+        library.query = "fix"
+        library.query = ""
+        XCTAssertTrue(library.isFolded(notes.id), "a search that hid it does not forget it")
+
+        library.askToDelete(group: notes, on: today)
+        library.confirmHeadingDeletion()
+        XCTAssertFalse(library.isFolded(notes.id))
+        let note = try XCTUnwrap(store.add(outcome("Another note.", at: noon.addingTimeInterval(120), appName: "Notes")))
+        library.noteNewTranscript(note)
+        XCTAssertTrue(library.visibleRows.contains { $0.id == note.id }, "the group comes back open")
+
+        today = try XCTUnwrap(library.days.first)
+        let groups = today.groups.map(\.id)
+        library.toggleFold(today.id)
+        for group in groups { library.toggleFold(group) }
+        XCTAssertNil(library.selection, "everything is folded away")
+        library.askToDelete(day: today)
+        library.confirmHeadingDeletion()
+        XCTAssertTrue(library.days.isEmpty)
+        XCTAssertFalse(library.isFolded(today.id))
+        XCTAssertFalse(groups.contains { library.isFolded($0) }, "the day's groups forget theirs too")
+
+        let fresh = try XCTUnwrap(store.add(outcome("A new day's fix.", at: noon.addingTimeInterval(180),
+                                                    appName: "Terminal", project: "Voice Dictation")))
+        library.noteNewTranscript(fresh)
+        XCTAssertEqual(library.days.first?.id, today.id, "the same day's heading is back")
+        XCTAssertEqual(library.visibleRows.map(\.id), [fresh.id])
+        XCTAssertEqual(library.selection, fresh.id)
     }
 
     // MARK: - Deleting a heading
