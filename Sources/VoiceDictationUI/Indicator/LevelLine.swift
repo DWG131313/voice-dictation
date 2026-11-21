@@ -17,12 +17,26 @@ public struct LevelLine {
     public static let step: CGFloat = 5, interval: TimeInterval = 0.05, width: CGFloat = 170, height: CGFloat = 26
     public static let gain: Float = 5, floor: Float = 0.03, attack: Float = 0.75, release: Float = 0.35, exponent: Float = 0.7
 
-    /// Vertices kept: enough to span `width`, plus the one entering on the
-    /// right and the one leaving on the left.
-    static let capacity = Int(width / step) + 3
+    /// The canvas a line is drawn for: its size and how far each interval moves it.
+    public struct Geometry: Equatable, Sendable {
+        public let width: CGFloat, height: CGFloat, step: CGFloat
+
+        /// Vertices kept: enough to span `width`, plus the one entering on the
+        /// right and the one leaving on the left.
+        var capacity: Int { Int(width / step) + 3 }
+
+        /// The bottom pill's line.
+        public static let indicator = Geometry(width: 170, height: 26, step: 5)
+        /// The mini view tab's line.
+        public static let tab = Geometry(width: 26, height: 18, step: 2.6)
+    }
+
+    public static let indicator = Geometry.indicator, tab = Geometry.tab
+
+    public let geometry: Geometry
 
     /// Each vertex's height (-1...1), oldest first; silent (0) where nothing was heard.
-    private var vertices = [Float](repeating: 0, count: capacity)
+    private var vertices: [Float]
     /// The interval the latest peak arrived in; nil until the first peak.
     private var current: Int?
     /// The loudest peak heard in `current`; nil until one arrives.
@@ -34,7 +48,10 @@ public struct LevelLine {
     /// The smoothed loudness at the newest vertex.
     private var envelope: Float = 0
 
-    public init() {}
+    public init(_ geometry: Geometry = .indicator) {
+        self.geometry = geometry
+        vertices = [Float](repeating: 0, count: geometry.capacity)
+    }
 
     /// Hears a peak (0...1) of audio captured at `time`: a slice's own time,
     /// never when it got here, so the vertices advance evenly however the
@@ -62,10 +79,10 @@ public struct LevelLine {
         let index = Self.intervalIndex(at: time)
         line.advance(to: index)
         let progress = CGFloat(min(max(time / Self.interval - Double(index), 0), 1))
-        let mid = Self.height / 2
+        let mid = geometry.height / 2
         let newest = line.vertices.count - 1
         return line.vertices.enumerated().map { i, height in
-            CGPoint(x: Self.width + Self.step - (CGFloat(newest - i) + progress) * Self.step,
+            CGPoint(x: geometry.width + geometry.step - (CGFloat(newest - i) + progress) * geometry.step,
                     y: mid + CGFloat(height) * (mid - 1))
         }
     }
@@ -73,7 +90,7 @@ public struct LevelLine {
     /// Starts again for a new recording: flat, holding nothing, until the
     /// first peak arrives (Ruling T17-1).
     public mutating func reset() {
-        self = LevelLine()
+        self = LevelLine(geometry)
     }
 
     /// Finishes every interval before `index`: the one the latest peaks

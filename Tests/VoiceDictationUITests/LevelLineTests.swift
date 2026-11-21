@@ -205,6 +205,19 @@ final class LevelLineTests: XCTestCase {
         XCTAssertGreaterThan(framesWithBoth, 0, "the sweep reached buffer 6's arrival")
     }
 
+    /// The mini view tab's 26 x 18 line spans the tab and stays inside it.
+    func testTheTabsLineSpansTheTabAndStaysInside() {
+        var line = LevelLine(.tab)
+        for n in 0..<20 { line.add(peak: 0.5, at: time(n)) }   // 1 s
+
+        let points = line.points(at: time(20))
+        XCTAssertGreaterThanOrEqual(points.last?.x ?? 0, 26)
+        XCTAssertLessThanOrEqual(points.count, Int(26 / 2.6) + 3)
+        XCTAssertTrue(points.allSatisfy { (1...17).contains($0.y) }, "\(points)")
+        line.reset()
+        XCTAssertEqual(line.geometry, .tab, "a reset keeps the geometry")
+    }
+
     // MARK: - Helpers
 
     /// Halfway through interval `n`, clear of its boundaries.
