@@ -3,8 +3,8 @@ import Foundation
 import ImageIO
 import XCTest
 
-/// The app icon (Task 26, Danny's design): `scripts/make-icon.swift` draws a
-/// microphone outlined in the spectrum on a black rounded square, in the
+/// The app icon (Danny's design, 2026-11-20): `scripts/make-icon.swift` draws
+/// a sharp waveform in the spectrum on a black rounded square, in the
 /// colours of DESIGN.md's tokens. These tests run the script itself on a
 /// DESIGN.md of their own, into a temporary folder, and check the icon set
 /// the app is built with.
@@ -81,9 +81,9 @@ final class AppIconTests: XCTestCase {
     }
 
     /// The master: transparent outside the rounded square, `bg` inside it,
-    /// and the microphone an outline whose stroke runs from `spectrum-1` at
-    /// the top of the head to `spectrum-6` at the base.
-    func testTheMasterIsTheMicrophoneOutlineInTheSpectrumOnBg() throws {
+    /// and the waveform a line whose stroke runs from `spectrum-1` at its
+    /// left end to `spectrum-6` at its right.
+    func testTheMasterIsTheWaveformInTheSpectrumOnBg() throws {
         let design = try writeDesign(Self.tokens)
         let iconSet = folder.appendingPathComponent("AppIcon.appiconset", isDirectory: true)
         let run = try runMakeIcon(design: design, iconSet: iconSet,
@@ -98,24 +98,55 @@ final class AppIconTests: XCTestCase {
         XCTAssertEqual(master.pixel(1023, 1023).a, 0)
         XCTAssertEqual(master.pixel(110, 110).a, 0, "the corner is square")
         XCTAssertEqual(master.pixel(913, 913).a, 0, "the corner is square")
-        // `bg` inside it, away from the microphone.
+        // `bg` inside it, away from the waveform: beside it and above it.
         XCTAssertTrue(master.pixel(150, 512).isOpaque(bg))
         XCTAssertTrue(master.pixel(512, 150).isOpaque(bg))
+        XCTAssertTrue(master.pixel(492, 250).isOpaque(bg))
 
-        // Down the middle from the top: the head's stroke starts red, then
-        // the head is hollow.
-        let column = 512
-        let headTop = try XCTUnwrap((100..<512).first { !master.pixel(column, $0).isOpaque(bg) })
-        XCTAssertTrue(master.pixel(column, headTop + 4).isNear(r: 0xFF, g: 0x00, b: 0x00),
-                      "the top of the head is \(master.pixel(column, headTop + 4)), not spectrum-1")
-        let headStrokeEnd = try XCTUnwrap((headTop..<512).first { master.pixel(column, $0).isOpaque(bg) })
-        XCTAssertGreaterThan(headStrokeEnd - headTop, 20, "the stroke is too thin")
-        XCTAssertLessThan(headStrokeEnd - headTop, 70, "the head is filled, not outlined")
+        // The line's left end is spectrum-1, its right end spectrum-6.
+        XCTAssertTrue(master.pixel(212, 512).isNear(r: 0xFF, g: 0x00, b: 0x00),
+                      "the left end is \(master.pixel(212, 512)), not spectrum-1")
+        XCTAssertTrue(master.pixel(812, 512).isNear(r: 0x00, g: 0x00, b: 0xFF),
+                      "the right end is \(master.pixel(812, 512)), not spectrum-6")
+        // The tallest peak (point 7) is at x 492, y 302; the stroke is 24.
+        let peak = try XCTUnwrap((100..<512).first { !master.pixel(492, $0).isOpaque(bg) })
+        XCTAssertTrue((280...300).contains(peak), "the tallest peak starts at y \(peak)")
 
-        // Up the middle from the bottom of the square: the base is violet.
-        let base = try XCTUnwrap((512..<924).reversed().first { !master.pixel(column, $0).isOpaque(bg) })
-        XCTAssertTrue(master.pixel(column, base - 4).isNear(r: 0x00, g: 0x00, b: 0xFF),
-                      "the base is \(master.pixel(column, base - 4)), not spectrum-6")
+        // Every corner is where the design puts it, in the colour for its
+        // distance along the line, not for its x.
+        let heights: [Double] = [0, 0.25, -0.55, 0.35, -0.9, 0.6, -0.4, 1, -0.75, 0.3, -0.95, 0.55, -0.25, 0.45, -0.2, 0]
+        let points = heights.enumerated().map { (x: 212 + 40 * Double($0), y: 512 - 210 * $1) }
+        var travelled = [0.0]
+        for (a, b) in zip(points, points.dropFirst()) { travelled.append(travelled.last! + hypot(b.x - a.x, b.y - a.y)) }
+        let stops: [[Double]] = [[255, 0, 0], [255, 255, 0], [0, 255, 0], [0, 255, 255], [255, 0, 255], [0, 0, 255]]
+        for index in 1..<15 {
+            let x = travelled[index] / travelled.last! * 5
+            let band = min(Int(x), 4)
+            let mixed = zip(stops[band], stops[band + 1]).map { Int(($0 + ($1 - $0) * (x - Double(band))).rounded()) }
+            let pixel = master.pixel(Int(points[index].x), Int(points[index].y.rounded()))
+            XCTAssertTrue(pixel.isNear(r: mixed[0], g: mixed[1], b: mixed[2]),
+                          "corner \(index) is \(pixel), not \(mixed)")
+        }
+
+        // The stroke is 24: beside the middle of the last segment, 9 from
+        // its centre line is the line and 16 from it is bg.
+        XCTAssertFalse(master.pixel(799, 539).isOpaque(bg), "the stroke is too thin")
+        XCTAssertTrue(master.pixel(804, 544).isOpaque(bg), "the stroke is too thick")
+    }
+
+    /// At 16 px the line is widened to a pixel, so it still shows.
+    func testTheSmallestSizeStillShowsTheLine() throws {
+        let design = try writeDesign(Self.tokens)
+        let iconSet = folder.appendingPathComponent("AppIcon.appiconset", isDirectory: true)
+        let run = try runMakeIcon(design: design, iconSet: iconSet,
+                                  preview: folder.appendingPathComponent("preview.png"))
+        XCTAssertEqual(run.status, 0, run.err)
+        let small = try Bitmap(contentsOf: iconSet.appendingPathComponent("icon_16x16.png"))
+
+        XCTAssertEqual(small.width, 16)
+        let row = (0..<16).map { small.pixel($0, 8) }
+        XCTAssertTrue(row.contains { abs($0.r - 0x20) >= 100 || abs($0.g - 0x28) >= 100 || abs($0.b - 0x30) >= 100 },
+                      "row 8 of the 16 px icon is all near bg: \(row)")
     }
 
     /// Drift guard: the committed master is drawn in the colours DESIGN.md
@@ -133,13 +164,10 @@ final class AppIconTests: XCTestCase {
         let master = try Bitmap(contentsOf: Self.iconSet.appendingPathComponent(Self.masterFile()))
 
         XCTAssertTrue(master.pixel(150, 512).isOpaque(bg), "bg: \(master.pixel(150, 512))")
-        let column = 512
-        let headTop = try XCTUnwrap((100..<512).first { !master.pixel(column, $0).isOpaque(bg) })
-        XCTAssertTrue(master.pixel(column, headTop + 4).isNear(r: first.r, g: first.g, b: first.b),
-                      "the head's top is \(master.pixel(column, headTop + 4)), not spectrum-1")
-        let base = try XCTUnwrap((512..<924).reversed().first { !master.pixel(column, $0).isOpaque(bg) })
-        XCTAssertTrue(master.pixel(column, base - 4).isNear(r: sixth.r, g: sixth.g, b: sixth.b),
-                      "the base is \(master.pixel(column, base - 4)), not spectrum-6")
+        XCTAssertTrue(master.pixel(212, 512).isNear(r: first.r, g: first.g, b: first.b),
+                      "the left end is \(master.pixel(212, 512)), not spectrum-1")
+        XCTAssertTrue(master.pixel(812, 512).isNear(r: sixth.r, g: sixth.g, b: sixth.b),
+                      "the right end is \(master.pixel(812, 512)), not spectrum-6")
     }
 
     /// Any of the seven colours missing, or not a colour: the script names

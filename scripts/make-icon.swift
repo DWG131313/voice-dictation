@@ -1,9 +1,9 @@
-// Draws VoiceDictation's app icon (Task 26; Danny's design, D7).
+// Draws VoiceDictation's app icon (Danny's design, 2026-11-20; D7).
 //
-// A black rounded square and, on it, a microphone drawn as an outline whose
-// stroke is the spectrum: red at the top of the head to violet at the base.
-// The microphone is the only element: no glow, no shadow, no text, no other
-// colour. The seven colours are DESIGN.md's tokens (`bg` and `spectrum-1` to
+// A black rounded square and, on it, a sharp-cornered waveform whose stroke
+// is the spectrum, running along the line: red at its left end to violet at
+// its right. The waveform is the only element: no glow, no shadow, no text,
+// no other colour. The seven colours are DESIGN.md's tokens (`bg` and `spectrum-1` to
 // `spectrum-6`), read from its front matter, so the icon follows them. Every
 // size is drawn from the same paths at that size, never by shrinking the
 // 1024 px master.
@@ -109,9 +109,26 @@ let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
 let bg = tokens["bg"]!
 /// The six bands spread evenly from the first stop to the last and blended
 /// linearly in sRGB, as `Theme.Color.spectrum`'s `LinearGradient` blends them.
-let spectrum = CGGradient(colorsSpace: srgb,
-                          colors: (1...6).map { tokens["spectrum-\($0)"]! } as CFArray,
-                          locations: (0...5).map { CGFloat($0) / 5 })!
+let bands: [[CGFloat]] = (1...6).map { tokens["spectrum-\($0)"]!.components! }
+
+/// The spectrum's colour at `t`, 0 at its first band to 1 at its last.
+func spectrumColor(at t: CGFloat) -> CGColor {
+    let x = min(max(t, 0), 1) * CGFloat(bands.count - 1)
+    let i = min(Int(x), bands.count - 2)
+    let f = x - CGFloat(i)
+    let mixed = zip(bands[i], bands[i + 1]).map { $0 + ($1 - $0) * f }
+    return CGColor(colorSpace: srgb, components: mixed)!
+}
+
+/// The part of the spectrum from `t0` to `t1` as a gradient of its own: a
+/// stop at each end and at every band between them, so it blends as the
+/// whole spectrum does.
+func spectrumGradient(from t0: CGFloat, to t1: CGFloat) -> CGGradient {
+    let inner = (0..<bands.count).map { CGFloat($0) / CGFloat(bands.count - 1) }.filter { $0 > t0 && $0 < t1 }
+    let stops = [t0] + inner + [t1]
+    return CGGradient(colorsSpace: srgb, colors: stops.map(spectrumColor(at:)) as CFArray,
+                      locations: stops.map { ($0 - t0) / (t1 - t0) })!
+}
 
 // MARK: - The drawing: a 1024-point space with y down, the master's pixels
 
@@ -124,46 +141,56 @@ let canvas: CGFloat = 1024
 let square = RoundedRectangle(cornerRadius: 185, style: .continuous)
     .path(in: CGRect(x: 100, y: 100, width: 824, height: 824)).cgPath
 
-/// One stroke width throughout: 44 at 1024, so it still reads at 32 px.
-let stroke: CGFloat = 44
+/// The stroke is 24 at 1024, about 1.5 px in the Dock. At the small sizes it
+/// widens so that the line is never under a pixel.
+func strokeWidth(pixels: Int) -> CGFloat {
+    max(24, canvas / CGFloat(pixels))
+}
 
-// The microphone, as the centre lines its stroke straddles: a capsule head, a
-// U-shaped holder around its lower end, a stem and a base. Centred, it is 504
-// tall with its stroke, 61% of the square.
-let centre: CGFloat = 512
-let headRadius: CGFloat = 80
-let headTop: CGFloat = 282
-let headBottom: CGFloat = 562
-/// The head's lower curve and the U share a centre; a gap of 36 between them.
-let holderCentre = headBottom - headRadius
-let holderRadius = headRadius + stroke + 36
-/// The U's arms end beside the middle of the head.
-let holderTop = holderCentre - 60
-let baseY: CGFloat = 742
-let baseHalfWidth: CGFloat = 100
+// The waveform, as the centre line its stroke straddles: sixteen points
+// evenly spaced across 600, joined by straight segments, each peak and
+// valley at its own height (up is positive, 1 is 210 above the middle).
+let heights: [CGFloat] = [0, 0.25, -0.55, 0.35, -0.9, 0.6, -0.4, 1, -0.75, 0.3, -0.95, 0.55, -0.25, 0.45, -0.2, 0]
+let wave: [CGPoint] = heights.enumerated().map { index, height in
+    CGPoint(x: 212 + 40 * CGFloat(index), y: 512 - 210 * height)
+}
 
-let microphone: CGPath = {
-    let path = CGMutablePath()
-    path.addRoundedRect(in: CGRect(x: centre - headRadius, y: headTop,
-                                   width: 2 * headRadius, height: headBottom - headTop),
-                        cornerWidth: headRadius, cornerHeight: headRadius)
-    // Down the left arm, round the bottom (through angle π/2, which is down
-    // here), up the right arm.
-    path.move(to: CGPoint(x: centre - holderRadius, y: holderTop))
-    path.addLine(to: CGPoint(x: centre - holderRadius, y: holderCentre))
-    path.addRelativeArc(center: CGPoint(x: centre, y: holderCentre), radius: holderRadius,
-                        startAngle: .pi, delta: -.pi)
-    path.addLine(to: CGPoint(x: centre + holderRadius, y: holderTop))
-    path.move(to: CGPoint(x: centre, y: holderCentre + holderRadius))
-    path.addLine(to: CGPoint(x: centre, y: baseY))
-    path.move(to: CGPoint(x: centre - baseHalfWidth, y: baseY))
-    path.addLine(to: CGPoint(x: centre + baseHalfWidth, y: baseY))
-    return path
+/// How far along the line each point is, 0 at the first to 1 at the last:
+/// the spectrum runs along the line by distance travelled.
+let progress: [CGFloat] = {
+    var travelled: [CGFloat] = [0]
+    for (a, b) in zip(wave, wave.dropFirst()) {
+        travelled.append(travelled.last! + hypot(b.x - a.x, b.y - a.y))
+    }
+    return travelled.map { $0 / travelled.last! }
 }()
 
-/// The spectrum runs from the top of the head's stroke to the bottom of the base's.
-let spectrumStart = CGPoint(x: centre, y: headTop - stroke / 2)
-let spectrumEnd = CGPoint(x: centre, y: baseY + stroke / 2)
+/// Clips to one side of the bisector of the corner at `corner`, whose arms
+/// run to `a` and `b`: the side `kept` is on.
+func clipToSide(of corner: CGPoint, between a: CGPoint, and b: CGPoint, keeping kept: CGPoint, in context: CGContext) {
+    func unit(_ p: CGPoint) -> CGPoint {
+        let length = hypot(p.x - corner.x, p.y - corner.y)
+        return CGPoint(x: (p.x - corner.x) / length, y: (p.y - corner.y) / length)
+    }
+    let (ua, ub) = (unit(a), unit(b))
+    let along = CGPoint(x: ua.x + ub.x, y: ua.y + ub.y)
+    let size = hypot(along.x, along.y)
+    guard size > 0.001 else { return }   // a straight line has no corner to share
+    let bisector = CGPoint(x: along.x / size, y: along.y / size)
+    var normal = CGPoint(x: -bisector.y, y: bisector.x)
+    let k = unit(kept)
+    if normal.x * k.x + normal.y * k.y < 0 { normal = CGPoint(x: -normal.x, y: -normal.y) }
+    let far = 4 * canvas
+    let p1 = CGPoint(x: corner.x - far * bisector.x, y: corner.y - far * bisector.y)
+    let p2 = CGPoint(x: corner.x + far * bisector.x, y: corner.y + far * bisector.y)
+    context.beginPath()
+    context.move(to: p1)
+    context.addLine(to: p2)
+    context.addLine(to: CGPoint(x: p2.x + far * normal.x, y: p2.y + far * normal.y))
+    context.addLine(to: CGPoint(x: p1.x + far * normal.x, y: p1.y + far * normal.y))
+    context.closePath()
+    context.clip()
+}
 
 func makeContext(width: Int, height: Int) -> CGContext {
     guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -183,16 +210,31 @@ func render(pixels: Int) -> CGImage {
     context.setFillColor(bg)
     context.fillPath()
 
-    // Stroke the microphone, turn the stroke into a clip, and draw the
-    // spectrum through it.
-    context.addPath(microphone)
-    context.setLineWidth(stroke)
+    // Core Graphics has no gradient along a path, so each straight segment
+    // is its own: its stroke, round at both ends, becomes a clip, and its
+    // part of the spectrum is drawn through it along the segment. At a
+    // corner the two strokes overlap, so each is also clipped to its own
+    // side of the corner's bisector: they meet in a mitre, neither painted
+    // over the other.
+    context.setLineWidth(strokeWidth(pixels: pixels))
     context.setLineCap(.round)
-    context.setLineJoin(.round)
-    context.replacePathWithStrokedPath()
-    context.clip()
-    context.drawLinearGradient(spectrum, start: spectrumStart, end: spectrumEnd,
-                               options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    for index in wave.indices.dropLast() {
+        context.saveGState()
+        context.move(to: wave[index])
+        context.addLine(to: wave[index + 1])
+        context.replacePathWithStrokedPath()
+        context.clip()
+        if index > 0 {
+            clipToSide(of: wave[index], between: wave[index - 1], and: wave[index + 1], keeping: wave[index + 1], in: context)
+        }
+        if index + 2 < wave.count {
+            clipToSide(of: wave[index + 1], between: wave[index], and: wave[index + 2], keeping: wave[index], in: context)
+        }
+        context.drawLinearGradient(spectrumGradient(from: progress[index], to: progress[index + 1]),
+                                   start: wave[index], end: wave[index + 1],
+                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        context.restoreGState()
+    }
 
     guard let image = context.makeImage() else { fail("cannot finish the \(pixels) px drawing") }
     return image

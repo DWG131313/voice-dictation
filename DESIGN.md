@@ -130,7 +130,7 @@ Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square. T
 - **Selected text:** black on the text white (`bg` on `text`), caret white; never the system accent, so the spectrum stays the only colour.
 - **Times and figures:** DM Mono, muted.
 - **Floating indicator:** a scrolling white volume line, no colour, no spectrum.
-- **App icon:** black, and a microphone drawn as an outline whose stroke is the spectrum, the only element.
+- **App icon:** black, and a sharp-cornered waveform whose stroke is the spectrum, running along the line from red to violet; the only element.
 
 ## Do's and Don'ts
 
