@@ -3,8 +3,9 @@ import Observation
 import SwiftData
 import VoiceDictationLib
 
-/// The main window's transcripts: the section and search showing, the rows
-/// they list (newest first), the one selected, and the sidebar's counts.
+/// The main window's transcripts: the section, search, length and place
+/// showing, the rows they list (newest first, by day and then place), the
+/// headings folded, the one selected, and the sidebar's counts.
 /// `AppModel` tells it about each transcript it keeps (`noteNewTranscript`),
 /// so the list is current whether or not the window is open. It also does
 /// what the detail's actions ask (Task 19): editing with autosave, Copy,
@@ -13,10 +14,12 @@ import VoiceDictationLib
 /// main thread.
 @MainActor @Observable
 public final class LibraryModel {
-    /// The sidebar's sections. The first three list transcripts; Models,
-    /// Vocabulary and Settings show their own views (Tasks 20, 22 and 24).
+    /// The sidebar's sections. The first four list transcripts, Places the
+    /// project or app chosen from the Projects & apps panel (`show(_:)`);
+    /// Models, Vocabulary and Settings show their own views (Tasks 20, 22
+    /// and 24).
     public enum Section: String, CaseIterable, Identifiable, Sendable {
-        case all, today, pinned, models, vocabulary, settings
+        case all, today, pinned, places, models, vocabulary, settings
 
         public var id: Self { self }
 
@@ -26,19 +29,21 @@ public final class LibraryModel {
             case .all: "All transcripts"
             case .today: "Today"
             case .pinned: "Pinned"
+            case .places: "Projects & apps"
             case .models: "Models"
             case .vocabulary: "Vocabulary"
             case .settings: "Settings"
             }
         }
 
-        /// The transcripts it lists; nil for a setup section.
+        /// The transcripts it lists; nil for a setup section, and for
+        /// Places, whose transcripts are the place chosen (`LibraryModel.scope`).
         var scope: TranscriptStore.Scope? {
             switch self {
             case .all: .all
             case .today: .today
             case .pinned: .pinned
-            case .models, .vocabulary, .settings: nil
+            case .places, .models, .vocabulary, .settings: nil
             }
         }
 
@@ -47,14 +52,38 @@ public final class LibraryModel {
         static let setup: [Section] = [.models, .vocabulary, .settings]
     }
 
-    /// The section showing. Choosing one that lists transcripts lists them.
+    /// The section showing. Choosing one that lists transcripts lists them;
+    /// choosing any but Places leaves the place chosen.
     public var section: Section = .all {
-        didSet { if section != oldValue { listRows() } }
+        didSet {
+            guard section != oldValue else { return }
+            if section != .places { place = nil }
+            listRows()
+        }
     }
     /// The search: the rows whose text contains it, ignoring case and accents.
     public var query = "" {
         didSet { if query != oldValue { listRows() } }
     }
+    /// How long a row's recording is; one of unknown length shows only
+    /// under Any. Applies with the search, the section and the place.
+    public var length: LengthFilter = .any {
+        didSet { if length != oldValue { listRows() } }
+    }
+    /// The project or app Places shows (`show(_:)`); nil in any other section.
+    public private(set) var place: PlaceFilter?
+    /// Whether the Projects & apps panel is open. Opening it lists the
+    /// places as they are now (`placeEntries`).
+    public var isPlacesPanelOpen = false {
+        didSet { if isPlacesPanelOpen, !oldValue { placeEntries = Self.placeEntries(store.places()) } }
+    }
+    /// The panel's lines, as it last opened.
+    private(set) var placeEntries: [PlaceEntry] = []
+    /// The headings, day and group, Danny folded. They last while the app
+    /// runs and are not saved.
+    private var folded: Set<String> = []
+    /// The day or group heading whose deletion waits for Danny's yes.
+    public private(set) var headingDeletionToConfirm: HeadingDeletion?
     /// The transcript the detail shows. Choosing another saves the edit being
     /// typed, stops the recording playing, and shows its main text.
     public var selection: Transcript.ID? {
@@ -67,9 +96,12 @@ public final class LibraryModel {
             if let message, message.transcript == oldValue { self.message = nil }
         }
     }
-    /// The section's transcripts that match the search, newest first. The
-    /// setup sections leave them as the last transcript section listed them.
+    /// The section's transcripts that match the search and the length,
+    /// newest first. The setup sections leave them as the last transcript
+    /// section listed them.
     public private(set) var rows: [Transcript] = []
+    /// `rows` by day, then by place: what the list shows, set with `rows`.
+    private(set) var days: [DayGroup] = []
     /// How many transcripts each transcript section holds, search aside.
     private var counts: [Section: Int] = [:]
     /// The pinned transcript whose deletion waits for Danny's yes.
@@ -153,7 +185,7 @@ public final class LibraryModel {
         // recordings past a week go otherwise.
         store.pruneRecordings()
         reload()
-        if section.scope != nil { selection = rows.first?.id }
+        if scope != nil { selection = visibleRows.first?.id }
     }
 
     /// The window has closed: dictations are no longer listed or counted
@@ -177,37 +209,41 @@ public final class LibraryModel {
     /// transcript joins the rows, at the top when it belongs to the section
     /// and the search, and the counts, which the store counts without
     /// loading. It never takes the selection from another transcript: only
-    /// with none selected is it selected, if it is listed.
+    /// with none selected is it selected, if it is listed and not folded away.
     public func noteNewTranscript(_ t: Transcript) {
         stopPlayingIfRemoved()
         guard isWindowOpen else { return }
         listRows(keepingSelection: true)
         countTranscripts()
-        if selection == nil, rows.contains(where: { $0.id == t.id }) {
+        if selection == nil, visibleRows.contains(where: { $0.id == t.id }) {
             selection = t.id
         }
     }
 
-    /// Lists the section's transcripts that match the search. Unless asked
-    /// to keep it, a selection that is no longer listed moves to the first row.
+    /// Lists the transcripts of `scope` that match the search and the
+    /// length, and groups them into `days`. Unless asked to keep it, a
+    /// selection that is no longer listed, or is folded away, moves to the
+    /// first visible row.
     private func listRows(keepingSelection: Bool = false) {
-        guard let scope = section.scope else { return }
-        rows = store.search(query, scope: scope)
+        guard let scope else { return }
+        rows = store.search(query, scope: scope, length: length)
+        days = TranscriptGroups.days(rows)
         guard !keepingSelection else { return }
-        if let selection, rows.contains(where: { $0.id == selection }) { return }
-        selection = rows.first?.id
+        let visible = visibleRows
+        if let selection, visible.contains(where: { $0.id == selection }) { return }
+        selection = visible.first?.id
     }
 
-    /// Lists the rows and counts again after an action that may take `id`
-    /// out of the list: a deletion, or unpinning on Pinned. If it was
-    /// selected, the row that takes its place is: the next one down, or else
-    /// the one above.
-    private func relist(afterRemoving id: Transcript.ID) {
-        let before = rows.map(\.id)
+    /// Lists the rows and counts again after an action that may take `ids`
+    /// out of the list: a deletion, or unpinning on Pinned. If the selected
+    /// one went, the row that takes its place is: the next visible one down
+    /// that is still listed, or else the one above.
+    private func relist(afterRemoving ids: Set<Transcript.ID>) {
+        let before = visibleRows.map(\.id)
         listRows(keepingSelection: true)
         countTranscripts()
-        guard selection == id, !rows.contains(where: { $0.id == id }) else { return }
-        selection = Self.neighbour(of: id, before: before, after: rows.map(\.id))
+        guard let selection, ids.contains(selection), !rows.contains(where: { $0.id == selection }) else { return }
+        self.selection = Self.neighbour(of: selection, before: before, after: visibleRows.map(\.id))
     }
 
     private func countTranscripts() {
@@ -220,12 +256,12 @@ public final class LibraryModel {
 
     /// The number beside a section in the sidebar: its transcripts, search
     /// aside; for Models, the models ready to use, once they are listed.
-    /// Vocabulary and Settings have none.
+    /// Places, Vocabulary and Settings have none.
     func count(of section: Section, models: [ModelDescriptor]) -> Int? {
         switch section {
         case .all, .today, .pinned: counts[section]
         case .models: models.isEmpty ? nil : models.filter { $0.state == .ready }.count
-        case .vocabulary, .settings: nil
+        case .places, .vocabulary, .settings: nil
         }
     }
 
@@ -235,16 +271,226 @@ public final class LibraryModel {
         return rows.first { $0.id == selection }
     }
 
-    /// Moves the selection `step` rows down, or up when negative, stopping
-    /// at either end. With nothing selected, down selects the first row and
-    /// up the last.
+    /// Moves the selection `step` visible rows down, or up when negative,
+    /// stopping at either end; rows folded away are skipped. With nothing
+    /// selected, down selects the first visible row and up the last.
     func moveSelection(by step: Int) {
+        let rows = visibleRows
         guard !rows.isEmpty else { return }
         guard let selection, let index = rows.firstIndex(where: { $0.id == selection }) else {
             self.selection = (step < 0 ? rows.last : rows.first)?.id
             return
         }
         self.selection = rows[min(max(index + step, 0), rows.count - 1)].id
+    }
+
+    // MARK: - Organising: places, folds and deleting a heading
+
+    /// A line of the Projects & apps panel, with its count: an app, or one
+    /// of its folders nested under it, or its "No folder recorded".
+    struct PlaceEntry: Identifiable, Equatable {
+        let filter: PlaceFilter
+        let title: String
+        let count: Int
+        let isNested: Bool
+        var id: PlaceFilter { filter }
+    }
+
+    /// A day or group heading's Delete, waiting for Danny's yes: the
+    /// unpinned transcripts listed under it, and the words that ask.
+    public struct HeadingDeletion: Identifiable, Equatable {
+        /// The heading's: a `DayGroup.id` or a `PlaceGroup.id`.
+        public let id: String
+        let ids: [Transcript.ID]
+        let title: String
+        let message: String
+    }
+
+    /// The transcripts the list shows: the section's, or in Places, the
+    /// place chosen's; nil for a setup section.
+    var scope: TranscriptStore.Scope? {
+        guard section == .places else { return section.scope }
+        return place.map { .place($0) }
+    }
+
+    /// Whether each day's rows sit under group headings: not while one
+    /// folder, or one app's transcripts without a folder, shows alone, as
+    /// every row is from that place.
+    var showsGroupHeadings: Bool {
+        guard section == .places, case .place? = place else { return true }
+        return false
+    }
+
+    /// The place showing, for the sidebar under "Projects & apps": its
+    /// folder, or else its app; nil when Places is not showing.
+    var placeTitle: String? {
+        guard section == .places, let place else { return nil }
+        switch place {
+        case .app(let app): return TranscriptGroups.title(of: Place(app: app, project: nil)).name
+        case .place(let place): return TranscriptGroups.title(of: place).name
+        }
+    }
+
+    /// Shows `filter`'s transcripts across every day, in Places, and closes
+    /// the Projects & apps panel.
+    public func show(_ filter: PlaceFilter) {
+        isPlacesPanelOpen = false
+        place = filter
+        if section == .places { listRows() } else { section = .places }
+    }
+
+    /// Folds a day or group heading, or opens it again. A selected row it
+    /// folds away hands the selection to the nearest visible row, as a
+    /// deletion does; with none left, nothing is selected.
+    func toggleFold(_ headingID: String) {
+        let before = visibleRows.map(\.id)
+        if folded.remove(headingID) == nil { folded.insert(headingID) }
+        let after = visibleRows.map(\.id)
+        guard let selection, !after.contains(selection) else { return }
+        self.selection = Self.neighbour(of: selection, before: before, after: after)
+    }
+
+    func isFolded(_ headingID: String) -> Bool {
+        folded.contains(headingID)
+    }
+
+    /// The rows the list shows, in its order: by day, then by group, those
+    /// not under a folded day nor, while group headings show, a folded group.
+    var visibleRows: [Transcript] {
+        days.flatMap { day -> [Transcript] in
+            guard !folded.contains(day.id) else { return [] }
+            guard showsGroupHeadings else { return day.transcripts }
+            return day.groups.flatMap { folded.contains($0.id) ? [] : $0.transcripts }
+        }
+    }
+
+    /// What a heading's Delete takes of `transcripts`: the unpinned, since
+    /// pinning means "keep this". A heading with none offers no Delete.
+    func deletable(_ transcripts: [Transcript]) -> [Transcript] {
+        transcripts.filter { !$0.pinned }
+    }
+
+    /// Asks before deleting the unpinned transcripts listed under the day,
+    /// those folded away included. With a place chosen, the day holds only
+    /// that place's, so the words say only those shown go.
+    func askToDelete(day: DayGroup) {
+        ask(toDelete: day.transcripts, heading: day.id, group: nil, on: day, filtered: isNarrowed || place != nil)
+    }
+
+    /// Asks before deleting the unpinned transcripts listed under the group.
+    func askToDelete(group: PlaceGroup, on day: DayGroup) {
+        ask(toDelete: group.transcripts, heading: group.id, group: TranscriptGroups.title(of: group.place).name,
+            on: day, filtered: isNarrowed)
+    }
+
+    private func ask(toDelete transcripts: [Transcript], heading: String, group: String?, on day: DayGroup,
+                     filtered: Bool) {
+        let doomed = deletable(transcripts)
+        guard !doomed.isEmpty else { return }
+        let words = Self.headingDeletionWords(count: doomed.count, group: group,
+                                              dayTitle: TranscriptGroups.dayTitle(day.day, now: Date()),
+                                              filtered: filtered)
+        headingDeletionToConfirm = HeadingDeletion(id: heading, ids: doomed.map(\.id), title: words.title,
+                                                   message: words.message)
+    }
+
+    /// Whether a search or a length narrows what the headings hold.
+    private var isNarrowed: Bool {
+        !query.isEmpty || length != .any
+    }
+
+    /// Danny said yes: the heading's transcripts go, in one save, and then
+    /// their recordings. First each one's edit, playback and message end,
+    /// as for a single deletion. A selected one hands the selection to the
+    /// nearest row left. Pinned transcripts never go.
+    public func confirmHeadingDeletion() {
+        guard let deletion = headingDeletionToConfirm else { return }
+        headingDeletionToConfirm = nil
+        let ids = Set(deletion.ids)
+        let doomed = deletable(rows.filter { ids.contains($0.id) })
+        guard !doomed.isEmpty else { return }
+        for t in doomed { letGo(of: t) }
+        store.delete(doomed)
+        relist(afterRemoving: ids)
+    }
+
+    /// Danny kept them.
+    public func cancelHeadingDeletion() {
+        headingDeletionToConfirm = nil
+    }
+
+    /// The Projects & apps panel's lines, from the store's `places()`: apps
+    /// by their total, most first, ties by name, and "Unknown app" last.
+    /// An app's folders sit nested under it, by count and then name, with
+    /// "No folder recorded" after them for its transcripts without one. An
+    /// app with no folders is one line.
+    nonisolated static func placeEntries(_ counts: [PlaceCount]) -> [PlaceEntry] {
+        let byApp = Dictionary(grouping: counts, by: \.place.app)
+        let totals = byApp.mapValues { $0.reduce(0) { $0 + $1.count } }
+        let apps = byApp.keys.sorted { a, b in
+            guard let a else { return false }
+            guard let b else { return true }
+            let (totalA, totalB) = (totals[a] ?? 0, totals[b] ?? 0)
+            return totalA != totalB ? totalA > totalB : nameOrder(a, b)
+        }
+        var entries: [PlaceEntry] = []
+        for app in apps {
+            let places = byApp[app] ?? []
+            entries.append(PlaceEntry(filter: .app(app), title: TranscriptGroups.title(of: Place(app: app, project: nil)).name,
+                                      count: totals[app] ?? 0, isNested: false))
+            let folders = places.filter { $0.place.project != nil }.sorted {
+                $0.count != $1.count ? $0.count > $1.count : nameOrder($0.place.project ?? "", $1.place.project ?? "")
+            }
+            guard !folders.isEmpty else { continue }
+            for folder in folders {
+                entries.append(PlaceEntry(filter: .place(folder.place), title: folder.place.project ?? "",
+                                          count: folder.count, isNested: true))
+            }
+            if let none = places.first(where: { $0.place.project == nil }) {
+                entries.append(PlaceEntry(filter: .place(none.place), title: "No folder recorded", count: none.count,
+                                          isNested: true))
+            }
+        }
+        return entries
+    }
+
+    /// Names in Finder's order; any it holds the same, by their characters.
+    private nonisolated static func nameOrder(_ a: String, _ b: String) -> Bool {
+        let order = a.localizedStandardCompare(b)
+        return order == .orderedSame ? a < b : order == .orderedAscending
+    }
+
+    /// The words that ask before a heading's Delete. A day heading
+    /// (`group` nil): "Everything dictated today, …"; a group heading:
+    /// "Everything from Voice Dictation today, …". With a search or length
+    /// on (`filtered`): "The 4 shown today, …" and "The 4 shown under
+    /// Voice Dictation today, …". "Today" and "Yesterday" read in lower
+    /// case; any other day title follows "on".
+    nonisolated static func headingDeletionWords(count: Int, group: String?, dayTitle: String,
+                                                 filtered: Bool) -> (title: String, message: String) {
+        let title = count == 1 ? "Delete 1 transcript?" : "Delete \(count) transcripts?"
+        let day = switch dayTitle {
+        case "Today": "today"
+        case "Yesterday": "yesterday"
+        default: "on \(dayTitle)"
+        }
+        let which = switch (group, filtered) {
+        case (let group?, false): "Everything from \(group) \(day)"
+        case (nil, false): "Everything dictated \(day)"
+        case (let group?, true): "The \(count) shown under \(group) \(day)"
+        case (nil, true): "The \(count) shown \(day)"
+        }
+        return (title, "\(which), with any recordings kept for them. Pinned transcripts stay.")
+    }
+
+    /// A row's muted line under a day heading: the time of day, "12:52 AM",
+    /// even on older days, since the heading gives the day; and the length,
+    /// "7s", nil when it is unknown, as for imported history.
+    nonisolated static func rowTimes(_ t: Transcript, calendar: Calendar = .current,
+                                     locale: Locale = .current) -> (time: String, length: String?) {
+        let style = Date.FormatStyle(date: .omitted, time: .shortened, locale: locale,
+                                     calendar: calendar, timeZone: calendar.timeZone)
+        return (plainSpaces(t.date.formatted(style)), t.recordingSeconds > 0 ? lengthString(t.recordingSeconds) : nil)
     }
 
     // MARK: - Editing
@@ -351,7 +597,7 @@ public final class LibraryModel {
     /// Pin or unpin. Unpinned on Pinned, it leaves the list.
     public func togglePin(_ t: Transcript) {
         store.setPinned(t, !t.pinned)
-        relist(afterRemoving: t.id)
+        relist(afterRemoving: [t.id])
     }
 
     /// Delete. An unpinned transcript goes at once; a pinned one waits for
@@ -363,15 +609,22 @@ public final class LibraryModel {
             return
         }
         deletionToConfirm = nil
+        letGo(of: t)
+        let id = t.id
+        store.delete(t)
+        relist(afterRemoving: [id])
+    }
+
+    /// Before `t` is deleted: the edit being typed in it is dropped, never
+    /// saved to a deleted transcript; its recording stops playing; and the
+    /// words left about it go.
+    private func letGo(of t: Transcript) {
         if draft?.transcript.id == t.id {
             saveTask?.cancel()
             draft = nil
         }
         if isPlaying(t) { player.stop() }
-        let id = t.id
-        store.delete(t)
-        clearMessage(for: id)
-        relist(afterRemoving: id)
+        clearMessage(for: t.id)
     }
 
     /// Danny kept the pinned transcript.
@@ -594,6 +847,7 @@ public final class LibraryModel {
         if case .unavailable(let message) = store.health { return message }
         guard rows.isEmpty else { return nil }
         if !query.isEmpty { return "No transcripts match “\(query)”." }
+        if length != .any { return "No transcripts of that length." }
         let anyKept = (counts[.all] ?? 0) > 0
         switch section {
         case .today where anyKept: return "Nothing dictated today."

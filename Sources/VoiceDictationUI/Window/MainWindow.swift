@@ -30,7 +30,7 @@ public struct MainWindow: View {
                     hotkey: model.hotkey, doubleTap: model.doubleTapEnabled)
                 .frame(width: Self.sidebarWidth)
             column
-            if library.section.scope != nil {
+            if library.scope != nil {
                 TranscriptList(library: library, focus: $focus)
                     .frame(width: Self.listWidth)
                 column
