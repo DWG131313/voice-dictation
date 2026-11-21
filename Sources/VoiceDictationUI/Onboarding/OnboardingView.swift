@@ -92,7 +92,8 @@ public struct OnboardingView: View {
     }
 }
 
-/// Opens the Welcome window when the app asks for it at launch. Attached to
+/// Opens the Welcome window, or the main window, when the app asks for it:
+/// at launch, or when the app is opened again. Attached to
 /// the menu bar icon, the one view that exists at launch and has the
 /// `openWindow` action.
 public struct OpenWelcomeAtLaunch: ViewModifier {
@@ -107,11 +108,19 @@ public struct OpenWelcomeAtLaunch: ViewModifier {
         content
             .onAppear { openIfAsked() }
             .onChange(of: model.welcomeRequests) { _, _ in openIfAsked() }
+            .onChange(of: model.mainWindowRequests) { _, _ in openIfAsked() }
     }
 
+    /// Welcome when a setup step is left; the main window when Danny opened
+    /// the app, at launch or again while it runs.
     private func openIfAsked() {
-        guard model.takeWelcomeRequest() else { return }
-        NSApp.activate()
-        openWindow(id: AppModel.welcomeWindowID)
+        if model.takeWelcomeRequest() {
+            NSApp.activate()
+            openWindow(id: AppModel.welcomeWindowID)
+        }
+        if model.takeMainWindowRequest() {
+            NSApp.activate()
+            openWindow(id: AppModel.mainWindowID)
+        }
     }
 }

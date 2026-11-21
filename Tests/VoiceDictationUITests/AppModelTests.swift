@@ -343,6 +343,59 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.modelMessages[.appleSpeech], "Apple Speech language files could not be installed: No network")
     }
 
+    // MARK: - The main window at launch (Danny, 2026-11-20)
+
+    /// Opened by Danny, with nothing left to set up: the main window.
+    @MainActor
+    func testALaunchByHandAsksForTheMainWindow() async {
+        preferences.onboardingTriedIt = true
+        let model = makeModel([appleEngine()])
+
+        await model.decideWelcomeAtLaunch(firstLaunch: false, launchedAtLogin: false)
+
+        XCTAssertEqual(model.mainWindowRequests, 1)
+        XCTAssertEqual(model.welcomeRequests, 0)
+    }
+
+    /// Started by macOS at login: no window, the menu bar only.
+    @MainActor
+    func testALaunchAtLoginAsksForNoWindow() async {
+        preferences.onboardingTriedIt = true
+        let model = makeModel([appleEngine()])
+
+        await model.decideWelcomeAtLaunch(firstLaunch: false, launchedAtLogin: true)
+
+        XCTAssertEqual(model.mainWindowRequests, 0)
+        XCTAssertEqual(model.welcomeRequests, 0)
+    }
+
+    /// A setup step left: Welcome alone, at login too, never both windows.
+    @MainActor
+    func testWelcomeComesBeforeTheMainWindow() async {
+        preferences.onboardingTriedIt = true
+        let model = makeModel([appleEngine()], system: .fake(accessibility: false))
+
+        await model.decideWelcomeAtLaunch(firstLaunch: false, launchedAtLogin: false)
+
+        XCTAssertEqual(model.welcomeRequests, 1)
+        XCTAssertEqual(model.mainWindowRequests, 0)
+    }
+
+    /// Opening the app again while it runs asks for the main window, and
+    /// each request is served once.
+    @MainActor
+    func testOpeningTheRunningAppAsksForTheMainWindowOnce() {
+        let model = makeModel([appleEngine()])
+        let lifecycle = AppLifecycle(model: model)
+        XCTAssertFalse(model.takeMainWindowRequest())
+
+        _ = lifecycle.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
+
+        XCTAssertEqual(model.mainWindowRequests, 1)
+        XCTAssertTrue(model.takeMainWindowRequest())
+        XCTAssertFalse(model.takeMainWindowRequest())
+    }
+
     /// The icon can appear again (its image changes with the state); only
     /// the first sight after a request may open the window.
     @MainActor

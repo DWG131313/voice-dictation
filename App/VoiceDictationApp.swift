@@ -46,9 +46,9 @@ struct VoiceDictationApp: App {
         }
         .menuBarExtraStyle(.menu)
 
-        // The transcript library. Opened from the menu only, never at launch
-        // and never restored at the next one, so starting the app takes
-        // focus from nothing. Black to the top edge, as in mockup D: the
+        // The transcript library. Opened from the menu, and when Danny opens
+        // the app (at launch or again while it runs), but not when macOS
+        // starts it at login, and never restored by SwiftUI at the next launch. Black to the top edge, as in mockup D: the
         // title bar is hidden and the traffic lights sit over the sidebar.
         Window("VoiceDictation", id: AppModel.mainWindowID) {
             MainWindow(model: lifecycle.model)

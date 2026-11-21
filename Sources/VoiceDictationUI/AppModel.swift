@@ -71,6 +71,10 @@ public final class AppModel {
     /// and takes the request (`takeWelcomeRequest`).
     public private(set) var welcomeRequests = 0
     @ObservationIgnored private var welcomeRequestsServed = 0
+    /// The same for the main window: asked for when Danny opens the app, at
+    /// launch or again while it runs, and never when macOS starts it at login.
+    public private(set) var mainWindowRequests = 0
+    @ObservationIgnored private var mainWindowRequestsServed = 0
     @ObservationIgnored private let onboardingSystem: OnboardingSystem
 
     @ObservationIgnored private let preferences: PreferencesManager
@@ -184,8 +188,9 @@ public final class AppModel {
 
     /// Starts the app; called once, when launching has finished. Imports the
     /// old history, asks for missing permissions, arms the hotkey and loads
-    /// the model dictation uses and the cleanup model.
-    public func start() {
+    /// the model dictation uses and the cleanup model. `launchedAtLogin` is
+    /// true when macOS started the app as a login item: no window then.
+    public func start(launchedAtLogin: Bool = false) {
         Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
 
         importHistory()
@@ -225,7 +230,7 @@ public final class AppModel {
             await refreshModels()
             // Only now is the model list known (it is empty until the first
             // refresh), so only now can the steps be judged.
-            await decideWelcomeAtLaunch(firstLaunch: firstLaunch)
+            await decideWelcomeAtLaunch(firstLaunch: firstLaunch, launchedAtLogin: launchedAtLogin)
             // A failure is kept, and the next dictation tries again.
             await service.prepareSelected()
             await refreshModels()
@@ -237,13 +242,29 @@ public final class AppModel {
     // MARK: - Welcome window
 
     /// Asks for the Welcome window on the first run, or when a step is left.
-    /// Call once the models are listed.
-    func decideWelcomeAtLaunch(firstLaunch: Bool) async {
+    /// Otherwise asks for the main window, unless macOS started the app at
+    /// login: a launch by hand shows the app, a login start stays in the
+    /// menu bar. Call once the models are listed.
+    func decideWelcomeAtLaunch(firstLaunch: Bool, launchedAtLogin: Bool = false) async {
         await refreshModels()
         onboarding.refresh()
         if onboarding.shouldShowAtLaunch(firstLaunch: firstLaunch) {
             welcomeRequests += 1
+        } else if !launchedAtLogin {
+            mainWindowRequests += 1
         }
+    }
+
+    /// Asks for the main window: the app was opened again while running.
+    func requestMainWindow() {
+        mainWindowRequests += 1
+    }
+
+    /// True once per request, as `takeWelcomeRequest` is.
+    public func takeMainWindowRequest() -> Bool {
+        guard mainWindowRequestsServed < mainWindowRequests else { return false }
+        mainWindowRequestsServed = mainWindowRequests
+        return true
     }
 
     /// True once per request: the view that opens the window takes it, so a
@@ -624,7 +645,25 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        model.start()
+        let atLogin = Self.launchedAsLoginItem()
+        Log.info("[INIT] Launched at login: \(atLogin)")
+        model.start(launchedAtLogin: atLogin)
+    }
+
+    /// Whether macOS started the app as a login item: the Apple event that
+    /// opened it says so. Only readable while launching.
+    static func launchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventID == kAEOpenApplication
+        else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }
+
+    /// The app was opened again while running (from Applications, Spotlight
+    /// or its Dock icon): show the main window, as opening it does.
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        model.requestMainWindow()
+        return false
     }
 
     /// Quitting saves the edit being typed in the main window at once: its
