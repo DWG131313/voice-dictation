@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Organised by day</title>
+<style>
+  @font-face { font-family: "Jost"; src: url(/files/Jost-Variable.ttf); font-weight: 100 900; }
+  @font-face { font-family: "Work Sans"; src: url(/files/WorkSans-Variable.ttf); font-weight: 100 900; }
+  @font-face { font-family: "DM Mono"; src: url(/files/DMMono-Regular.ttf); }
+  :root { --bg: #000; --bg-elevated: #0A0A0A; --text: #F2F2F2; --muted: #8C8C8C; --hairline: #2A2A2A; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: var(--text); font: 14px/1.5 "Work Sans", "Helvetica Neue", sans-serif; padding: 32px 40px 80px; }
+  h1 { font: 600 26px/1.2 "Jost", Futura, sans-serif; margin: 0 0 8px; }
+  h2 { font: 600 18px/1.2 "Jost", sans-serif; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; max-width: 900px; }
+  .mono { font: 12px/1.5 "DM Mono", ui-monospace, monospace; }
+  .muted { color: var(--muted); }
+  .label { font: 500 11px "Work Sans", sans-serif; letter-spacing: 0.9px; text-transform: uppercase; color: var(--muted); }
+  .hl-b { border-bottom: 1px solid var(--hairline); }
+  .new { outline: 1px dashed #8C8C8C; outline-offset: -1px; }
+
+  .app { width: 1180px; height: 760px; background: var(--bg); border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .chrome { height: 28px; background: #1a1a1a; display: flex; align-items: center; gap: 8px; padding: 0 12px; flex: none; }
+  .dotl { width: 12px; height: 12px; border-radius: 50%; }
+  .cols { display: flex; flex: 1; min-height: 0; }
+
+  .sidebar { width: 220px; border-right: 1px solid var(--hairline); padding: 8px 12px 16px; display: flex; flex-direction: column; flex: none; }
+  .group-title { padding: 16px 8px 8px; }
+  .item { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 8px; color: var(--muted); }
+  .item.on { color: var(--text); }
+  .item .where { display: flex; flex-direction: column; }
+  .item .app-name { font: 11px "DM Mono", monospace; color: var(--muted); }
+  .footer { margin-top: auto; border-top: 1px solid var(--hairline); padding: 8px; font-size: 12px; }
+
+  .list { width: 360px; border-right: 1px solid var(--hairline); display: flex; flex-direction: column; flex: none; }
+  .search { margin: 16px 16px 8px; padding: 8px 12px; background: var(--bg-elevated); border: 1px solid var(--hairline); color: var(--muted); font-size: 13px; }
+  .length { display: flex; gap: 14px; align-items: baseline; padding: 4px 16px 12px; border-bottom: 1px solid var(--hairline); }
+  .length .opt { font: 12px "DM Mono", monospace; color: var(--muted); }
+  .length .opt.on { color: var(--text); border-bottom: 1px solid var(--text); }
+  .scroll { overflow: hidden; flex: 1; }
+
+  .day { display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 8px; background: var(--bg-elevated); border-bottom: 1px solid var(--hairline); }
+  .day .label { color: var(--text); }
+  .del { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .grp { display: flex; align-items: baseline; gap: 8px; padding: 10px 16px 6px; }
+  .grp .name { font: 500 13px "Work Sans", sans-serif; }
+  .fold { font: 10px "DM Mono", monospace; color: var(--muted); width: 10px; display: inline-block; }
+  .row { padding: 8px 16px 12px 34px; border-bottom: 1px solid var(--hairline); }
+  .row .meta { display: flex; justify-content: space-between; }
+  .row .txt { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.45; }
+  .row.sel { border-bottom: none; position: relative; }
+  .row.sel::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, #FF2D1F, #FF8A00, #FFE600, #27D14B, #1E8BFF, #7B3DFF); }
+
+  .detail { flex: 1; padding: 24px 28px; }
+  .detail .head { display: flex; justify-content: space-between; margin-bottom: 16px; }
+  .detail p { font-size: 15px; line-height: 1.6; margin: 0 0 20px; max-width: 520px; }
+  .btn { font: 500 13px "Work Sans", sans-serif; color: var(--text); background: var(--bg); border: 1px solid var(--text); padding: 4px 10px; display: inline-block; margin-right: 8px; }
+
+  .notes { display: flex; gap: 32px; margin-top: 28px; flex-wrap: wrap; align-items: flex-start; }
+  .note { max-width: 330px; color: var(--muted); font-size: 13px; }
+  .note b { color: var(--text); font-weight: 500; }
+  .dialog { width: 340px; background: var(--bg-elevated); border: 1px solid var(--hairline); padding: 20px; }
+  .dialog h3 { font: 600 16px/1.3 "Jost", sans-serif; margin: 0 0 8px; }
+  .dialog p { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .dialog .btns { display: flex; justify-content: flex-end; gap: 8px; }
+  .dialog .btn.quiet { border-color: var(--hairline); }
+
+  .cols { position: relative; }
+  .popout { position: absolute; left: 220px; top: 0; bottom: 0; width: 240px; background: var(--bg-elevated); border-right: 1px solid var(--hairline); border-left: 1px solid var(--hairline); padding: 8px 0; }
+  .popout .head { display: flex; justify-content: space-between; align-items: baseline; padding: 14px 16px 10px; }
+  .popout .item { padding: 6px 16px; }
+  .popout .nested { padding-left: 32px; }
+  .popout .top { color: var(--text); }
+  .shade { position: absolute; left: 460px; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.55); }
+  .caption { color: var(--muted); font-size: 13px; margin: 28px 0 10px; max-width: 900px; }
+</style>
+</head>
+<body>
+<h1>Organised by day, with a quiet sidebar</h1>
+<p class="sub">Each day is a heading with its count and a Delete. Under it, the day's dictations are grouped by project (the folder a Terminal window is working in) or, when there's no project, by the app. Click a heading to fold it. The sidebar keeps one new line, "Projects &amp; apps", which opens a panel beside it. The new pieces are outlined with dashes.</p>
+
+<div class="app">
+  <div class="chrome"><span class="dotl" style="background:#ff5f57"></span><span class="dotl" style="background:#febc2e"></span><span class="dotl" style="background:#28c840"></span></div>
+  <div class="cols">
+    <aside class="sidebar">
+      <div class="label group-title">Transcripts</div>
+      <div class="item on"><span>All</span><span class="mono muted">56</span></div>
+      <div class="item"><span>Today</span><span class="mono muted">5</span></div>
+      <div class="item"><span>Pinned</span><span class="mono muted">0</span></div>
+      <div class="item new"><span>Projects &amp; apps</span><span class="mono muted">›</span></div>
+      <div class="label group-title">Setup</div>
+      <div class="item"><span>Models</span></div>
+      <div class="item"><span>Vocabulary</span></div>
+      <div class="item"><span>Settings</span></div>
+      <div class="footer"><div style="font-weight:500">Whisper base.en</div><div class="muted">Hold Right Option to dictate</div></div>
+    </aside>
+
+    <section class="list">
+      <div class="search">Search transcripts</div>
+      <div class="length new"><span class="label">Length</span><span class="opt on">Any</span><span class="opt">&lt;10s</span><span class="opt">10s–1m</span><span class="opt">&gt;1m</span></div>
+      <div class="scroll">
+        <div class="day new"><span class="label">Today</span><span class="mono muted">5</span><span class="del">Delete</span></div>
+        <div class="grp new"><span class="fold">▾</span><span class="name">Voice Dictation</span><span class="mono muted">Terminal · 4</span><span class="del">Delete</span></div>
+        <div class="row sel"><div class="meta mono muted"><span>12:52 AM</span><span>0:07</span></div><div class="txt">I Last diction is right, and I think copy is one button and the other button should open the main UI</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:44 AM</span><span>0:06</span></div><div class="txt">I do think the font size could be a 2 points smaller. And as far as the options go, let's try option a first.</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:31 AM</span><span>0:04</span></div><div class="txt">No, i meant the straight line then split into colored directions</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:22 AM</span><span>0:05</span></div><div class="txt">I like my version, but i liked the color icon you had for paste in the other one</div></div>
+        <div class="grp new"><span class="fold">▸</span><span class="name">Preview</span><span class="mono muted">1</span><span class="del">Delete</span></div>
+        <div class="day new"><span class="label">Sun 15 Nov</span><span class="mono muted">1</span><span class="del">Delete</span></div>
+        <div class="grp new"><span class="fold">▾</span><span class="name">Emulation</span><span class="mono muted">Terminal · 1</span><span class="del">Delete</span></div>
+        <div class="row"><div class="meta mono muted"><span>9:12 PM</span><span>0:11</span></div><div class="txt">Check the Duo layout again with the hinge half open, the controls were sitting too low</div></div>
+        <div class="day new"><span class="label">Fri 13 Nov</span><span class="mono muted">3</span><span class="del">Delete</span></div>
+        <div class="day new"><span class="label">Thu 12 Nov</span><span class="mono muted">24</span><span class="del">Delete</span></div>
+      </div>
+    </section>
+
+    <main class="detail">
+      <div class="head mono muted"><span>Voice Dictation · Terminal</span><span>Today, 12:52 AM · 0:07</span></div>
+      <p>I Last diction is right, and I think copy is one button and the other button should open the main UI</p>
+      <span class="btn">Copy</span><span class="btn">Paste again</span>
+    </main>
+  </div>
+</div>
+
+<p class="caption">With "Projects &amp; apps" clicked: the panel lists each app, and inside Terminal, each folder. Choosing one shows it across every day and closes the panel; Esc or a click outside closes it too.</p>
+<div class="app">
+  <div class="chrome"><span class="dotl" style="background:#ff5f57"></span><span class="dotl" style="background:#febc2e"></span><span class="dotl" style="background:#28c840"></span></div>
+  <div class="cols">
+    <aside class="sidebar">
+      <div class="label group-title">Transcripts</div>
+      <div class="item on"><span>All</span><span class="mono muted">56</span></div>
+      <div class="item"><span>Today</span><span class="mono muted">5</span></div>
+      <div class="item"><span>Pinned</span><span class="mono muted">0</span></div>
+      <div class="item new"><span>Projects &amp; apps</span><span class="mono muted">›</span></div>
+      <div class="label group-title">Setup</div>
+      <div class="item"><span>Models</span></div>
+      <div class="item"><span>Vocabulary</span></div>
+      <div class="item"><span>Settings</span></div>
+      <div class="footer"><div style="font-weight:500">Whisper base.en</div><div class="muted">Hold Right Option to dictate</div></div>
+    </aside>
+
+    <section class="list">
+      <div class="search">Search transcripts</div>
+      <div class="length new"><span class="label">Length</span><span class="opt on">Any</span><span class="opt">&lt;10s</span><span class="opt">10s–1m</span><span class="opt">&gt;1m</span></div>
+      <div class="scroll">
+        <div class="day new"><span class="label">Today</span><span class="mono muted">5</span><span class="del">Delete</span></div>
+        <div class="grp new"><span class="fold">▾</span><span class="name">Voice Dictation</span><span class="mono muted">Terminal · 4</span><span class="del">Delete</span></div>
+        <div class="row sel"><div class="meta mono muted"><span>12:52 AM</span><span>0:07</span></div><div class="txt">I Last diction is right, and I think copy is one button and the other button should open the main UI</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:44 AM</span><span>0:06</span></div><div class="txt">I do think the font size could be a 2 points smaller. And as far as the options go, let's try option a first.</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:31 AM</span><span>0:04</span></div><div class="txt">No, i meant the straight line then split into colored directions</div></div>
+        <div class="row"><div class="meta mono muted"><span>12:22 AM</span><span>0:05</span></div><div class="txt">I like my version, but i liked the color icon you had for paste in the other one</div></div>
+        <div class="grp new"><span class="fold">▸</span><span class="name">Preview</span><span class="mono muted">1</span><span class="del">Delete</span></div>
+        <div class="day new"><span class="label">Sun 15 Nov</span><span class="mono muted">1</span><span class="del">Delete</span></div>
+        <div class="grp new"><span class="fold">▾</span><span class="name">Emulation</span><span class="mono muted">Terminal · 1</span><span class="del">Delete</span></div>
+        <div class="row"><div class="meta mono muted"><span>9:12 PM</span><span>0:11</span></div><div class="txt">Check the Duo layout again with the hinge half open, the controls were sitting too low</div></div>
+        <div class="day new"><span class="label">Fri 13 Nov</span><span class="mono muted">3</span><span class="del">Delete</span></div>
+        <div class="day new"><span class="label">Thu 12 Nov</span><span class="mono muted">24</span><span class="del">Delete</span></div>
+      </div>
+    </section>
+
+    <main class="detail">
+      <div class="head mono muted"><span>Voice Dictation · Terminal</span><span>Today, 12:52 AM · 0:07</span></div>
+      <p>I Last diction is right, and I think copy is one button and the other button should open the main UI</p>
+      <span class="btn">Copy</span><span class="btn">Paste again</span>
+    </main>
+      <div class="popout new">
+        <div class="head"><span class="label" style="color:var(--text)">Projects &amp; apps</span><span class="mono muted">esc</span></div>
+        <div class="item top"><span>▾ Terminal</span><span class="mono muted">11</span></div>
+        <div class="item nested"><span>Voice Dictation</span><span class="mono muted">4</span></div>
+        <div class="item nested"><span>Emulation</span><span class="mono muted">4</span></div>
+        <div class="item nested"><span>No folder recorded</span><span class="mono muted">3</span></div>
+        <div class="item top"><span>Notes</span><span class="mono muted">24</span></div>
+        <div class="item top"><span>Preview</span><span class="mono muted">1</span></div>
+        <div class="item"><span>Unknown app</span><span class="mono muted">20</span></div>
+      </div>
+      <div class="shade"></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div class="dialog">
+    <h3>Delete 4 transcripts?</h3>
+    <p>Everything from Voice Dictation today, with any recordings kept for them. Pinned transcripts stay.</p>
+    <div class="btns"><span class="btn quiet">Cancel</span><span class="btn">Delete</span></div>
+  </div>
+  <div class="note"><b>Delete</b> sits on every day and every group, muted until your pointer is on it. It always asks first and says exactly what goes. Pinned transcripts are kept: pinning means "keep this".</div>
+  <div class="note"><b>Projects &amp; apps</b> is one line in the sidebar. Choosing a project or app in its panel shows it across every day, still split by day. The <b>Length</b> row works alongside it and alongside search.</div>
+  <div class="note"><b>Older dictations</b> have no project recorded, so they group by app (Terminal, Notes). The 20 from before the app recorded apps sit under "Unknown app".</div>
+</div>
+</body>
+</html>

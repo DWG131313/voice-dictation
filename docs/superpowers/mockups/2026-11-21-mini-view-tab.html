@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>The live line in the spectrum</title>
+<style>
+  @font-face { font-family: "Jost"; src: url(/files/Jost-Variable.ttf); font-weight: 100 900; }
+  @font-face { font-family: "Work Sans"; src: url(/files/WorkSans-Variable.ttf); font-weight: 100 900; }
+  @font-face { font-family: "DM Mono"; src: url(/files/DMMono-Regular.ttf); }
+  :root { --bg: #000; --bg-elevated: #0A0A0A; --text: #F2F2F2; --muted: #8C8C8C; --hairline: #2A2A2A; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: var(--text); font: 14px/1.5 "Work Sans", "Helvetica Neue", sans-serif; padding: 32px 40px 80px; }
+  h1 { font: 600 26px/1.2 "Jost", Futura, sans-serif; margin: 0 0 8px; }
+  h2 { font: 600 18px/1.2 "Jost", sans-serif; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; max-width: 860px; }
+  .mono { font: 12px/1.5 "DM Mono", ui-monospace, monospace; }
+  .muted { color: var(--muted); }
+  .label { font: 500 11px "Work Sans", sans-serif; letter-spacing: 0.9px; text-transform: uppercase; color: var(--muted); }
+
+  .side-toggle { display: flex; margin: 0 0 24px; }
+  .side-toggle button { font: 500 13px "Work Sans", sans-serif; background: var(--bg); color: var(--muted); border: 1px solid var(--hairline); padding: 6px 16px; cursor: pointer; }
+  .side-toggle button.on { color: var(--bg); background: var(--text); border-color: var(--text); }
+
+  .block { border: 1px solid var(--hairline); background: var(--bg-elevated); margin-bottom: 24px; }
+  .block-head { padding: 16px 16px 12px; }
+  .block-head p { margin: 0; color: var(--muted); max-width: 860px; }
+
+  .desk { background: #3a3c42; padding: 24px; overflow-x: auto; display: flex; gap: 48px; justify-content: center; align-items: flex-start; }
+  .dock, .unit { display: flex; align-items: flex-start; }
+  body.left .dock, body.left .unit { flex-direction: row-reverse; }
+  .win { width: 500px; height: 280px; background: #1e1e1e; border-radius: 10px; overflow: hidden; flex: none; }
+  .titlebar { height: 28px; background: #2c2c2e; display: flex; align-items: center; gap: 8px; padding: 0 12px; font: 12px -apple-system, sans-serif; color: #9a9a9a; }
+  .titlebar .t { flex: 1; text-align: center; margin-right: 52px; }
+  .dotl { width: 12px; height: 12px; border-radius: 50%; }
+  .term { padding: 12px 16px; font: 12px/1.7 ui-monospace, Menlo, monospace; color: #d0d0d0; }
+  .term .dim { color: #7d7d7d; }
+  .closeup { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .closeup .z { zoom: 3; }
+
+  .mini { background: var(--bg); border: 1px solid var(--hairline); flex: none; }
+  .tab { width: 40px; height: 196px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; }
+  .tab svg { flex: none; }
+  .vword { writing-mode: vertical-rl; font: 500 11px "Work Sans", sans-serif; letter-spacing: 0.9px; text-transform: uppercase; color: var(--muted); }
+  .vword.on { color: var(--text); }
+  .tab .mono { font-size: 10px; }
+  .tab .vword { font-size: 9px; letter-spacing: 0.8px; }
+
+  .states { display: flex; gap: 28px; align-items: flex-start; padding: 16px 24px 20px; border-top: 1px solid var(--hairline); flex-wrap: wrap; }
+  .state { display: flex; flex-direction: column; gap: 8px; }
+  .state > .label { font-size: 10px; }
+  .state > .why { font-size: 12px; color: var(--muted); max-width: 140px; }
+  .stub { width: 26px; height: 210px; background: #1e1e1e; flex: none; }
+  .toward-window { display: flex; transform: scaleX(-1); }
+  body.left .toward-window { transform: none; }
+  .alt { opacity: 0.9; outline: 1px dashed #8C8C8C; outline-offset: 6px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <!-- Fixed in place across the line, red at the oldest sound, violet at the newest, as on the app icon. -->
+    <linearGradient id="spec" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="26" y2="0">
+      <stop offset="0" stop-color="#FF2D1F"/><stop offset="0.2" stop-color="#FF8A00"/><stop offset="0.4" stop-color="#FFE600"/>
+      <stop offset="0.6" stop-color="#27D14B"/><stop offset="0.8" stop-color="#1E8BFF"/><stop offset="1" stop-color="#7B3DFF"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<h1>The tab, two points smaller</h1>
+<p class="sub">White and flat at rest, the spectrum while you speak and while it transcribes. When the words go in, a straight white line splits into the six colours, A2's refraction. If they couldn't go in, the line is white and the clipboard says where they went instead.</p>
+
+<div class="side-toggle">
+  <button id="side-right" class="on" onclick="setSide('right')">Docked right</button>
+  <button id="side-left" onclick="setSide('left')">Docked left</button>
+</div>
+
+<div id="page"></div>
+
+<script>
+  const WAVE = "0,9 3,9 5,4 8,14 10,2 13,16 15,6 18,12 20,3 23,15 26,9";
+  const svg = (inner, w = 26, h = 18) => `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${inner}</svg>`;
+  const line = (stroke, cls = '', pts = '0,9 26,9', width = 1) => svg(`<polyline class="${cls}" points="${pts}" fill="none" stroke="${stroke}" stroke-width="${width}"/>`);
+  const G = {
+    flatWhite: line('#F2F2F2'),
+    liveSpec: line('url(#spec)', 'live', WAVE, 1.5),
+    flatSpec: line('url(#spec)', '', '0,9 26,9', 1.5),
+    fan: svg(`<line x1="0" y1="9" x2="12" y2="9" stroke="#F2F2F2" stroke-width="1"/>
+              <line x1="12" y1="9" x2="26" y2="3" stroke="#FF2D1F"/><line x1="12" y1="9" x2="26" y2="5.4" stroke="#FF8A00"/>
+              <line x1="12" y1="9" x2="26" y2="7.8" stroke="#FFE600"/><line x1="12" y1="9" x2="26" y2="10.2" stroke="#27D14B"/>
+              <line x1="12" y1="9" x2="26" y2="12.6" stroke="#1E8BFF"/><line x1="12" y1="9" x2="26" y2="15" stroke="#7B3DFF"/>`),
+  };
+  const clip = svg(`<rect x="0.5" y="2.5" width="11" height="12" fill="none" stroke="#F2F2F2"/>
+      <rect x="3.5" y="0.5" width="5" height="3.5" fill="#000" stroke="#F2F2F2"/>
+      <polyline points="3,9 5.2,11.2 9,7" fill="none" stroke="#F2F2F2"/>`, 12, 15);
+  const tab = (parts, cls = '') => `<div class="mini tab ${cls}">${parts.join('')}</div>`;
+  const time = (t, muted) => `<div class="mono ${muted ? 'muted' : ''}">${t}</div>`;
+  const word = (w, on) => `<div class="vword ${on ? 'on' : ''}">${w}</div>`;
+  const state = (name, body, why = '') => `<div class="state"><div class="label">${name}</div><div class="unit"><div class="stub"></div>${body}</div>${why ? `<div class="why">${why}</div>` : ''}</div>`;
+  const T = {
+    rest: tab([G.flatWhite, time('3:41', true)]),
+    speak: tab([G.liveSpec, time('0:04')]),
+    transcribing: tab([G.flatSpec, word('Transcribing')]),
+    pasted: tab([G.fan, time('3:41'), word('Pasted', true)]),
+    copied: tab([G.flatWhite, time('3:41'), clip, word('Copied', true)]),
+  };
+  const win = `<div class="dock"><div class="win">
+      <div class="titlebar"><span class="dotl" style="background:#ff5f57"></span><span class="dotl" style="background:#febc2e"></span><span class="dotl" style="background:#28c840"></span><span class="t">Voice Dictation — claude — 90×24</span></div>
+      <div class="term"><div>&gt; I do think the font size could be a 2 points smaller.</div><div>&gt; _</div></div></div>
+      <div class="unit" style="margin-top:40px">${T.pasted}</div></div>`;
+
+  document.getElementById('page').innerHTML = `
+    <div class="block">
+      <div class="block-head"><h2>One dictation, start to finish</h2>
+        <p>Colour runs from the moment you start speaking until the words land, then goes back to white. Pasted and Copied look different at a glance: white splitting into colour means the words went in; a white line and a clipboard means they're waiting for ⌘V.</p></div>
+      <div class="desk">${win}
+        <div class="closeup"><div class="label">Close up, just pasted</div><div class="z">${T.pasted}</div></div>
+      </div>
+      <div class="states">
+        ${state('Nothing new', T.rest)}
+        ${state('While you speak', T.speak)}
+        ${state('Transcribing', T.transcribing, 'Flat, still in colour: still working.')}
+        ${state('Just pasted', T.pasted, 'The white line splits into the spectrum: the words landed.')}
+        ${state("Couldn't paste", T.copied, 'White, with the clipboard: press ⌘V.')}
+        ${state('A little later', T.rest, 'Back to white after a few seconds.')}
+      </div>
+    </div>`;
+
+  const levels = Array.from({ length: 11 }, () => 0);
+  setInterval(() => {
+    levels.shift();
+    levels.push((Math.random() * 2 - 1) * (0.3 + Math.random() * 0.7));
+    const pts = levels.map((v, i) => `${(i * 2.6).toFixed(1)},${(9 - v * 7.5).toFixed(1)}`).join(' ');
+    document.querySelectorAll('polyline.live').forEach(p => p.setAttribute('points', pts));
+  }, 90);
+
+  function setSide(side) {
+    document.body.classList.toggle('left', side === 'left');
+    document.getElementById('side-left').classList.toggle('on', side === 'left');
+    document.getElementById('side-right').classList.toggle('on', side === 'right');
+  }
+</script>
+</body>
+</html>
