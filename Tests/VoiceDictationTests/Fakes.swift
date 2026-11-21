@@ -314,6 +314,7 @@ final class FakePaster: Pasting {
     /// False pastes nothing, as without Accessibility access.
     var succeeds = true
     var frontmostAppName: String? = "TextEdit"
+    var frontmostFolder: String?
     /// Goes up with each paste and copy, as the clipboard's does.
     private(set) var clipboardChangeCount = 0
     private(set) var pasted: [String] = []

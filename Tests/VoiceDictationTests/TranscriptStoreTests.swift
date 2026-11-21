@@ -21,6 +21,17 @@ final class TranscriptStoreTests: XCTestCase {
     // MARK: - Adding and searching
 
     @MainActor
+    func testATranscriptKeepsItsProject() throws {
+        let store = memoryStore()
+        let with = DictationOutcome(date: base, clip: nil, rawText: "a", text: "a", model: whisperBase,
+                                    transcribeSeconds: 0.1, appName: "Terminal", project: "Emulation", status: .pasted)
+        let without = DictationOutcome(date: base.addingTimeInterval(1), clip: nil, rawText: "b", text: "b",
+                                       model: whisperBase, transcribeSeconds: 0.1, appName: "Terminal", status: .pasted)
+        XCTAssertEqual(try XCTUnwrap(store.add(with)).project, "Emulation")
+        XCTAssertNil(try XCTUnwrap(store.add(without)).project)
+    }
+
+    @MainActor
     func testAddAndSearchRoundTrip() throws {
         let store = memoryStore()
         let pasted = DictationOutcome(

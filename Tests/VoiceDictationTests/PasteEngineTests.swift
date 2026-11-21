@@ -176,4 +176,15 @@ final class PasteEngineTests: XCTestCase {
         PasteEngine.restore(snapshot, to: pasteboard)
         XCTAssertNil(pasteboard.string(forType: .string))
     }
+
+    func testTheProjectIsTheFolderTheWindowIsOpenOn() {
+        let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+        XCTAssertEqual(PasteEngine.projectName(fromDocument: "file:///Users/someone/CodingProjects/Voice%20Dictation/", home: home), "Voice Dictation")
+        XCTAssertEqual(PasteEngine.projectName(fromDocument: "file:///Users/someone/CodingProjects/", home: home), "CodingProjects")
+        XCTAssertNil(PasteEngine.projectName(fromDocument: "file:///Users/someone/CodingProjects/Voice%20Dictation/README.md", home: home), "a document, not a folder")
+        XCTAssertNil(PasteEngine.projectName(fromDocument: "file:///Users/someone/", home: home), "the home folder")
+        XCTAssertNil(PasteEngine.projectName(fromDocument: "file:///", home: home))
+        XCTAssertNil(PasteEngine.projectName(fromDocument: "https://example.com/folder/", home: home))
+        XCTAssertNil(PasteEngine.projectName(fromDocument: nil, home: home))
+    }
 }

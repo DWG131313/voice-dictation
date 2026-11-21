@@ -38,6 +38,37 @@ public class PasteEngine: Pasting {
         NSWorkspace.shared.frontmostApplication?.localizedName
     }
 
+    /// The folder the front window is open on, as a project name. Needs
+    /// Accessibility; nil without it. Reads only the window's `AXDocument`.
+    public var frontmostFolder: String? {
+        guard isTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &window) == .success,
+              let window, CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        var document: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXDocumentAttribute as CFString,
+                                            &document) == .success else { return nil }
+        return Self.projectName(fromDocument: document as? String,
+                                home: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    /// The project a window's `AXDocument` names: the last component of a
+    /// file URL that is a folder. Nil for a document, the home folder, the
+    /// root or anything that is not a file URL.
+    static func projectName(fromDocument document: String?, home: URL) -> String? {
+        guard let document, let url = URL(string: document), url.isFileURL, url.hasDirectoryPath else { return nil }
+        func trimmed(_ path: String) -> String {
+            var path = path
+            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            return path
+        }
+        let path = trimmed(url.path)
+        guard path != "/", path != trimmed(home.path) else { return nil }
+        let name = url.lastPathComponent
+        return name.isEmpty || name == "/" ? nil : name
+    }
+
     /// Pastes `text` into the frontmost app with Cmd+V, then puts back what
     /// was on the clipboard. Without Accessibility access macOS ignores the
     /// Cmd+V, so the text is left on the clipboard for the user to paste, and

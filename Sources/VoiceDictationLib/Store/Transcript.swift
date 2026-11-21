@@ -22,6 +22,8 @@ public final class Transcript {
     public var cleanedText: String?
     /// The app that was frontmost when the dictation finished.
     public var appName: String?
+    /// The folder the window was open on when the text pasted, as a project name (`PasteEngine.projectName`); nil when it had none, and for dictations from before it was kept.
+    public var project: String?
     /// The model behind `text`, as `ModelID.storageKey`; for a hand edit,
     /// the model whose text Danny edited. Always a real model, never
     /// `AlternateResult.editedModelKey`.
@@ -54,7 +56,7 @@ public final class Transcript {
     /// `modelKey` and `transcribeSeconds` are the dictation's own, so they
     /// are also kept as `rawModelKey` and `rawTranscribeSeconds`.
     public init(id: UUID = UUID(), date: Date, text: String, rawText: String, cleanedText: String? = nil,
-                appName: String? = nil, modelKey: String, recordingSeconds: Double, transcribeSeconds: Double,
+                appName: String? = nil, project: String? = nil, modelKey: String, recordingSeconds: Double, transcribeSeconds: Double,
                 cleanupSeconds: Double? = nil, statusRaw: String, failure: String? = nil, pinned: Bool = false,
                 isEdited: Bool = false, audioFileName: String? = nil, alternates: [AlternateResult] = []) {
         self.id = id
@@ -63,6 +65,7 @@ public final class Transcript {
         self.rawText = rawText
         self.cleanedText = cleanedText
         self.appName = appName
+        self.project = project
         self.modelKey = modelKey
         self.rawModelKey = modelKey
         self.recordingSeconds = recordingSeconds
@@ -82,7 +85,7 @@ extension Transcript {
     /// The transcript of a finished dictation, before anyone has changed it.
     convenience init(_ outcome: DictationOutcome) {
         self.init(id: outcome.id, date: outcome.date, text: outcome.text, rawText: outcome.rawText,
-                  cleanedText: outcome.cleanedText, appName: outcome.appName, modelKey: outcome.model.storageKey,
+                  cleanedText: outcome.cleanedText, appName: outcome.appName, project: outcome.project, modelKey: outcome.model.storageKey,
                   recordingSeconds: outcome.clip?.duration ?? 0, transcribeSeconds: outcome.transcribeSeconds,
                   cleanupSeconds: outcome.cleanupSeconds, statusRaw: outcome.status.rawValue, failure: outcome.failure)
     }

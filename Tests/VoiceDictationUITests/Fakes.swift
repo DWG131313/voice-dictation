@@ -166,6 +166,7 @@ final class FakeRecorder: Recording {
 /// clipboard's does; a test adds to it for a copy made in another app.
 final class FakePaster: Pasting {
     var frontmostAppName: String? = "TextEdit"
+    var frontmostFolder: String?
     /// False pastes nothing, as without Accessibility access.
     var succeeds = true
     var clipboardChangeCount = 0

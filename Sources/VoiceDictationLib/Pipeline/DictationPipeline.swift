@@ -44,6 +44,9 @@ public protocol Pasting {
     var clipboardChangeCount: Int { get }
     /// The app a paste would go to.
     var frontmostAppName: String? { get }
+    /// The folder the front window is open on, as a project name; nil when
+    /// it has none or the app may not ask.
+    var frontmostFolder: String? { get }
 }
 
 /// Runs each dictation from key press to paste. It records while the hotkey
@@ -462,6 +465,7 @@ public final class DictationPipeline {
             }
             let text = cleanedText ?? rawText
             let appName = paster.frontmostAppName
+            let project = paster.frontmostFolder
             let pasted = paster.paste(text: text)
             timer.mark(.pasted)
             lastTiming = timer
@@ -472,7 +476,7 @@ public final class DictationPipeline {
                 id: dictation.id, date: dictation.date, clip: dictation.clip,
                 rawText: rawText, cleanedText: cleanedText, text: text, model: result.model,
                 transcribeSeconds: result.elapsed, cleanupSeconds: cleanupSeconds,
-                appName: appName, status: pasted ? .pasted : .copied
+                appName: appName, project: project, status: pasted ? .pasted : .copied
             ))
             if let stillCleaning { keepLateCleanup(stillCleaning, of: rawText, for: dictation.id) }
             prewarmCleanup()
@@ -503,6 +507,7 @@ public final class DictationPipeline {
         onOutcome?(DictationOutcome(
             id: dictation.id, date: dictation.date, clip: dictation.clip, rawText: "", text: "",
             model: model, transcribeSeconds: 0, appName: paster.frontmostAppName,
+            project: paster.frontmostFolder,
             status: .failed, failure: reason
         ))
     }

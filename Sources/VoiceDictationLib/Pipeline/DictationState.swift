@@ -45,13 +45,15 @@ public struct DictationOutcome: Sendable {
     public let cleanupSeconds: Double?
     /// The app that was frontmost when the dictation finished.
     public let appName: String?
+    /// The folder the window was open on when the text pasted, as a project name (`PasteEngine.projectName`); nil when it had none, and for dictations from before it was kept.
+    public let project: String?
     public let status: Status
     /// Why it failed, for `.failed`.
     public let failure: String?
 
     public init(id: UUID = UUID(), date: Date, clip: AudioClip?, rawText: String, cleanedText: String? = nil,
                 text: String, model: ModelID, transcribeSeconds: Double, cleanupSeconds: Double? = nil,
-                appName: String?, status: Status, failure: String? = nil) {
+                appName: String?, project: String? = nil, status: Status, failure: String? = nil) {
         self.id = id
         self.date = date
         self.clip = clip
@@ -62,6 +64,7 @@ public struct DictationOutcome: Sendable {
         self.transcribeSeconds = transcribeSeconds
         self.cleanupSeconds = cleanupSeconds
         self.appName = appName
+        self.project = project
         self.status = status
         self.failure = failure
     }

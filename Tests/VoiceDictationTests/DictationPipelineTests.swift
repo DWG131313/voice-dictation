@@ -157,6 +157,29 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.dictationsInFlight, 0)
     }
 
+    /// Each outcome, pasted or failed, carries the folder the front window
+    /// was open on.
+    @MainActor
+    func testOutcomesCarryTheFrontWindowsFolder() async throws {
+        paster.frontmostFolder = "Voice Dictation"
+        let apple = FakeEngine(kind: .appleSpeech)
+        apple.result = "Hello there."
+        let pipeline = makePipeline([apple])
+        dictate(clip, on: pipeline)
+        try await waitUntil("the dictation finishes") { outcomes.count == 1 }
+        XCTAssertEqual(outcomes[0].status, .pasted)
+        XCTAssertEqual(outcomes[0].project, "Voice Dictation")
+
+        let broken = FakeEngine(kind: .appleSpeech)
+        broken.prepareError = TranscriptionError.modelNotReady("not ready")
+        let failing = makePipeline([broken])
+        failing.errorDisplaySeconds = 0.5
+        dictate(clip, on: failing)
+        try await waitUntil("the failure is reported") { outcomes.count == 2 }
+        XCTAssertEqual(outcomes[1].status, .failed)
+        XCTAssertEqual(outcomes[1].project, "Voice Dictation")
+    }
+
     /// A saved choice whose engine is gone fails each dictation the same way,
     /// where the old wiring crashed on a missing transcriber.
     @MainActor
