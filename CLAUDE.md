@@ -56,6 +56,7 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
 - whisper.cpp is pinned at v1.9.5. Its golden tests (`WhisperCppEngineTests`) check that it gives whisper-cli's text exactly. A bump must keep them passing. To record new golden text on purpose, restore `WhisperCLIGoldenRecorder.swift` and the whisper-cli engine from commit `a604041`, and run Homebrew's whisper-cli at the target version
 - The ggml models live in `~/Library/Application Support/VoiceDictation/models/`. They download only when Danny presses Download, and only a file matching the catalog's size and SHA-256 (`GGMLModel`) is kept
 - Globe as the hotkey needs "Press Globe key to: Do Nothing" in System Settings
+- Recordings are kept for replay and re-transcription: the newest 50 ("Recordings to keep"), and none older than 7 days (`TranscriptStore.weekOfRecordings`). Pinned and failed dictations keep theirs; transcripts are never removed by this
 - Taps under 0.5 s and near-silent recordings (peak < 0.01) are discarded; a recording stops at 5 minutes or on an audio device change
 - Whole-transcript whisper hallucinations ("you", "Thank you.") are dropped (`OutputFilter`)
 - The clipboard is snapshotted and put back after a paste, unless something new was copied meanwhile

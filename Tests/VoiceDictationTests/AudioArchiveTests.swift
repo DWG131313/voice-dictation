@@ -106,6 +106,59 @@ final class AudioArchiveTests: XCTestCase {
         XCTAssertEqual(files(archive).count, 3)
     }
 
+    // MARK: - Expiry after a week (Danny, 2026-11-20)
+
+    /// A store whose recordings last a week, read at `days` after `base`.
+    @MainActor
+    private func makeWeekStore(archive: AudioArchive, daysLater days: Double) -> TranscriptStore {
+        let unused = FileManager.default.temporaryDirectory.appendingPathComponent("vd-unused-\(UUID().uuidString)")
+        let now = base.addingTimeInterval(days * 86_400)
+        let store = TranscriptStore(directory: unused, inMemory: true, now: now, audio: archive,
+                                    keptRecordings: { 50 }, recordingLifetime: TranscriptStore.weekOfRecordings,
+                                    clock: { now })
+        XCTAssertEqual(store.health, .ok)
+        return store
+    }
+
+    @MainActor
+    func testARecordingOlderThanAWeekExpiresAndItsTranscriptStays() throws {
+        let archive = AudioArchive(directory: try makeDirectory())
+        let store = makeWeekStore(archive: archive, daysLater: 8)
+        let old = try XCTUnwrap(store.add(outcome(0)))                  // 8 days old
+        let recent = try XCTUnwrap(store.add(outcome(2 * 86_400)))      // 6 days old
+        let today = try XCTUnwrap(store.add(outcome(8 * 86_400 - 60)))  // a minute old
+
+        XCTAssertNil(old.audioFileName, "older than a week: the recording goes")
+        XCTAssertNotNil(recent.audioFileName)
+        XCTAssertNotNil(today.audioFileName)
+        XCTAssertEqual(store.search("", scope: .all).count, 3, "every transcript stays")
+        XCTAssertEqual(files(archive).count, 2)
+    }
+
+    @MainActor
+    func testPinnedAndFailedRecordingsDoNotExpire() throws {
+        let archive = AudioArchive(directory: try makeDirectory())
+        let store = makeWeekStore(archive: archive, daysLater: 30)
+        let failed = try XCTUnwrap(store.add(outcome(0, status: .failed)))
+        // Pinned while still fresh; read again three weeks on.
+        let pinned = try XCTUnwrap(store.add(outcome(30 * 86_400 - 60)))
+        store.setPinned(pinned, true)
+        let later = base.addingTimeInterval(51 * 86_400)
+        store.prune(keeping: 50, now: later)
+
+        XCTAssertNotNil(failed.audioFileName, "a failed dictation keeps its recording")
+        XCTAssertNotNil(pinned.audioFileName, "a pinned one keeps its recording")
+    }
+
+    /// The store the tests have always made keeps recordings of any age.
+    @MainActor
+    func testWithoutALifetimeNothingExpires() throws {
+        let archive = AudioArchive(directory: try makeDirectory())
+        let store = makeStore(keeping: 50, archive: archive)
+        let old = try XCTUnwrap(store.add(outcome(0)))   // a year old by the real clock
+        XCTAssertNotNil(old.audioFileName)
+    }
+
     @MainActor
     func testZeroKeepsNoAudioForNewTranscripts() throws {
         let archive = AudioArchive(directory: try makeDirectory())

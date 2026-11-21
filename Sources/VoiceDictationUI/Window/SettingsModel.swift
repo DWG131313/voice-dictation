@@ -79,7 +79,7 @@ final class SettingsModel {
     nonisolated static let keptRecordingsRange = 0...500
     nonisolated static let keptRecordingsStep = 10
     /// The line under "Recordings to keep".
-    static let keptRecordingsNote = "0 turns off replay and re-transcription (failed dictations keep theirs)."
+    static let keptRecordingsNote = "Recordings are removed after a week; transcripts stay. 0 turns off replay and re-transcription (failed dictations keep theirs)."
     /// The line under "Paste last transcript shortcut": which keys it is.
     static let pasteLastNote = "Control-Option-V pastes your latest transcript."
     /// The microphone row's name for the system's default input.

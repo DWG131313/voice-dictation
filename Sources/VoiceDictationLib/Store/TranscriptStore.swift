@@ -43,24 +43,38 @@ public final class TranscriptStore {
     public let audio: AudioArchive?
     /// How many ordinary transcripts keep their recording (`PreferencesManager.keptRecordings`).
     private let keptRecordings: () -> Int
+    /// How long an ordinary transcript keeps its recording; nil keeps it
+    /// until the count prunes it. The app passes `weekOfRecordings`.
+    private let recordingLifetime: TimeInterval?
+    /// The time now, for judging a recording's age; tests pass their own.
+    private let clock: () -> Date
+    /// Seven days: recordings are for replay and re-transcription soon
+    /// after a dictation; the transcript is what lasts.
+    public static let weekOfRecordings: TimeInterval = 7 * 24 * 60 * 60
     /// Nil when the store is unavailable.
     public let container: ModelContainer?
 
     /// Opens, or starts, `transcripts.store` in `directory`, creating the
     /// directory if needed. In memory, nothing is read or written there.
     /// With an `audio` archive, `add` keeps each recording there and prunes
-    /// to `keptRecordings()` newest (see `prune(keeping:)`).
+    /// to `keptRecordings()` newest, and to those younger than
+    /// `recordingLifetime` when one is given (see `prune(keeping:)`).
     public convenience init(directory: URL, inMemory: Bool = false, audio: AudioArchive? = nil,
-                            keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings }) {
-        self.init(directory: directory, inMemory: inMemory, now: Date(), audio: audio, keptRecordings: keptRecordings)
+                            keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings },
+                            recordingLifetime: TimeInterval? = nil) {
+        self.init(directory: directory, inMemory: inMemory, now: Date(), audio: audio, keptRecordings: keptRecordings,
+                  recordingLifetime: recordingLifetime)
     }
 
     /// `now` names the files of a store that is moved aside; tests pass
     /// their own.
     init(directory: URL, inMemory: Bool = false, now: Date, audio: AudioArchive? = nil,
-         keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings }) {
+         keptRecordings: @escaping () -> Int = { PreferencesManager.defaultKeptRecordings },
+         recordingLifetime: TimeInterval? = nil, clock: @escaping () -> Date = Date.init) {
         self.audio = audio
         self.keptRecordings = keptRecordings
+        self.recordingLifetime = recordingLifetime
+        self.clock = clock
         let opened = Self.open(directory.appendingPathComponent(Self.fileName), inMemory: inMemory, now: now,
                                archive: audio?.directory)
         container = opened.container
@@ -97,13 +111,14 @@ public final class TranscriptStore {
     // MARK: - Kept recordings
 
     /// Keeps the recordings of the newest `limit` ordinary transcripts and
-    /// removes the others' (their `audioFileName` becomes nil; the
-    /// transcripts stay). Pinned and failed transcripts keep theirs and do
+    /// removes the others', and those older than `recordingLifetime` when
+    /// the store has one, judged at `now` or else the clock (their
+    /// `audioFileName` becomes nil; the transcripts stay). Pinned and failed transcripts keep theirs and do
     /// not count against `limit` (Ruling T12-1). Then deletes `.m4a` files
     /// that no transcript names, but only while the store is healthy: a
     /// store started anew after a damaged one was moved aside does not know
     /// the old recordings, which must not be taken for strays.
-    public func prune(keeping limit: Int) {
+    public func prune(keeping limit: Int, now: Date? = nil) {
         guard let context, let audio else { return }
         let descriptor = FetchDescriptor<Transcript>(
             predicate: #Predicate { $0.audioFileName != nil },
@@ -116,12 +131,13 @@ public final class TranscriptStore {
             Log.info("[STORE] Could not prune the recordings: \(error)")
             return
         }
+        let expiry = recordingLifetime.map { (now ?? clock()).addingTimeInterval(-$0) }
         var counted = 0
         var pruned: [String] = []
         for t in all {
             guard let name = t.audioFileName, !t.pinned, t.status != .failed else { continue }
             counted += 1
-            if counted > max(0, limit) {
+            if counted > max(0, limit) || expiry.map({ t.date < $0 }) == true {
                 pruned.append(name)
                 t.audioFileName = nil
             }

@@ -122,7 +122,8 @@ public final class AppModel {
             store: TranscriptStore(
                 directory: directory,
                 audio: AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true)),
-                keptRecordings: { preferences.keptRecordings }
+                keptRecordings: { preferences.keptRecordings },
+                recordingLifetime: TranscriptStore.weekOfRecordings
             ),
             preferences: preferences,
             hotkeys: HotkeyManager(),
@@ -194,6 +195,10 @@ public final class AppModel {
         Log.info("[INIT] applicationDidFinishLaunching (log: \(Log.fileURL.path))")
 
         importHistory()
+
+        // Recordings last a week (and "Recordings to keep" at most): those
+        // that aged out while the app was not running go now.
+        store.prune(keeping: preferences.keptRecordings)
 
         // Reconcile "open at login" with the user's preference. This is a
         // deliberate no-op for dev builds (anything under .build): registering
