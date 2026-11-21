@@ -70,6 +70,24 @@ components:
     textColor: "{colors.text}"
     rounded: "{rounded.none}"
     padding: "{spacing.md}"
+  day-heading:
+    backgroundColor: "{colors.bg-elevated}"
+    textColor: "{colors.text}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "16px 16px 8px"
+  group-heading:
+    backgroundColor: "{colors.bg}"
+    textColor: "{colors.text}"
+    typography: "{typography.label}"
+    rounded: "{rounded.none}"
+    padding: "8px 16px"
+  places-panel:
+    backgroundColor: "{colors.bg-elevated}"
+    textColor: "{colors.text}"
+    typography: "{typography.body}"
+    rounded: "{rounded.none}"
+    width: 240px
   divider:
     backgroundColor: "{colors.hairline}"
     height: 1px
@@ -128,6 +146,9 @@ Radius 0 everywhere: buttons, rows, panels, the indicator. Corners are square. T
 - **Secondary button:** 1px white outline, white Work Sans 500 label.
 - **Selected transcript:** the 2px spectrum underline; every other row is white on black.
 - **Selected text:** black on the text white (`bg` on `text`), caret white; never the system accent, so the spectrum stays the only colour.
+- **Day heading:** Work Sans 500 11, tracking 0.9, upper case, in the text colour, with its count in DM Mono, muted, on `bg-elevated` with a hairline below; Delete at the right.
+- **Group heading:** a fold chevron in DM Mono 10, the folder or app in Work Sans 500 13, and its app and count in DM Mono 12, muted; Delete at the right in Work Sans 12, muted until the pointer is on it.
+- **Projects & apps panel:** 240 wide on `bg-elevated` with hairline sides, laid over the list beside the sidebar; the label-style heading in the text colour, lines with DM Mono counts, folders nested 16 deeper; `bg` at 0.55 dims the columns beside it.
 - **Times and figures:** DM Mono, muted.
 - **Floating indicator:** a scrolling white volume line, no colour, no spectrum.
 - **App icon:** black, and a sharp-cornered waveform whose stroke is the spectrum, running along the line from red to violet; the only element.

@@ -16,7 +16,7 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            group("Transcripts", LibraryModel.Section.transcripts)
+            group("Transcripts", LibraryModel.Section.transcripts, includesPlaces: true)
             group("Setup", LibraryModel.Section.setup)
             Spacer(minLength: Theme.Space.md)
             footer
@@ -27,7 +27,8 @@ struct Sidebar: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private func group(_ title: String, _ sections: [LibraryModel.Section]) -> some View {
+    private func group(_ title: String, _ sections: [LibraryModel.Section],
+                       includesPlaces: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(Theme.Font.ui(11, medium: true))
@@ -41,13 +42,51 @@ struct Sidebar: View {
             ForEach(sections) { section in
                 item(section)
             }
+            if includesPlaces { placesItem }
         }
+    }
+
+    /// "Projects & apps ›": toggles the panel beside the sidebar. It is in
+    /// the text colour while a place shows, with its name under it in DM
+    /// Mono; choosing the place, in the panel, is what shows it.
+    private var placesItem: some View {
+        let isShowing = library.section == .places
+        return Button {
+            library.isPlacesPanelOpen.toggle()
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(LibraryModel.Section.places.title)
+                        .font(Theme.Font.ui(14))
+                        .foregroundStyle(isShowing || library.isPlacesPanelOpen ? Theme.Color.text : Theme.Color.textMuted)
+                    if isShowing, let placeTitle = library.placeTitle {
+                        Text(placeTitle)
+                            .font(Theme.Font.mono(11))
+                            .foregroundStyle(Theme.Color.textMuted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: Theme.Space.sm)
+                Text("›")
+                    .font(Theme.Font.mono(12))
+                    .foregroundStyle(Theme.Color.textMuted)
+            }
+            .padding(.vertical, Theme.Space.sm)
+            .padding(.horizontal, Theme.Space.sm)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(LibraryModel.Section.places.title)
+        .accessibilityValue(library.placeTitle ?? "")
+        .accessibilityHint(library.isPlacesPanelOpen ? "Closes the list of projects and apps" : "Opens the list of projects and apps")
+        .accessibilityAddTraits(isShowing ? .isSelected : [])
     }
 
     private func item(_ section: LibraryModel.Section) -> some View {
         let isShowing = library.section == section
         let count = library.count(of: section, models: models)
         return Button {
+            library.isPlacesPanelOpen = false
             library.section = section
         } label: {
             HStack(spacing: Theme.Space.sm) {

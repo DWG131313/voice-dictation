@@ -13,6 +13,7 @@ struct TranscriptList: View {
     var body: some View {
         VStack(spacing: 0) {
             searchField
+            lengthRow
             if let notice = library.notice {
                 Text(notice)
                     .font(Theme.Font.ui(12))
@@ -25,6 +26,63 @@ struct TranscriptList: View {
                     .overlay(alignment: .bottom) { Hairline() }
             }
             rows
+        }
+        .confirmationDialog(library.headingDeletionToConfirm?.title ?? "", isPresented: deletionAsked,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { library.confirmHeadingDeletion() }
+            Button("Cancel", role: .cancel) { library.cancelHeadingDeletion() }
+        } message: {
+            Text(library.headingDeletionToConfirm?.message ?? "")
+        }
+    }
+
+    /// Whether Danny is being asked to confirm deleting a heading's transcripts.
+    private var deletionAsked: Binding<Bool> {
+        Binding(get: { library.headingDeletionToConfirm != nil },
+                set: { if !$0 { library.cancelHeadingDeletion() } })
+    }
+
+    /// "LENGTH  Any  <10s  10s–1m  >1m": DM Mono 12, the chosen one in the
+    /// text colour with a 1 pt underline, and a hairline below.
+    private var lengthRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.md) {
+            Text("Length")
+                .font(Theme.Font.ui(11, medium: true))
+                .tracking(0.9)
+                .textCase(.uppercase)
+                .foregroundStyle(Theme.Color.textMuted)
+                .accessibilityHidden(true)
+            ForEach(LengthFilter.allCases, id: \.self) { option in
+                let isChosen = library.length == option
+                Button {
+                    library.length = option
+                } label: {
+                    Text(Self.lengthWords(option))
+                        .font(Theme.Font.mono(12))
+                        .foregroundStyle(isChosen ? Theme.Color.text : Theme.Color.textMuted)
+                        .overlay(alignment: .bottom) {
+                            if isChosen { Rectangle().fill(Theme.Color.text).frame(height: 1) }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Length, \(Self.lengthWords(option))")
+                .accessibilityAddTraits(isChosen ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.top, Theme.Space.xs)
+        .padding(.bottom, Theme.Space.sm + Theme.Space.xs)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    static func lengthWords(_ option: LengthFilter) -> String {
+        switch option {
+        case .any: "Any"
+        case .short: "<10s"
+        case .medium: "10s–1m"
+        case .long: ">1m"
         }
     }
 
@@ -48,6 +106,18 @@ struct TranscriptList: View {
             .padding(Theme.Space.md)
     }
 
+    @ViewBuilder
+    private func rowViews(_ transcripts: [Transcript], now: Date, indent: CGFloat) -> some View {
+        ForEach(transcripts) { transcript in
+            TranscriptRow(transcript: transcript, isSelected: transcript.id == library.selection,
+                          now: now, indent: indent) {
+                library.selection = transcript.id
+                focus.wrappedValue = .list
+            }
+            .id(transcript.id)
+        }
+    }
+
     private var rows: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -61,13 +131,21 @@ struct TranscriptList: View {
                             .padding(Theme.Space.md)
                     } else {
                         let now = Date()
-                        ForEach(library.rows) { transcript in
-                            TranscriptRow(transcript: transcript, isSelected: transcript.id == library.selection,
-                                          now: now) {
-                                library.selection = transcript.id
-                                focus.wrappedValue = .list
+                        let showsGroups = library.showsGroupHeadings
+                        ForEach(library.days) { day in
+                            DayHeading(library: library, day: day, now: now)
+                            if !library.isFolded(day.id) {
+                                if showsGroups {
+                                    ForEach(day.groups) { group in
+                                        GroupHeading(library: library, group: group, day: day)
+                                        if !library.isFolded(group.id) {
+                                            rowViews(group.transcripts, now: now, indent: TranscriptRow.indent)
+                                        }
+                                    }
+                                } else {
+                                    rowViews(day.transcripts, now: now, indent: Theme.Space.md)
+                                }
                             }
-                            .id(transcript.id)
                         }
                     }
                 }
@@ -101,27 +179,36 @@ struct TranscriptList: View {
     }
 }
 
-/// One transcript in the list: the app and `time · length` on one muted
-/// DM Mono line, then two lines of its text. A hairline below it; the
-/// selected row has the spectrum underline instead, and no fill.
+/// One transcript in the list: the time on the left and the length on the
+/// right of one muted DM Mono line (the heading above says the day and the
+/// place), then two lines of its text, indented under its group heading. A
+/// hairline below it; the selected row has the spectrum underline instead,
+/// and no fill.
 struct TranscriptRow: View {
     let transcript: Transcript
     let isSelected: Bool
     let now: Date
+    /// The left padding: 34 pt under a group heading.
+    var indent: CGFloat = TranscriptRow.indent
     let select: () -> Void
+
+    static let indent: CGFloat = 34
 
     var body: some View {
         let meta = LibraryModel.rowMeta(transcript, now: now)
+        let times = LibraryModel.rowTimes(transcript)
         let shown = LibraryModel.displayText(transcript)
         Button(action: select) {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
-                    Text(meta.app)
+                    Text(times.time)
                         .lineLimit(1)
                     Spacer(minLength: Theme.Space.sm)
-                    Text(meta.when)
-                        .lineLimit(1)
-                        .layoutPriority(1)
+                    if let length = times.length {
+                        Text(length)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
                 }
                 .font(Theme.Font.mono(12))
                 .foregroundStyle(Theme.Color.textMuted)
@@ -133,7 +220,9 @@ struct TranscriptRow: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(Theme.Space.md)
+            .padding(.leading, indent)
+            .padding(.trailing, Theme.Space.md)
+            .padding(.vertical, Theme.Space.md)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

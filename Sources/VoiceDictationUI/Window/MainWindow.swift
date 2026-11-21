@@ -47,9 +47,36 @@ public struct MainWindow: View {
         // Black up to the window's top edge, under the hidden title bar.
         .background(Theme.Color.bg.ignoresSafeArea())
         .foregroundStyle(Theme.Color.text)
+        .overlay(alignment: .leading) { placesOverlay }
         .background { findShortcut }
         .defaultFocus($focus, .list)
         .preferredColorScheme(.dark)
+    }
+
+    /// The Projects & apps panel against the sidebar's right edge, and to
+    /// its right `bg` at 0.55 over the columns: tapping it, or Esc, closes
+    /// the panel.
+    @ViewBuilder
+    private var placesOverlay: some View {
+        let library = model.library
+        if library.isPlacesPanelOpen {
+            HStack(spacing: 0) {
+                PlacesPanel(library: library)
+                    .padding(.leading, Self.sidebarWidth)
+                Theme.Color.bg.opacity(0.55)
+                    .ignoresSafeArea(edges: .top)
+                    .contentShape(Rectangle())
+                    .onTapGesture { library.isPlacesPanelOpen = false }
+                    .accessibilityHidden(true)
+            }
+            .background {
+                Button("Close") { library.isPlacesPanelOpen = false }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     /// The hairline between two columns, up to the window's top edge.
