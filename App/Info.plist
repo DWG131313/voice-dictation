@@ -29,8 +29,8 @@
 	<key>SUEnableAutomaticChecks</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://placeholder.invalid/appcast.xml</string>
+	<string>https://github.com/DWG131313/voice-dictation/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>PLACEHOLDER+run+Sparkle+generate+keys+first=</string>
+	<string>D3K5qnxJB82ro980rdR3xPR55A9fMQo85HRU3wmrW4k=</string>
 </dict>
 </plist>

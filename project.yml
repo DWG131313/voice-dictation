@@ -44,14 +44,12 @@ targets:
         # for Updates…": false means no automatic checks, and no prompt
         # asking about them.
         SUEnableAutomaticChecks: false
-        # PLACEHOLDERS, both, until the first Sparkle release: docs/release.md
-        # ("Sparkle") says what goes here. The feed's host never resolves
-        # (.invalid). The key is shaped like a real one because Sparkle will
-        # not start, and shows an alert at every launch, on a key that is not
-        # 32 bytes of base64; no update can pass it. release.sh refuses to run
-        # while either is still a placeholder.
-        SUFeedURL: "https://placeholder.invalid/appcast.xml"
-        SUPublicEDKey: "PLACEHOLDER+run+Sparkle+generate+keys+first="
+        # The feed is appcast.xml in the newest GitHub release, and the key is
+        # the public half of the Sparkle signing key in Danny's keychain
+        # (docs/release.md, "Sparkle"). Never make a second key: carry this
+        # one to the other Mac with generate_keys -x and -f.
+        SUFeedURL: "https://github.com/DWG131313/voice-dictation/releases/latest/download/appcast.xml"
+        SUPublicEDKey: "D3K5qnxJB82ro980rdR3xPR55A9fMQo85HRU3wmrW4k="
     entitlements:
       path: App/VoiceDictation.entitlements
       properties:
