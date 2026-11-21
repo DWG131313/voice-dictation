@@ -542,6 +542,67 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertEqual(try alternatesStored(in: store), 2)
     }
 
+    // MARK: - Places, lengths and deleting several
+
+    @MainActor
+    private func placesStore() -> TranscriptStore {
+        let store = memoryStore()
+        store.add(outcome("a", at: base, appName: "Terminal", project: "Voice Dictation"))
+        store.add(outcome("b", at: base.addingTimeInterval(1), appName: "Terminal", project: "Voice Dictation"))
+        store.add(outcome("c", at: base.addingTimeInterval(2), appName: "Terminal"))
+        store.add(outcome("d", at: base.addingTimeInterval(3), appName: "Notes"))
+        store.add(outcome("e", at: base.addingTimeInterval(4), appName: nil))
+        return store
+    }
+
+    @MainActor
+    func testSearchByPlace() {
+        let store = placesStore()
+        XCTAssertEqual(store.search("", scope: .place(.app("Terminal"))).count, 3)
+        XCTAssertEqual(store.search("", scope: .place(.place(Place(app: "Terminal", project: "Voice Dictation")))).count, 2)
+        XCTAssertEqual(store.search("", scope: .place(.place(Place(app: "Terminal", project: nil)))).count, 1)
+        XCTAssertEqual(store.search("", scope: .place(.app(nil))).count, 1)
+        XCTAssertEqual(store.count(scope: .place(.app("Terminal"))), 3)
+    }
+
+    @MainActor
+    func testLengthFilterBoundaries() {
+        let store = memoryStore()
+        for (i, s) in [0, 9.9, 10, 59.9, 60].enumerated() {
+            store.add(outcome("t\(i)", at: base.addingTimeInterval(Double(i)), seconds: s))
+        }
+        XCTAssertEqual(store.search("", scope: .all, length: .any).count, 5)
+        XCTAssertEqual(store.search("", scope: .all, length: .short).map(\.recordingSeconds), [9.9])
+        XCTAssertEqual(Set(store.search("", scope: .all, length: .medium).map(\.recordingSeconds)), [10, 59.9])
+        XCTAssertEqual(store.search("", scope: .all, length: .long).map(\.recordingSeconds), [60])
+    }
+
+    @MainActor
+    func testPlacesCountsEachAppAndFolderMostFirst() {
+        XCTAssertEqual(placesStore().places(), [
+            PlaceCount(place: Place(app: "Terminal", project: "Voice Dictation"), count: 2),
+            PlaceCount(place: Place(app: "Notes", project: nil), count: 1),
+            PlaceCount(place: Place(app: "Terminal", project: nil), count: 1),
+            PlaceCount(place: Place(app: nil, project: nil), count: 1),
+        ])
+    }
+
+    @MainActor
+    func testDeletingSeveralRemovesThemAndTheirRecordings() throws {
+        let directory = try makeDirectory()
+        let audio = AudioArchive(directory: directory.appendingPathComponent("audio", isDirectory: true))
+        let store = TranscriptStore(directory: directory, inMemory: true, audio: audio)
+        let first = try XCTUnwrap(store.add(outcome("one", at: base)))
+        let second = try XCTUnwrap(store.add(outcome("two", at: base.addingTimeInterval(1))))
+        let third = try XCTUnwrap(store.add(outcome("three", at: base.addingTimeInterval(2))))
+        XCTAssertEqual(audio.fileNames().count, 3)
+
+        store.delete([first, second])
+
+        XCTAssertEqual(store.search("", scope: .all).map(\.id), [third.id])
+        XCTAssertEqual(audio.fileNames().count, 1)
+    }
+
     // MARK: - Status and Use cleaned (Task 19)
 
     /// Review Focus 1: a failed dictation that a re-transcription gave text is
@@ -873,9 +934,17 @@ final class TranscriptStoreTests: XCTestCase {
 
     private func outcome(_ text: String, at date: Date = Date(), model: ModelID = .appleSpeech,
                          rawText: String? = nil, cleanedText: String? = nil,
-                         transcribeSeconds: Double = 0.2) -> DictationOutcome {
-        DictationOutcome(date: date, clip: clip, rawText: rawText ?? text, cleanedText: cleanedText, text: text,
-                         model: model, transcribeSeconds: transcribeSeconds, appName: "TextEdit", status: .pasted)
+                         transcribeSeconds: Double = 0.2, appName: String? = "TextEdit", project: String? = nil,
+                         seconds: Double? = nil) -> DictationOutcome {
+        let clip: AudioClip?
+        switch seconds {
+        case nil: clip = self.clip
+        case 0?: clip = nil
+        case let s?: clip = AudioClip(samples: [Float](repeating: 0.1, count: Int(s * 16_000)))
+        }
+        return DictationOutcome(date: date, clip: clip, rawText: rawText ?? text, cleanedText: cleanedText, text: text,
+                         model: model, transcribeSeconds: transcribeSeconds, appName: appName, project: project,
+                         status: .pasted)
     }
 
     private func failedOutcome(at date: Date = Date()) -> DictationOutcome {

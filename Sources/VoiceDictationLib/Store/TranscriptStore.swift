@@ -28,11 +28,13 @@ public final class TranscriptStore {
     }
 
     /// Which transcripts `search` looks at.
-    public enum Scope: Sendable {
+    public enum Scope: Equatable, Sendable {
         case all
         /// Since the start of today.
         case today
         case pinned
+        /// Those from one app, or one app and folder.
+        case place(PlaceFilter)
     }
 
     static let fileName = "transcripts.store"
@@ -162,8 +164,9 @@ public final class TranscriptStore {
     }
 
     /// The transcripts in `scope` whose main text contains `query`, ignoring
-    /// case (and accents), newest first. An empty query matches every one.
-    public func search(_ query: String, scope: Scope) -> [Transcript] {
+    /// case (and accents), newest first, and whose recording is of `length`.
+    /// An empty query matches every one.
+    public func search(_ query: String, scope: Scope, length: LengthFilter = .any) -> [Transcript] {
         guard let context else { return [] }
         let since = scope == .today ? Calendar.current.startOfDay(for: Date()) : Date.distantPast
         let pinnedOnly = scope == .pinned
@@ -177,7 +180,9 @@ public final class TranscriptStore {
             sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
         do {
-            return try context.fetch(descriptor)
+            let found = try context.fetch(descriptor)
+            guard length != .any || scope.placeFilter != nil else { return found }
+            return found.filter { scope.placeFilter?.matches($0) != false && length.contains($0.recordingSeconds) }
         } catch {
             Log.info("[STORE] Could not search the transcripts: \(error)")
             return []
@@ -188,6 +193,7 @@ public final class TranscriptStore {
     /// find, counted by the store without loading them.
     public func count(scope: Scope) -> Int {
         guard let context else { return 0 }
+        if scope.placeFilter != nil { return search("", scope: scope).count }
         let since = scope == .today ? Calendar.current.startOfDay(for: Date()) : Date.distantPast
         let pinnedOnly = scope == .pinned
         let descriptor = FetchDescriptor<Transcript>(
@@ -198,6 +204,34 @@ public final class TranscriptStore {
         } catch {
             Log.info("[STORE] Could not count the transcripts: \(error)")
             return 0
+        }
+    }
+
+    /// Every place with transcripts, and how many: most first; ties by app
+    /// name (an unknown app last), then folder name (none last).
+    public func places() -> [PlaceCount] {
+        guard let context else { return [] }
+        let all: [Transcript]
+        do {
+            all = try context.fetch(FetchDescriptor<Transcript>())
+        } catch {
+            Log.info("[STORE] Could not list the places: \(error)")
+            return []
+        }
+        let counts = Dictionary(all.map { (Place($0), 1) }, uniquingKeysWith: +)
+        func before(_ a: String?, _ b: String?) -> Bool? {
+            switch (a, b) {
+            case (nil, nil): return nil
+            case (nil, _): return false
+            case (_, nil): return true
+            case let (x?, y?):
+                let order = x.localizedStandardCompare(y)
+                return order == .orderedSame ? nil : order == .orderedAscending
+            }
+        }
+        return counts.map { PlaceCount(place: $0.key, count: $0.value) }.sorted {
+            if $0.count != $1.count { return $0.count > $1.count }
+            return before($0.place.app, $1.place.app) ?? before($0.place.project, $1.place.project) ?? false
         }
     }
 
@@ -228,10 +262,16 @@ public final class TranscriptStore {
 
     /// Deletes the transcript and its alternates.
     public func delete(_ t: Transcript) {
-        guard let context else { return }
-        let recording = t.audioFileName
-        context.delete(t)
-        if save("a deletion"), let recording { audio?.remove(recording) }
+        delete([t])
+    }
+
+    /// Deletes the transcripts and their alternates in one save, then their
+    /// recordings, and only if the save worked.
+    public func delete(_ transcripts: [Transcript]) {
+        guard let context, !transcripts.isEmpty else { return }
+        let recordings = transcripts.compactMap(\.audioFileName)
+        for t in transcripts { context.delete(t) }
+        if save("a deletion") { for name in recordings { audio?.remove(name) } }
     }
 
     /// A hand edit: makes `newText` the main text and marks the transcript
@@ -521,5 +561,12 @@ public final class TranscriptStore {
 
     private static func isBlank(_ text: String) -> Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private extension TranscriptStore.Scope {
+    var placeFilter: PlaceFilter? {
+        if case .place(let filter) = self { return filter }
+        return nil
     }
 }
