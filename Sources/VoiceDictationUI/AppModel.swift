@@ -348,7 +348,7 @@ public final class AppModel {
         clearNote(on: model.id)
         var failure: String?
         do {
-            try await pipeline.selectModel(model.id, named: model.displayName)
+            try await pipeline.selectModel(model.id, named: model.inSentence)
             preferences.selectedModelID = model.id
         } catch {
             failure = Self.message(for: error)
@@ -364,7 +364,7 @@ public final class AppModel {
     /// preparing meanwhile, and a failed download shows as an error there.
     func choose(_ model: ModelDescriptor) async {
         let id = model.id
-        await pipeline.whilePreparing(model.displayName) {
+        await pipeline.whilePreparing(model.inSentence) {
             if model.state == .notDownloaded || downloads[id] != nil {
                 guard await download(id) else {
                     if let reason = modelMessages[id] { pipeline.showModelFailure(reason) }

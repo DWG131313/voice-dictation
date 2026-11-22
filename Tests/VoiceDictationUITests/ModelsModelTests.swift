@@ -189,10 +189,10 @@ final class ModelsModelTests: XCTestCase {
         let choice = Task { await model.choose(descriptor(base, .notDownloaded)) }
         try await waitUntil("preparing shows") { model.downloadProgress[base] == 0.2 }
 
-        XCTAssertEqual(model.pipeline.state, .preparingModel(base.name))
+        XCTAssertEqual(model.pipeline.state, .preparingModel("the \(base.name) model"))
         await gate.open()
         await choice.value
-        XCTAssertNotEqual(model.pipeline.state, .preparingModel(base.name))
+        XCTAssertNotEqual(model.pipeline.state, .preparingModel("the \(base.name) model"))
     }
 
     /// A failed menu bar download is shown by the pipeline, window open or not.

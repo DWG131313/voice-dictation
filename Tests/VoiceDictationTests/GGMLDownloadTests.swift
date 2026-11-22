@@ -143,7 +143,7 @@ final class GGMLDownloadTests: XCTestCase {
 
     /// A catalog entry that `body` matches unless told otherwise.
     private static func model(bytes: Int64 = Int64(body.count), sha256: String = bodySHA256) -> GGMLModel {
-        GGMLModel(name: "test.en", fileName: "ggml-test.en.bin", displayName: "whisper.cpp test.en",
+        GGMLModel(name: "test.en", fileName: "ggml-test.en.bin", plainName: "Test", technicalName: "whisper.cpp test.en",
                   detail: "", bytes: bytes, sha256: sha256)
     }
 

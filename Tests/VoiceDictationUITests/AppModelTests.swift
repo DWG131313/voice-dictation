@@ -321,8 +321,8 @@ final class AppModelTests: XCTestCase {
 
         XCTAssertNil(model.downloadProgress[.appleSpeech])
         XCTAssertNil(model.modelMessages[.appleSpeech], "a cancel is not an error")
-        XCTAssertEqual(model.onboarding.step(.speechModel).detail, "Apple Speech needs its files before it can listen.")
-        XCTAssertEqual(model.onboarding.step(.speechModel).actionTitle, "Download Apple Speech")
+        XCTAssertEqual(model.onboarding.step(.speechModel).detail, "The Apple Speech model needs its files before it can listen.")
+        XCTAssertEqual(model.onboarding.step(.speechModel).actionTitle, "Download the Apple Speech model")
     }
 
     /// Final fix wave, E1: a failed Welcome download says why in plain words,

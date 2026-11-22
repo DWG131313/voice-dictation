@@ -2,6 +2,14 @@ import XCTest
 @testable import VoiceDictationLib
 
 final class CoreTypesTests: XCTestCase {
+    /// A plain name reads as an order inside a sentence ("Download Fast"),
+    /// so sentences say "the Fast model".
+    func testADescriptorNamesItselfInASentence() {
+        let fast = ModelDescriptor(id: .whisperCppBase, displayName: "Fast", detail: "", state: .ready)
+        XCTAssertEqual(fast.inSentence, "the Fast model")
+        XCTAssertNil(fast.technicalName)
+    }
+
     func testStorageKeyRoundTrip() {
         let id = ModelID(engine: .whisperKit, name: "large-v3-turbo")
         XCTAssertEqual(id.storageKey, "whisperKit/large-v3-turbo")

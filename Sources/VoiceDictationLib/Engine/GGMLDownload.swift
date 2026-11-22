@@ -32,7 +32,7 @@ public enum GGMLDownload {
             do {
                 try removeIfPresent(partial)
             } catch let cleanup {
-                Log.info("[WHISPER] Could not remove the partial download of \(model.displayName): \(cleanup.localizedDescription)")
+                Log.info("[WHISPER] Could not remove the partial download of \(model.technicalName): \(cleanup.localizedDescription)")
             }
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if error is TranscriptionError { throw error }
@@ -53,7 +53,7 @@ public enum GGMLDownload {
 
     /// How a failed download reads on the model's row.
     static func failure(_ model: GGMLModel, _ reason: String) -> TranscriptionError {
-        .failed("\(model.displayName) could not be downloaded: \(reason)")
+        .failed("\(model.technicalName) could not be downloaded: \(reason)")
     }
 
     // MARK: - Steps

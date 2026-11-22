@@ -50,7 +50,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
         Self.all.map { model in
             let downloaded = isDownloaded(model)
             return ModelDescriptor(
-                id: model.id, displayName: model.displayName, detail: model.detail,
+                id: model.id, displayName: model.plainName, detail: model.detail, technicalName: model.technicalName,
                 state: state(of: model, downloaded: downloaded),
                 bytesOnDisk: downloaded ? Self.size(of: Self.modelFolder(of: model, root: root)) : nil
             )
@@ -91,7 +91,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
                 .joined(separator: " ")
         } catch {
             if Task.isCancelled { throw CancellationError() }
-            throw TranscriptionError.failed("\(model.displayName) failed: \(error.localizedDescription)")
+            throw TranscriptionError.failed("\(model.technicalName) failed: \(error.localizedDescription)")
         }
     }
 
@@ -105,7 +105,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
             return
         }
         guard downloads[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is already downloading")
+            throw TranscriptionError.failed("\(model.technicalName) is already downloading")
         }
         let latest = DownloadProgress()
         downloads[id] = latest
@@ -119,10 +119,10 @@ public actor WhisperKitEngine: TranscriptionEngine {
             do {
                 try Self.removeFiles(of: model, root: root)
             } catch let cleanup {
-                Log.info("[WHISPERKIT] Could not remove the partial download of \(model.displayName): \(cleanup.localizedDescription)")
+                Log.info("[WHISPERKIT] Could not remove the partial download of \(model.technicalName): \(cleanup.localizedDescription)")
             }
             if Task.isCancelled { throw CancellationError() }
-            throw TranscriptionError.failed("\(model.displayName) could not be downloaded: \(error.localizedDescription)")
+            throw TranscriptionError.failed("\(model.technicalName) could not be downloaded: \(error.localizedDescription)")
         }
         progress(1)
     }
@@ -133,16 +133,16 @@ public actor WhisperKitEngine: TranscriptionEngine {
     public func delete(_ id: ModelID) async throws {
         let model = try Self.model(id)
         guard downloads[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is still downloading")
+            throw TranscriptionError.failed("\(model.technicalName) is still downloading")
         }
         guard loading[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is still preparing")
+            throw TranscriptionError.failed("\(model.technicalName) is still preparing")
         }
         loaded[id] = nil
         do {
             try Self.removeFiles(of: model, root: root)
         } catch {
-            throw TranscriptionError.failed("\(model.displayName) could not be deleted: \(error.localizedDescription)")
+            throw TranscriptionError.failed("\(model.technicalName) could not be deleted: \(error.localizedDescription)")
         }
     }
 
@@ -192,7 +192,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
         // caller ends in CancellationError, not in "unloaded".
         try Task.checkCancellation()
         guard let pipeline = loaded[model.id] else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) was unloaded before it finished loading")
+            throw TranscriptionError.modelNotReady("\(model.technicalName) was unloaded before it finished loading")
         }
         return pipeline
     }
@@ -203,10 +203,10 @@ public actor WhisperKitEngine: TranscriptionEngine {
         // `fetch` writes the tokenizer before it can be cancelled, so a model
         // can look downloaded while its download may still remove its files.
         guard downloads[model.id] == nil else {
-            throw TranscriptionError.stillDownloading(model.displayName)
+            throw TranscriptionError.stillDownloading(model.technicalName)
         }
         guard isDownloaded(model) else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")
+            throw TranscriptionError.modelNotReady("\(model.technicalName) is not downloaded")
         }
         let id = model.id
         let config = Self.loadConfig(for: id, root: root)
@@ -218,7 +218,7 @@ public actor WhisperKitEngine: TranscriptionEngine {
             do {
                 pipeline = try await self.loader(config)
             } catch {
-                throw TranscriptionError.modelNotReady("\(model.displayName) could not load: \(error.localizedDescription)")
+                throw TranscriptionError.modelNotReady("\(model.technicalName) could not load: \(error.localizedDescription)")
             }
             if self.loading[id]?.wanted == true { self.loaded[id] = pipeline }
         }
@@ -362,7 +362,11 @@ public actor WhisperKitEngine: TranscriptionEngine {
         /// The repository WhisperKit takes this variant's tokenizer from
         /// (`ModelUtilities.tokenizerNameForVariant`, internal to WhisperKit).
         let tokenizer: String
-        let displayName: String
+        /// The name a person sees: the speed ladder's for large-v3-turbo, the
+        /// engine's short name for the three listed only for comparing.
+        let plainName: String
+        /// The engine's own name, for the Models page, errors and the log.
+        let technicalName: String
         let detail: String
 
         var id: ModelID { ModelID(engine: .whisperKit, name: name) }
@@ -373,19 +377,19 @@ public actor WhisperKitEngine: TranscriptionEngine {
 
     private static let all: [Model] = [
         Model(name: "tiny.en", folder: "openai_whisper-tiny.en", variant: .tinyEn,
-              tokenizer: "openai/whisper-tiny.en", displayName: "WhisperKit tiny.en",
+              tokenizer: "openai/whisper-tiny.en", plainName: "WhisperKit tiny", technicalName: "WhisperKit tiny.en",
               detail: "153 MB download — fastest, lower accuracy"),
         Model(name: "base.en", folder: "openai_whisper-base.en", variant: .baseEn,
-              tokenizer: "openai/whisper-base.en", displayName: "WhisperKit base.en",
+              tokenizer: "openai/whisper-base.en", plainName: "WhisperKit base", technicalName: "WhisperKit base.en",
               detail: "147 MB download — good balance"),
         Model(name: "small.en", folder: "openai_whisper-small.en", variant: .smallEn,
-              tokenizer: "openai/whisper-small.en", displayName: "WhisperKit small.en",
+              tokenizer: "openai/whisper-small.en", plainName: "WhisperKit small", technicalName: "WhisperKit small.en",
               detail: "487 MB download — more accurate, slower"),
         // OpenAI's large-v3-turbo, with 4 decoder layers, and WhisperKit's own
         // default on M2–M4 Macs. Not `openai_whisper-large-v3_turbo`, which
         // despite its name is the full large-v3 with 32.
         Model(name: "large-v3-turbo", folder: "openai_whisper-large-v3-v20240930", variant: .largev3,
-              tokenizer: "openai/whisper-large-v3", displayName: "WhisperKit large-v3-turbo",
+              tokenizer: "openai/whisper-large-v3", plainName: "Slowest", technicalName: "WhisperKit large-v3-turbo",
               detail: "1.6 GB download — most accurate, slowest"),
     ]
 

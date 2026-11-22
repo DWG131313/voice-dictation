@@ -176,7 +176,7 @@ final class OnboardingModelTests: XCTestCase {
                   ModelDescriptor(id: tiny, displayName: "Tiny", detail: "", state: .notDownloaded)]
         selected = tiny
         let model = makeModel()
-        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download Tiny")
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download the Tiny model")
 
         await model.downloadSelectedModel()
 
@@ -187,21 +187,22 @@ final class OnboardingModelTests: XCTestCase {
     /// the step's Download, never by itself. Its progress is the app's
     /// download's (`AppModelTests.testTheWelcomeDownloadIsTheAppsAndItsCancelStopsIt`).
     func testSpeechModelStepDownloadsWhisperCppBase() async throws {
-        models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .notDownloaded)]
+        models = [ModelDescriptor(id: .whisperCppBase, displayName: "Fast", detail: "", state: .notDownloaded)]
         selected = .whisperCppBase
         let model = makeModel()
         XCTAssertEqual(model.state(of: .speechModel), .needed)
-        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download whisper.cpp base.en")
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download the Fast model")
+        XCTAssertEqual(model.step(.speechModel).detail, "The Fast model needs its files before it can listen.")
         XCTAssertEqual(downloads, [], "nothing downloads until Download is pressed")
 
         onRefresh = { [self] in
-            models = [ModelDescriptor(id: .whisperCppBase, displayName: "whisper.cpp base.en", detail: "", state: .ready)]
+            models = [ModelDescriptor(id: .whisperCppBase, displayName: "Fast", detail: "", state: .ready)]
         }
         await model.downloadSelectedModel()
 
         XCTAssertEqual(downloads, [.whisperCppBase], "Apple Speech was not asked")
         XCTAssertEqual(model.state(of: .speechModel), .done)
-        XCTAssertEqual(model.step(.speechModel).detail, "whisper.cpp base.en is ready.")
+        XCTAssertEqual(model.step(.speechModel).detail, "The Fast model is ready.")
     }
 
     /// A failed Download says why on the step, in the words the app gives
@@ -215,11 +216,11 @@ final class OnboardingModelTests: XCTestCase {
         await model.downloadSelectedModel()
         XCTAssertEqual(model.step(.speechModel).detail,
                        "The download failed: Apple Speech language files could not be installed: No network")
-        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download Apple Speech")
+        XCTAssertEqual(model.step(.speechModel).actionTitle, "Download the Apple Speech model")
 
         downloadFailure = nil
         await model.downloadSelectedModel()
-        XCTAssertEqual(model.step(.speechModel).detail, "Apple Speech needs its files before it can listen.")
+        XCTAssertEqual(model.step(.speechModel).detail, "The Apple Speech model needs its files before it can listen.")
     }
 
     /// Preparing is the normal state at launch, not a reason to interrupt.

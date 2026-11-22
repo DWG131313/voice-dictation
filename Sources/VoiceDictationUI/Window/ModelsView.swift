@@ -94,6 +94,11 @@ struct ModelsView: View {
                     Text(descriptor.displayName)
                         .font(Theme.Font.ui(14, medium: true))
                         .foregroundStyle(Theme.Color.text)
+                    if let technicalName = descriptor.technicalName {
+                        Text(technicalName)
+                            .font(Theme.Font.mono(11))
+                            .foregroundStyle(Theme.Color.textMuted)
+                    }
                     if !descriptor.detail.isEmpty {
                         Text(descriptor.detail)
                             .font(Theme.Font.ui(12))

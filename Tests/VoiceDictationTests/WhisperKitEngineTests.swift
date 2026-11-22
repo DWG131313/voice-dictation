@@ -30,6 +30,15 @@ final class WhisperKitEngineTests: XCTestCase {
         }
     }
 
+    /// Only large-v3-turbo is on the speed ladder; the other three keep the
+    /// engine's name, as they are listed only for comparing.
+    func testModelsHavePlainNames() async {
+        let models = await WhisperKitEngine(root: root).models()
+        XCTAssertEqual(models.map(\.displayName), ["WhisperKit tiny", "WhisperKit base", "WhisperKit small", "Slowest"])
+        XCTAssertEqual(models.map(\.technicalName),
+                       ["WhisperKit tiny.en", "WhisperKit base.en", "WhisperKit small.en", "WhisperKit large-v3-turbo"])
+    }
+
     func testTranscribeWithoutDownloadThrowsModelNotReady() async {
         let clip = AudioClip(samples: [Float](repeating: 0.1, count: 16_000))
         do {

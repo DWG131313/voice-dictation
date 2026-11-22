@@ -162,11 +162,11 @@ public final class OnboardingModel {
         }
         switch model.state {
         case .ready:
-            return Step(id: .speechModel, title: title, state: .done, detail: "\(model.displayName) is ready.", actionTitle: nil)
+            return Step(id: .speechModel, title: title, state: .done, detail: "The \(model.displayName) model is ready.", actionTitle: nil)
         case .notDownloaded:
             return Step(id: .speechModel, title: title, state: .needed,
-                        detail: downloadFailure ?? "\(model.displayName) needs its files before it can listen.",
-                        actionTitle: "Download \(model.displayName)")
+                        detail: downloadFailure ?? "The \(model.displayName) model needs its files before it can listen.",
+                        actionTitle: "Download \(model.inSentence)")
         case .downloading(let progress):
             return Step(id: .speechModel, title: title, state: .needed,
                         detail: "Downloading… \(Int((progress * 100).rounded()))%", actionTitle: nil)

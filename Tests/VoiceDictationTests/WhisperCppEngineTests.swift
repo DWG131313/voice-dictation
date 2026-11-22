@@ -48,7 +48,7 @@ final class WhisperCppEngineTests: XCTestCase {
 
     func testCatalogMatchesHuggingFace() {
         let rows = GGMLModel.all.map {
-            [$0.name, $0.fileName, String($0.bytes), $0.sha256, $0.displayName, $0.detail, $0.url.absoluteString]
+            [$0.name, $0.fileName, String($0.bytes), $0.sha256, $0.technicalName, $0.detail, $0.url.absoluteString]
         }
         XCTAssertEqual(rows, [
             ["tiny.en", "ggml-tiny.en.bin", "77704715",
@@ -64,6 +64,15 @@ final class WhisperCppEngineTests: XCTestCase {
              "whisper.cpp small.en", "488 MB download — more accurate, slower",
              "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"],
         ])
+        XCTAssertEqual(GGMLModel.all.map(\.plainName), ["Fastest", "Fast", "Slow"])
+    }
+
+    /// The speed ladder's names (spec 2026-11-22); the old names stay as the
+    /// technical ones, for the Models page and the engine's own errors.
+    func testModelsHavePlainNames() async {
+        let models = await WhisperCppEngine(directory: directory).models()
+        XCTAssertEqual(models.map(\.displayName), ["Fastest", "Fast", "Slow"])
+        XCTAssertEqual(models.map(\.technicalName), ["whisper.cpp tiny.en", "whisper.cpp base.en", "whisper.cpp small.en"])
     }
 
     // MARK: - Before loading

@@ -83,7 +83,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
             let onDisk = size(of: model)
             let whole = onDisk == model.bytes
             return ModelDescriptor(
-                id: model.id, displayName: model.displayName, detail: model.detail,
+                id: model.id, displayName: model.plainName, detail: model.detail, technicalName: model.technicalName,
                 state: state(of: model, whole: whole), bytesOnDisk: whole ? onDisk : nil
             )
         }
@@ -124,7 +124,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
         case .timedOut:
             throw TranscriptionError.failed(Self.timedOut)
         case .failed(let code):
-            throw TranscriptionError.failed("\(model.displayName) failed (whisper.cpp error \(code))")
+            throw TranscriptionError.failed("\(model.technicalName) failed (whisper.cpp error \(code))")
         }
     }
 
@@ -139,7 +139,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
             return
         }
         guard downloads[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is already downloading")
+            throw TranscriptionError.failed("\(model.technicalName) is already downloading")
         }
         let latest = DownloadProgress()
         downloads[id] = latest
@@ -153,7 +153,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             // `GGMLDownload`'s own words already name the model.
             if error is TranscriptionError { throw error }
-            throw TranscriptionError.failed("\(model.displayName) could not be downloaded: \(error.localizedDescription)")
+            throw TranscriptionError.failed("\(model.technicalName) could not be downloaded: \(error.localizedDescription)")
         }
         progress(1)
     }
@@ -164,10 +164,10 @@ public actor WhisperCppEngine: TranscriptionEngine {
     public func delete(_ id: ModelID) async throws {
         let model = try Self.model(id)
         guard downloads[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is still downloading")
+            throw TranscriptionError.failed("\(model.technicalName) is still downloading")
         }
         guard loading[id] == nil else {
-            throw TranscriptionError.failed("\(model.displayName) is still preparing")
+            throw TranscriptionError.failed("\(model.technicalName) is still preparing")
         }
         loaded[id] = nil
         let url = file(of: model)
@@ -175,7 +175,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            throw TranscriptionError.failed("\(model.displayName) could not be deleted: \(error.localizedDescription)")
+            throw TranscriptionError.failed("\(model.technicalName) could not be deleted: \(error.localizedDescription)")
         }
     }
 
@@ -285,7 +285,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
         try await valueUnlessCancelled(of: load)
         try Task.checkCancellation()
         guard let context = loaded[model.id] else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) was unloaded before it finished loading")
+            throw TranscriptionError.modelNotReady("\(model.technicalName) was unloaded before it finished loading")
         }
         return context
     }
@@ -297,10 +297,10 @@ public actor WhisperCppEngine: TranscriptionEngine {
         // A download may still fail and remove what it wrote, so a load
         // never starts under one.
         guard downloads[model.id] == nil else {
-            throw TranscriptionError.stillDownloading(model.displayName)
+            throw TranscriptionError.stillDownloading(model.technicalName)
         }
         guard size(of: model) == model.bytes else {
-            throw TranscriptionError.modelNotReady("\(model.displayName) is not downloaded")
+            throw TranscriptionError.modelNotReady("\(model.technicalName) is not downloaded")
         }
         let id = model.id
         let url = file(of: model)
@@ -310,7 +310,7 @@ public actor WhisperCppEngine: TranscriptionEngine {
         let task = Task {
             defer { self.loading[id] = nil }
             guard let context = await Self.offThePool({ loader(url) }) else {
-                throw TranscriptionError.modelNotReady("\(model.displayName) could not load")
+                throw TranscriptionError.modelNotReady("\(model.technicalName) could not load")
             }
             if self.loading[id]?.wanted == true { self.loaded[id] = context }
         }

@@ -47,8 +47,12 @@ extension ModelID {
 
 public struct ModelDescriptor: Sendable, Identifiable {
     public let id: ModelID
+    /// The plain name a person sees: "Fast", "Slowest", "Apple Speech".
     public let displayName: String
     public let detail: String
+    /// The engine's own name ("whisper.cpp base.en"), for the Models page;
+    /// nil when the plain name already is it.
+    public let technicalName: String?
 
     public enum State: Sendable, Equatable {
         case ready, notDownloaded, downloading(Double), preparing, unavailable(String)
@@ -57,12 +61,19 @@ public struct ModelDescriptor: Sendable, Identifiable {
     public var state: State
     public var bytesOnDisk: Int64?
 
-    public init(id: ModelID, displayName: String, detail: String,
+    public init(id: ModelID, displayName: String, detail: String, technicalName: String? = nil,
                 state: State, bytesOnDisk: Int64? = nil) {
         self.id = id
         self.displayName = displayName
         self.detail = detail
+        self.technicalName = technicalName
         self.state = state
         self.bytesOnDisk = bytesOnDisk
     }
+}
+
+extension ModelDescriptor {
+    /// How a sentence names the model: "the Fast model". A plain name alone
+    /// reads as an order ("Download Fast").
+    public var inSentence: String { "the \(displayName) model" }
 }
