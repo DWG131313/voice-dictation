@@ -138,7 +138,7 @@ public struct SettingsView: View {
 /// white bar with its black square at the right; off, a black bar outlined
 /// in grey with its grey square at the left. A switch that cannot be changed
 /// is faded, and says why in its row.
-private struct PrismSwitch: View {
+struct PrismSwitch: View {
     let title: String
     @Binding var isOn: Bool
     var isEnabled = true

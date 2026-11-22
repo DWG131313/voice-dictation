@@ -27,7 +27,8 @@ public struct MainWindow: View {
         let library = model.library
         HStack(spacing: 0) {
             Sidebar(library: library, models: model.models, selectedModel: model.selectedModel,
-                    hotkey: model.hotkey, doubleTap: model.doubleTapEnabled)
+                    miniViewEnabled: Binding(get: { model.miniViewEnabled }, set: { model.miniViewEnabled = $0 }),
+                    choose: { descriptor in Task { await model.choose(descriptor) } })
                 .frame(width: Self.sidebarWidth)
             column
             if library.scope != nil {

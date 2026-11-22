@@ -322,16 +322,6 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(library.emptyMessage, "Nothing dictated yet. Hold Right Command and speak.")
     }
 
-    /// The sidebar's footer says which key dictates and, with double-tap
-    /// dictation on (`doubleTap`), that a double tap does too. Danny's
-    /// wording (finding 9): the window names it by the double tap only.
-    func testTheSidebarFooterNamesTheHotkeyAndTheDoubleTap() {
-        XCTAssertEqual(Sidebar.hotkeyReminder(for: .globe, doubleTap: false), "Hold Globe to dictate")
-        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightOption, doubleTap: false), "Hold Right Option to dictate")
-        XCTAssertEqual(Sidebar.hotkeyReminder(for: .rightCommand, doubleTap: true), "Hold or double-tap Right Command to dictate")
-        XCTAssertEqual(Sidebar.hotkeyReminder(for: .globe, doubleTap: true), "Hold or double-tap Globe to dictate")
-    }
-
     /// Ruling T18-1: a store started anew after a damaged one was moved aside
     /// works as usual; its message shows as a notice above the list.
     @MainActor
