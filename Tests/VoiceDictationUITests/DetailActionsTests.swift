@@ -26,6 +26,14 @@ final class DetailActionsTests: XCTestCase {
 
     // MARK: - Re-transcribing
 
+    /// A plain name inside a sentence reads as an adverb ("with Fast"), so
+    /// the note says "the Fast model" (spec call 8).
+    func testTheReTranscribingNoteNamesTheModels() {
+        XCTAssertEqual(TranscriptDetail.retranscribingNote(names: ["Fast"]), "Re-transcribing with the Fast model…")
+        XCTAssertEqual(TranscriptDetail.retranscribingNote(names: ["Fast", "Slowest"]),
+                       "Re-transcribing with the Fast and Slowest models…")
+    }
+
     /// A re-transcription is kept beside the transcript, with its model and
     /// the engine's time on the clip; `retranscribing` shows it while it runs.
     @MainActor

@@ -111,13 +111,28 @@ struct Sidebar: View {
         .accessibilityAddTraits(isShowing ? .isSelected : [])
     }
 
-    /// One row under a hairline: on the left the model in use, which opens
-    /// the same list as the menu bar's Model submenu (`ModelPicker`); on the
-    /// right "Mini View" and Prism's switch. The name gives way first: a long
-    /// one ends in "…" (spec call 6), the switch never squeezes.
     private var footer: some View {
+        SidebarFooter(models: models, selectedModel: selectedModel,
+                      miniViewEnabled: $miniViewEnabled, choose: choose)
+    }
+}
+
+/// The sidebar's foot, one row under a hairline: on the left the model in
+/// use, which opens the same list as the menu bar's Model submenu
+/// (`ModelPicker`); on the right "Mini View" and Prism's switch. The name
+/// gives way first: a long one ends in "…" (spec call 6), the switch never
+/// squeezes.
+struct SidebarFooter: View {
+    let models: [ModelDescriptor]
+    let selectedModel: ModelID?
+    @Binding var miniViewEnabled: Bool
+    let choose: (ModelDescriptor) -> Void
+
+    var body: some View {
         let title = ModelPicker.title(models, selected: selectedModel)
-        return HStack(spacing: Theme.Space.sm) {
+        // No spacing beside the Spacer: its minimum is the only gap, so every
+        // name on the ladder fits whole (ModelPickerViewTests).
+        return HStack(spacing: 0) {
             Menu {
                 if models.isEmpty {
                     Text("Loading models…")
@@ -142,6 +157,7 @@ struct Sidebar: View {
             .menuIndicator(.hidden)
             .accessibilityLabel("Model")
             .accessibilityValue(title)
+            .help(title)
             Spacer(minLength: Theme.Space.sm)
             HStack(spacing: Theme.Space.sm) {
                 Text("Mini View")

@@ -97,7 +97,7 @@ enum ModelPicker {
 }
 
 /// The pickers' rows, in the system's menu: one section per group, each model
-/// its mark, its name and, under it, its line. Choosing a model not on the
+/// its mark, its name and, under it as the item's subtitle, its line. Choosing a model not on the
 /// Mac downloads it and then switches to it (`AppModel.choose`). No download
 /// sizes here: they are on the Models page.
 struct ModelPickerItems: View {
@@ -111,14 +111,17 @@ struct ModelPickerItems: View {
                     Button {
                         choose(entry.descriptor)
                     } label: {
+                        // The Text after the Label becomes the menu item's
+                        // subtitle; a second Text inside the Label is dropped
+                        // (ModelPickerViewTests).
                         Label {
                             Text(entry.name)
-                            Text(entry.line)
                         } icon: {
                             if let mark = entry.mark {
                                 Image(systemName: mark.systemImage)
                             }
                         }
+                        Text(entry.line)
                     }
                     .disabled(!entry.isEnabled)
                 }

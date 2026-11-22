@@ -230,7 +230,7 @@ private struct DetailActions: View {
         if let audioGone { notes.append(audioGone) }
         if !running.isEmpty {
             let names = running.map { LibraryModel.modelName($0.storageKey, in: models) }.sorted()
-            notes.append("Re-transcribing with \(ListFormatter.localizedString(byJoining: names))…")
+            notes.append(TranscriptDetail.retranscribingNote(names: names))
         }
         if let message = library.message(for: transcript) { notes.append(message) }
         return notes
@@ -248,6 +248,16 @@ private extension View {
 
 /// Lays its views out left to right, starting a new line when the next one
 /// would not fit, as mockup D's actions wrap.
+extension TranscriptDetail {
+    /// The note while re-transcriptions run, naming their models as a
+    /// sentence does (spec call 8): "with the Fast model", "with the Fast and
+    /// Slowest models".
+    static func retranscribingNote(names: [String]) -> String {
+        let joined = ListFormatter.localizedString(byJoining: names)
+        return "Re-transcribing with the \(joined) \(names.count == 1 ? "model" : "models")…"
+    }
+}
+
 private struct FlowLayout: Layout {
     let spacing: CGFloat
 
