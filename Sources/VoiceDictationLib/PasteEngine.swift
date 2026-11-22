@@ -38,16 +38,26 @@ public class PasteEngine: Pasting {
         NSWorkspace.shared.frontmostApplication?.localizedName
     }
 
+    /// How long one Accessibility call to the front app may wait, in seconds.
+    /// These calls run on the main thread, where the hotkey's event tap runs
+    /// too; a hung app must not hold it for the default 6 s. Set per element.
+    public static let accessibilityMessagingTimeout: Float = 0.25
+    private var accessibilityMessagingTimeout: Float { Self.accessibilityMessagingTimeout }
+
     /// The folder the front window is open on, as a project name. Needs
     /// Accessibility; nil without it. Reads only the window's `AXDocument`.
     public var frontmostFolder: String? {
         guard isTrusted(), let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let application = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(application, accessibilityMessagingTimeout)
         var window: CFTypeRef?
         guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &window) == .success,
               let window, CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        let windowElement = window as! AXUIElement
+        // A window's element does not take its app's timeout.
+        AXUIElementSetMessagingTimeout(windowElement, accessibilityMessagingTimeout)
         var document: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXDocumentAttribute as CFString,
+        guard AXUIElementCopyAttributeValue(windowElement, kAXDocumentAttribute as CFString,
                                             &document) == .success else { return nil }
         return Self.projectName(fromDocument: document as? String,
                                 home: FileManager.default.homeDirectoryForCurrentUser)

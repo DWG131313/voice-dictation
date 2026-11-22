@@ -32,11 +32,10 @@ import VoiceDictationLib
     /// The app's focused window, carrying `windowNotifications`.
     private var window: AXUIElement?
 
-    /// How long one Accessibility call to the front app may wait, in seconds.
-    /// These calls run on the main thread, where the hotkey's event tap runs
-    /// too; a hung app must not hold it for the default 6 s. Set per element:
-    /// a window's element does not take it from its app's.
-    private static let messagingTimeout: Float = 0.25
+    /// One Accessibility call may wait this long (`PasteEngine`'s constant, so
+    /// the 0.25 s lives in one place). Set per element: a window's element does
+    /// not take it from its app's.
+    private static let messagingTimeout = PasteEngine.accessibilityMessagingTimeout
 
     private static let windowNotifications = [
         kAXMovedNotification, kAXResizedNotification,
