@@ -32,6 +32,12 @@ import VoiceDictationLib
     /// The app's focused window, carrying `windowNotifications`.
     private var window: AXUIElement?
 
+    /// How long one Accessibility call to the front app may wait, in seconds.
+    /// These calls run on the main thread, where the hotkey's event tap runs
+    /// too; a hung app must not hold it for the default 6 s. Set per element:
+    /// a window's element does not take it from its app's.
+    private static let messagingTimeout: Float = 0.25
+
     private static let windowNotifications = [
         kAXMovedNotification, kAXResizedNotification,
         kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification,
@@ -102,6 +108,7 @@ import VoiceDictationLib
             return nil
         }
         let element = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
         let added = AXObserverAddNotification(observer, element, kAXFocusedWindowChangedNotification as CFString, refcon)
         guard added == .success else {
             Log.info("[MINI] Cannot follow the front app's windows (AXError \(added.rawValue))")
@@ -125,6 +132,7 @@ import VoiceDictationLib
         if let app, let value = Self.attribute(app.element, kAXFocusedWindowAttribute),
            CFGetTypeID(value) == AXUIElementGetTypeID() {
             let focused = value as! AXUIElement
+            AXUIElementSetMessagingTimeout(focused, Self.messagingTimeout)
             let refcon = Unmanaged.passUnretained(self).toOpaque()
             for name in Self.windowNotifications {
                 AXObserverAddNotification(app.observer, focused, name as CFString, refcon)
