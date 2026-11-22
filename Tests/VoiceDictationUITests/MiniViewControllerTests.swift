@@ -64,13 +64,34 @@ final class MiniViewControllerTests: XCTestCase {
         XCTAssertEqual(copied.map(\.id), [newest.id])
     }
 
+    /// The panel's Copy says so on the tab, on the window in front, as a
+    /// paste left on the clipboard does (spec, Call 3).
+    func testCopyFromThePanelShowsCopiedOnTheWindowInFront() {
+        let dictated = Date(timeIntervalSince1970: 1_763_700_000)
+        let newest = Transcript(date: dictated, text: "Hello there.", rawText: "Hello there.", appName: "Terminal",
+                                modelKey: "m", recordingSeconds: 2, transcribeSeconds: 0.3, statusRaw: "pasted")
+        controller.connect(latest: { newest }, copy: { _ in }, openMainWindow: {})
+        controller.setEnabled(true)
+        watcher.send(terminal)
+
+        controller.copyLatest()
+
+        XCTAssertEqual(controller.result?.status, .copied)
+        XCTAssertEqual(controller.result?.window, terminal.id)
+        XCTAssertEqual(controller.result?.dictated, dictated)
+    }
+
     func testCopyWithNothingDictatedCopiesNothing() {
         var copied: [Transcript] = []
         controller.connect(latest: { nil }, copy: { copied.append($0) }, openMainWindow: {})
+        controller.setEnabled(true)
+        watcher.send(terminal)
+        controller.finished(outcome(.pasted))
 
         controller.copyLatest()
 
         XCTAssertTrue(copied.isEmpty)
+        XCTAssertEqual(controller.result?.status, .pasted, "the tab is left as it was")
     }
 
     func testDroppingTheTabLeftOfCentreSavesTheLeftSide() {

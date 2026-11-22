@@ -113,18 +113,26 @@ final class MiniViewController: MiniViewPresenting {
     /// The result belongs to the window in front now, as the text pasted;
     /// switching windows later does not move it.
     func finished(_ outcome: DictationOutcome) {
-        let now = Date()
-        result = MiniTabResult(status: outcome.status, dictated: outcome.date, arrived: now,
-                               window: tracker.current?.id)
-        draw()
+        record(outcome.status, dictated: outcome.date)
         if isPanelOpen { showPanel() }
-        scheduleWakeUp(now: now)
     }
 
-    /// The panel's Copy: the newest transcript with text on the clipboard.
+    /// The panel's Copy: the newest transcript with text on the clipboard,
+    /// and the tab says Copied on the window in front, as when a paste could
+    /// not go through (spec, Call 3).
     func copyLatest() {
         guard let transcript = latest() else { return }
         copy(transcript)
+        record(.copied, dictated: transcript.date)
+    }
+
+    /// A new result, for the window in front now: the tab shows it, and
+    /// wakes when its word goes stale.
+    private func record(_ status: DictationOutcome.Status, dictated: Date) {
+        let now = Date()
+        result = MiniTabResult(status: status, dictated: dictated, arrived: now, window: tracker.current?.id)
+        draw()
+        scheduleWakeUp(now: now)
     }
 
     /// The end of a drag: the side of the window the tab was let go nearer
