@@ -29,6 +29,23 @@ final class IndicatorPanelTests: XCTestCase {
         XCTAssertFalse(panel.hasShadow)
     }
 
+    /// Clicking the mini view's tab or its panel leaves the app in front in
+    /// front: neither activates VoiceDictation or takes the keyboard. Each
+    /// still takes its first click, though the app is never active.
+    @MainActor
+    func testTheMiniViewPanelsNeverTakeFocus() {
+        _ = NSApplication.shared
+        let panels: [NSPanel] = [MiniTabPanel(), MiniInfoPanel()]
+        for panel in panels {
+            XCTAssertFalse(panel.canBecomeKey, "\(type(of: panel))")
+            XCTAssertFalse(panel.canBecomeMain, "\(type(of: panel))")
+            XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel), "\(type(of: panel))")
+            XCTAssertFalse(panel.hidesOnDeactivate, "\(type(of: panel))")
+            XCTAssertFalse(panel.hasShadow, "\(type(of: panel))")
+            XCTAssertEqual(panel.contentView?.acceptsFirstMouse(for: nil), true, "\(type(of: panel))")
+        }
+    }
+
     func testItSitsAtTheBottomCentre80PointsUp() {
         let visible = NSRect(x: 0, y: 70, width: 1512, height: 875)   // above a Dock
         XCTAssertEqual(IndicatorPanel.frame(for: NSSize(width: 400, height: 50), in: visible),

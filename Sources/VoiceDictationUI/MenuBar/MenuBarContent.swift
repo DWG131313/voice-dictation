@@ -15,9 +15,9 @@ public protocol UpdateChecking: AnyObject, Observable {
     func checkForUpdates()
 }
 
-/// The menu bar menu: what the app is doing, the window, Paste Last
-/// Transcript, the model dictation uses, Settings, Check for Updates… and
-/// Quit.
+/// The menu bar menu: what the app is doing, the window, Mini View, Paste
+/// Last Transcript, the model dictation uses, Settings, Check for Updates…
+/// and Quit.
 public struct MenuBarContent: View {
     private let model: AppModel
     private let updates: any UpdateChecking
@@ -47,6 +47,11 @@ public struct MenuBarContent: View {
             NSApp.activate()
             openWindow(id: AppModel.mainWindowID)
         }
+        // The tab on the edge of the window in front; saved, off by default.
+        Toggle("Mini View", isOn: Binding(
+            get: { model.miniViewEnabled },
+            set: { model.miniViewEnabled = $0 }
+        ))
         // The store's latest transcript with text (Ruling P4); off until one
         // is kept. Control-Option-V does the same when its shortcut is on.
         Button("Paste Last Transcript") {

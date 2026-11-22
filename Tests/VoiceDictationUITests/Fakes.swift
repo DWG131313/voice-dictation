@@ -267,11 +267,14 @@ final class FakeIndicator: IndicatorPresenting {
     /// The line shown last.
     private(set) var line = LevelLine()
     private(set) var isShowing = false
+    /// True once it has been shown at all.
+    private(set) var everShown = false
 
     func show(_ state: DictationState, line: LevelLine) {
         self.state = state
         self.line = line
         isShowing = true
+        everShown = true
     }
 
     func hide() {
@@ -283,6 +286,51 @@ final class FakeIndicator: IndicatorPresenting {
         guard isShowing, case .recording? = state else { return false }
         return true
     }
+}
+
+/// Stands in for `FrontWindowTracker`: the test says which window is in
+/// front. Like the real tracker, `stop()` clears `current` quietly, and
+/// `start()` reports the window in front again.
+@MainActor
+final class FakeWindowWatcher: FrontWindowWatching {
+    var onChange: ((FrontWindow?) -> Void)?
+    private(set) var current: FrontWindow?
+    /// The window macOS has in front, as last sent.
+    private var front: FrontWindow?
+
+    /// `window` comes to the front, or no window may show the tab (nil).
+    func send(_ window: FrontWindow?) {
+        front = window
+        current = window
+        onChange?(window)
+    }
+
+    func start() {
+        guard front != current else { return }
+        current = front
+        onChange?(front)
+    }
+
+    func stop() {
+        current = nil
+    }
+}
+
+/// A mini view that records what `AppModel` tells it and shows nothing.
+@MainActor
+final class FakeMiniView: MiniViewPresenting {
+    var isShowingTab = false
+    var onTabShownOrHidden: (() -> Void)?
+    private(set) var works: [DictationState] = []
+    private(set) var outcomes: [DictationOutcome] = []
+    private(set) var enabledCalls: [Bool] = []
+
+    func connect(latest: @escaping () -> Transcript?, copy: @escaping (Transcript) -> Void,
+                 openMainWindow: @escaping () -> Void) {}
+    func setEnabled(_ enabled: Bool) { enabledCalls.append(enabled) }
+    func workChanged(_ work: DictationState) { works.append(work) }
+    func heard(peak: Float, at time: TimeInterval) {}
+    func finished(_ outcome: DictationOutcome) { outcomes.append(outcome) }
 }
 
 /// Stands in for `HotkeyManager`: keeps each strategy it is asked to start

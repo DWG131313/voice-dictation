@@ -38,6 +38,8 @@ public class PreferencesManager {
         static let pasteLastHotkeyEnabled = "pasteLastHotkeyEnabled"
         static let inputDeviceUID = "inputDeviceUID"
         static let soundsEnabled = "soundsEnabled"
+        static let miniViewEnabled = "miniViewEnabled"
+        static let miniViewOnLeft = "miniViewOnLeft"
     }
 
     // MARK: - Properties
@@ -175,6 +177,26 @@ public class PreferencesManager {
             return defaults.bool(forKey: Keys.soundsEnabled)
         }
         set { withMutation(keyPath: \.soundsEnabled) { defaults.set(newValue, forKey: Keys.soundsEnabled) } }
+    }
+
+    /// "Mini View", the menu bar menu's item: a tab on the edge of the window
+    /// in front saying what dictation is doing. Off until switched on.
+    public var miniViewEnabled: Bool {
+        get {
+            access(keyPath: \.miniViewEnabled)
+            return defaults.bool(forKey: Keys.miniViewEnabled)
+        }
+        set { withMutation(keyPath: \.miniViewEnabled) { defaults.set(newValue, forKey: Keys.miniViewEnabled) } }
+    }
+
+    /// The mini view's tab sits on the left edge of every window once it has
+    /// been dragged there; on the right until then.
+    public var miniViewOnLeft: Bool {
+        get {
+            access(keyPath: \.miniViewOnLeft)
+            return defaults.bool(forKey: Keys.miniViewOnLeft)
+        }
+        set { withMutation(keyPath: \.miniViewOnLeft) { defaults.set(newValue, forKey: Keys.miniViewOnLeft) } }
     }
 
     /// The app uses `shared`, on the standard defaults.

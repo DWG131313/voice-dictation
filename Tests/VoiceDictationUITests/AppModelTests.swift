@@ -6,8 +6,9 @@ import XCTest
 
 /// The wiring `AppModel` took over from `AppDelegate`, built from fakes: no
 /// microphone, no event tap, an in-memory store, preferences in memory and
-/// a temporary data folder. `start()` is never called here: it asks for
-/// permissions and arms the Globe key.
+/// a temporary data folder. `start()` is called only to see the mini view
+/// turned on at launch: it checks permissions, and the hotkey it arms is the
+/// fake's, which makes no event tap.
 final class AppModelTests: XCTestCase {
     private let recorder = FakeRecorder()
     private let paster = FakePaster()
@@ -641,6 +642,90 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(indicator.showsListening)
     }
 
+    // MARK: - The mini view
+
+    /// The tab says what the pill would, so the pill stays hidden while the
+    /// tab shows. The tab hears the work under way and how the dictation ended.
+    @MainActor
+    func testThePillStaysHiddenWhileTheTabShows() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let indicator = FakeIndicator()
+        let miniView = FakeMiniView()
+        miniView.isShowingTab = true
+        let model = makeModel([apple], indicator: indicator, miniView: miniView)
+
+        model.hotkeyDidStartPress()
+        try await waitUntil("the tab hears of the recording") { miniView.works.contains(where: self.isRecording) }
+        model.hotkeyDidEndPress()
+        try await waitUntil("the tab hears of the transcribing") { miniView.works.contains(.transcribing) }
+        apple.isHeld = false
+        try await waitUntil("the text is pasted and the work is over") {
+            self.paster.pasted == ["Hello there."] && miniView.works.last == .idle
+        }
+
+        XCTAssertFalse(indicator.everShown)
+        XCTAssertTrue(miniView.works.contains(where: isRecording))
+        XCTAssertEqual(miniView.outcomes.count, 1)
+        XCTAssertEqual(miniView.outcomes.first?.status, .pasted)
+    }
+
+    /// With the tab hidden (no window in front, full screen, or off), the
+    /// pill works as before.
+    @MainActor
+    func testThePillShowsWhenTheTabIsHidden() async throws {
+        let apple = appleEngine()
+        apple.isHeld = true
+        let indicator = FakeIndicator()
+        let miniView = FakeMiniView()
+        let model = makeModel([apple], indicator: indicator, miniView: miniView)
+
+        model.hotkeyDidStartPress()
+        try await waitUntil("it shows Listening") { indicator.showsListening }
+        model.hotkeyDidEndPress()
+        try await waitUntil("it shows Transcribing") { indicator.isShowing && indicator.state == .transcribing }
+        apple.isHeld = false
+        try await waitUntil("it hides once the text is pasted") { !indicator.isShowing }
+        XCTAssertEqual(miniView.outcomes.count, 1)
+    }
+
+    @MainActor
+    func testThePillComesBackWhenTheTabHidesMidDictation() async throws {
+        let indicator = FakeIndicator()
+        let miniView = FakeMiniView()
+        miniView.isShowingTab = true
+        let model = makeModel([appleEngine()], indicator: indicator, miniView: miniView)
+
+        model.hotkeyDidStartPress()
+        try await waitUntil("the tab hears of the recording") { miniView.works.contains(where: self.isRecording) }
+        XCTAssertFalse(indicator.isShowing)
+
+        miniView.isShowingTab = false
+        miniView.onTabShownOrHidden?()
+        XCTAssertTrue(indicator.showsListening)
+
+        model.hotkeyDidEndPress()
+        try await waitUntil("it hides once the text is pasted") { self.paster.pasted.count == 1 && !indicator.isShowing }
+    }
+
+    /// "Mini View" in the menu is saved, and the next launch turns the mini
+    /// view on again.
+    @MainActor
+    func testTheMiniViewSettingIsSavedAndRestored() {
+        let miniView = FakeMiniView()
+        let model = makeModel([appleEngine()], miniView: miniView)
+        XCTAssertFalse(model.miniViewEnabled, "off by default")
+
+        model.miniViewEnabled = true
+
+        XCTAssertTrue(preferences.miniViewEnabled)
+        XCTAssertEqual(miniView.enabledCalls, [true])
+        let secondMini = FakeMiniView()
+        let again = makeModel([appleEngine()], miniView: secondMini)
+        again.start()
+        XCTAssertEqual(secondMini.enabledCalls.last, true)
+    }
+
     // MARK: - An error shown over work under way (final fix wave, item A)
 
     // In each test a dictation is in line, held in the engine, and the next
@@ -899,13 +984,18 @@ final class AppModelTests: XCTestCase {
     @MainActor
     private func makeModel(_ engines: [FakeEngine], selected: ModelID = .appleSpeech,
                            system: OnboardingSystem = .fake(), indicator: FakeIndicator? = nil,
-                           apps: FakeApps? = nil, cleaner: TextCleaner? = nil) -> AppModel {
+                           apps: FakeApps? = nil, cleaner: TextCleaner? = nil,
+                           miniView: FakeMiniView? = nil) -> AppModel {
         AppModel(service: TranscriptionService(engines: engines, selected: selected),
                  recorder: recorder, paster: paster,
                  store: TranscriptStore(directory: directory, inMemory: true),
                  preferences: preferences, hotkeys: FakeHotkeys(), settingsSystem: FakeSettingsSystem().system,
                  dataDirectory: directory, onboardingSystem: system, indicator: indicator,
-                 pasteAgain: (apps ?? FakeApps()).system, cleaner: cleaner)
+                 pasteAgain: (apps ?? FakeApps()).system, cleaner: cleaner, miniView: miniView)
+    }
+
+    private func isRecording(_ work: DictationState) -> Bool {
+        if case .recording = work { true } else { false }
     }
 
     /// A dictation in line, held in `apple`, then a press whose recording

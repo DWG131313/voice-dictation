@@ -38,6 +38,7 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
       PasteEngine                            clipboard + tagged Cmd+V, the clipboard put back after
   → TranscriptStore (SwiftData) + AudioArchive (kept recordings); HistoryImporter brings in the old history.json
   → MenuBarContent, the main window (LibraryModel; Models, Vocabulary, Settings), Welcome (OnboardingModel), IndicatorPanel
+  → MiniViewController (MiniView/): a tab on the front window's edge and its click panel; FrontWindowTracker follows the window
   → Log (~/Library/Logs/VoiceDictation.log)
 ```
 
@@ -61,6 +62,7 @@ App/VoiceDictationApp (scenes only) → AppLifecycle → AppModel
 - Whole-transcript whisper hallucinations ("you", "Thank you.") are dropped (`OutputFilter`)
 - The clipboard is snapshotted and put back after a paste, unless something new was copied meanwhile
 - The event tap heals itself: a 15 s health check and a wake notification (`HotkeyManager`)
+- The mini view ("Mini View" in the menu, off by default) reads only the front window's subrole, full-screen and minimised state, position and size, through Accessibility notifications, never a timer, and never a title or contents; the paste reads the window's `AXDocument` for its folder. Its tab and panel never activate the app or become key; only the panel's Open does. The bottom pill hides while the tab shows
 - Menu bar SF Symbols fall back to `mic.fill`, so the icon never blanks (`MenuBarLabel.symbolName`)
 - `xcode-select` points at the Command Line Tools, so prefix `swift` and `xcodebuild` with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
 - Transcript and AlternateResult: add only optional or defaulted properties; anything else needs a VersionedSchema and a migration plan first, or the store is moved aside on launch.

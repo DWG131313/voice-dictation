@@ -41,6 +41,15 @@ public final class AppModel {
     /// Whether a double tap of the hotkey locks a recording, until another
     /// stops it, as saved ("Double-tap to dictate").
     public var doubleTapEnabled: Bool { preferences.doubleTapEnabled }
+    /// "Mini View", as saved: the tab on the edge of the window in front.
+    /// Setting it saves it and shows or hides the tab at once.
+    public var miniViewEnabled: Bool {
+        get { preferences.miniViewEnabled }
+        set {
+            preferences.miniViewEnabled = newValue
+            miniView?.setEnabled(newValue)
+        }
+    }
     /// The downloads under way, which Cancel cancels.
     @ObservationIgnored private var downloads: [ModelID: Task<Bool, Never>] = [:]
     /// The state each row's note was made in.
@@ -106,6 +115,8 @@ public final class AppModel {
     @ObservationIgnored private var indicatorLine = LevelLine()
     /// When the recording `indicatorLine` belongs to started.
     @ObservationIgnored private var indicatorRecordingStart: Date?
+    /// The mini view; none in tests that do not ask for one.
+    @ObservationIgnored private let miniView: MiniViewPresenting?
 
     /// The app's parts: the three engines with the model saved for dictation,
     /// the microphone saved in Settings, the paste, the on-device cleaner,
@@ -129,7 +140,8 @@ public final class AppModel {
             hotkeys: HotkeyManager(),
             dataDirectory: directory,
             indicator: IndicatorPanel(),
-            cleaner: FoundationModelCleaner()
+            cleaner: FoundationModelCleaner(),
+            miniView: MiniViewController(tracker: FrontWindowTracker(), preferences: preferences)
         )
     }
 
@@ -142,7 +154,7 @@ public final class AppModel {
          preferences: PreferencesManager, hotkeys: HotkeyListening, settingsSystem: SettingsModel.System? = nil,
          accessibilityGranted: (() -> Bool)? = nil, dataDirectory: URL,
          onboardingSystem: OnboardingSystem? = nil, indicator: IndicatorPresenting? = nil,
-         pasteAgain: PasteAgainSystem? = nil, cleaner: TextCleaner? = nil) {
+         pasteAgain: PasteAgainSystem? = nil, cleaner: TextCleaner? = nil, miniView: MiniViewPresenting? = nil) {
         // Once, at launch, before any view asks for Jost, Work Sans or DM Mono.
         Fonts.registerAll()
         self.service = service
@@ -173,6 +185,7 @@ public final class AppModel {
         self.settingsSystem = settingsSystem ?? .live()
         self.dataDirectory = dataDirectory
         self.indicator = indicator
+        self.miniView = miniView
 
         permissions.delegate = self
         hotkeys.delegate = self
@@ -184,7 +197,19 @@ public final class AppModel {
         listModelsWhenAMenuOpens()
         observeWorkForIndicator()
         // Every slice, each at the time it was captured (Task 24A).
-        pipeline.onLevel = { [weak self] peak, time in self?.updateIndicator(level: (peak, time)) }
+        pipeline.onLevel = { [weak self] peak, time in
+            self?.miniView?.heard(peak: peak, at: time)
+            self?.updateIndicator(level: (peak, time))
+        }
+        // The panel's newest transcript and its Copy are the window's; its
+        // Open brings the app forward on purpose, with the main window.
+        miniView?.connect(latest: { store.latest },
+                          copy: { [library] in library.copy($0) },
+                          openMainWindow: { [weak self] in
+                              NSApp.activate()
+                              self?.requestMainWindow()
+                          })
+        miniView?.onTabShownOrHidden = { [weak self] in self?.updateIndicator() }
     }
 
     /// Starts the app; called once, when launching has finished. Imports the
@@ -221,6 +246,10 @@ public final class AppModel {
         // A dictation needs no model ready to start (Review Focus 1): it
         // waits for the model, or fails and is kept with its audio.
         startListening()
+
+        // The mini view as it was left. Without Accessibility its tab finds
+        // no window, and the pill shows as before.
+        miniView?.setEnabled(preferences.miniViewEnabled)
 
         // Loads the cleanup model, off the main thread, so a dictation soon
         // after launch is not slowed by the load. The pipeline readies it
@@ -421,7 +450,7 @@ public final class AppModel {
         }
     }
 
-    // MARK: - The indicator
+    // MARK: - The indicator and the mini view
 
     // `withObservationTracking` reports a change once, as the value is about
     // to be set. So the handler reads the new state a turn later on the main
@@ -433,8 +462,10 @@ public final class AppModel {
             _ = pipeline.work
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.observeWorkForIndicator()
-                self?.updateIndicator()
+                guard let self else { return }
+                observeWorkForIndicator()
+                miniView?.workChanged(pipeline.work)
+                updateIndicator()
             }
         }
     }
@@ -447,7 +478,9 @@ public final class AppModel {
     /// slice was captured, never when it got here (Task 24A), so the line
     /// advances evenly however the slices bunch on the way. Showing the
     /// indicator never activates the app or changes its activation policy
-    /// (`IndicatorPanel`), so it stays out of `WindowPolicy`.
+    /// (`IndicatorPanel`), so it stays out of `WindowPolicy`. While the mini
+    /// view's tab shows, it says the same, so the indicator stays hidden; its
+    /// line still hears every slice, for when the tab hides mid-dictation.
     private func updateIndicator(level: (peak: Float, at: TimeInterval)? = nil) {
         let state = pipeline.work
         guard IndicatorView.words(for: state) != nil else {
@@ -462,6 +495,10 @@ public final class AppModel {
             if let level {
                 indicatorLine.add(peak: level.peak, at: level.at)
             }
+        }
+        guard miniView?.isShowingTab != true else {
+            indicator?.hide()
+            return
         }
         indicator?.show(state, line: indicatorLine)
     }
@@ -493,6 +530,7 @@ public final class AppModel {
     /// the window's list then shows, open or not.
     private func finished(_ outcome: DictationOutcome) {
         let transcript = store.add(outcome)
+        miniView?.finished(outcome)
         onboarding.recordOutcome(outcome)
         if let transcript { library.noteNewTranscript(transcript) }
     }
