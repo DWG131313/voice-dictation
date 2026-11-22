@@ -101,8 +101,18 @@ final class MiniViewController: MiniViewPresenting {
             recordingStart = since
             line.reset()
             closePanel()
+            endOldWord()
         }
         draw()
+    }
+
+    /// A new take ends the last word ("or sooner when the next dictation
+    /// starts"), so a take with no outcome cannot bring it back. The time stays
+    /// on its window; only the word's age is made past.
+    private func endOldWord() {
+        wakeUp?.cancel()
+        guard let old = result else { return }
+        result = MiniTabResult(status: old.status, dictated: old.dictated, arrived: .distantPast, window: old.window)
     }
 
     func heard(peak: Float, at time: TimeInterval) {

@@ -53,6 +53,42 @@ final class MiniViewControllerTests: XCTestCase {
         XCTAssertEqual(controller.result?.window, terminal.id, "switching later does not move it")
     }
 
+    /// Switching apps mid-dictation: the result belongs to the window in
+    /// front when it pasted, and Pasted shows only there.
+    func testSwitchingWindowsMidDictationPutsTheResultOnTheWindowThatPasted() {
+        controller.setEnabled(true)
+        watcher.send(terminal)
+        controller.workChanged(.recording(since: Date()))
+        watcher.send(notes)
+        controller.workChanged(.transcribing)
+        controller.finished(outcome(.pasted))
+        controller.workChanged(.idle)
+
+        XCTAssertEqual(controller.result?.window, notes.id)
+        let now = Date()
+        XCTAssertEqual(MiniTab.face(work: .idle, result: controller.result, window: notes.id, now: now).word, "PASTED")
+        XCTAssertNotEqual(MiniTab.face(work: .idle, result: controller.result, window: terminal.id, now: now).word,
+                          "PASTED")
+    }
+
+    /// A take that ends with no outcome (Escape, a tap, silence) must not
+    /// bring back the last take's word: the new recording ends it, keeping
+    /// the time on its window.
+    func testARecordingWithNoOutcomeDoesNotBringBackTheOldWord() {
+        controller.setEnabled(true)
+        watcher.send(terminal)
+        controller.finished(outcome(.pasted))
+
+        controller.workChanged(.recording(since: Date()))
+        controller.workChanged(.idle)
+
+        let face = MiniTab.face(work: .idle, result: controller.result, window: terminal.id, now: Date())
+        XCTAssertNil(face.word)
+        XCTAssertEqual(face.mark, .restLine)
+        XCTAssertNotNil(face.time, "the time stays on its window")
+        XCTAssertTrue(face.timeIsMuted)
+    }
+
     func testCopyFromThePanelCopiesTheNewestTranscript() {
         let newest = Transcript(date: Date(), text: "Hello there.", rawText: "Hello there.", appName: "Terminal",
                                 modelKey: "m", recordingSeconds: 2, transcribeSeconds: 0.3, statusRaw: "pasted")
