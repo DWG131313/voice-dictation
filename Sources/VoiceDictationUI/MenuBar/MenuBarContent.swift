@@ -74,16 +74,16 @@ public struct MenuBarContent: View {
         .keyboardShortcut("q")
     }
 
-    /// The models, one group per engine with no heading, the default's
-    /// first, and the one dictation uses checked. `AppModel` lists them
-    /// again whenever a menu opens.
+    /// The same list as the sidebar's picker (`ModelPicker`): the speed
+    /// ladder, then Apple's two, each with ✓ or ↓ and its line. `AppModel`
+    /// lists the models again whenever a menu opens.
     private var modelMenu: some View {
         Menu(Self.modelMenuTitle(models: model.models, selected: model.selectedModel)) {
             if model.models.isEmpty {
                 Text("Loading models…")
             }
-            ForEach(Self.modelSections(model.models)) { section in
-                Section { modelItems(section.models) }
+            ModelPickerItems(sections: ModelPicker.sections(model.models, selected: model.selectedModel)) { descriptor in
+                Task { await model.choose(descriptor) }
             }
         }
     }
@@ -93,21 +93,6 @@ public struct MenuBarContent: View {
         let entry = Self.updatesEntry(updates)
         return Button(entry.title, action: entry.action)
             .disabled(!entry.isEnabled)
-    }
-
-    /// A toggle draws the checkmark. Choosing the checked model goes through
-    /// `choose` too: that is how "Download Apple Speech" works for the model
-    /// already in use.
-    private func modelItems(_ models: [ModelDescriptor]) -> some View {
-        ForEach(models) { descriptor in
-            let entry = Self.menuEntry(for: descriptor)
-            Toggle(entry.title, isOn: Binding(
-                get: { descriptor.id == model.selectedModel },
-                set: { _ in Task { await model.choose(descriptor) } }
-            ))
-            .disabled(!entry.isEnabled)
-            .help(descriptor.detail)
-        }
     }
 
     // MARK: - What the menu says
@@ -133,28 +118,6 @@ public struct MenuBarContent: View {
         return "Model: \(name)"
     }
 
-    /// One engine's models in the Model submenu.
-    struct ModelSection: Identifiable {
-        let engine: EngineKind
-        var models: [ModelDescriptor]
-
-        var id: EngineKind { engine }
-    }
-
-    /// The models grouped by engine, in the order they are listed, which is
-    /// the order of `AppModel.engines()`.
-    static func modelSections(_ models: [ModelDescriptor]) -> [ModelSection] {
-        var sections: [ModelSection] = []
-        for model in models {
-            if let index = sections.firstIndex(where: { $0.engine == model.id.engine }) {
-                sections[index].models.append(model)
-            } else {
-                sections.append(ModelSection(engine: model.id.engine, models: [model]))
-            }
-        }
-        return sections
-    }
-
     /// "Check for Updates…", greyed out while Sparkle is already checking;
     /// choosing it asks Sparkle to check now.
     static func updatesEntry(_ updates: any UpdateChecking)
@@ -162,23 +125,6 @@ public struct MenuBarContent: View {
         ("Check for Updates…", updates.canCheckForUpdates, { updates.checkForUpdates() })
     }
 
-    /// How a model reads in the Model submenu, and whether choosing it does
-    /// anything. A model that is not on the Mac offers its download, which
-    /// then selects it.
-    static func menuEntry(for model: ModelDescriptor) -> (title: String, isEnabled: Bool) {
-        switch model.state {
-        case .ready:
-            return (model.displayName, true)
-        case .notDownloaded:
-            return ("Download \(model.displayName)", true)
-        case .preparing:
-            return ("\(model.displayName) — preparing", true)
-        case .downloading(let progress):
-            return ("\(model.displayName) — downloading \(Int(progress * 100))%", false)
-        case .unavailable(let reason):
-            return ("\(model.displayName) — \(reason)", false)
-        }
-    }
 }
 
 /// The menu bar icon: today's symbols, drawn as a template image that the

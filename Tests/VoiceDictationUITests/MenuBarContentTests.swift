@@ -12,54 +12,7 @@ final class MenuBarContentTests: XCTestCase {
         .preparingModel("Apple Speech"), .error("Microphone in use by another app"), .needsPermission("Accessibility"),
     ]
 
-    // MARK: - The Model submenu's entries (moved from StatusManagerTests)
-
-    func testReadyModelIsChosenByName() {
-        let entry = MenuBarContent.menuEntry(for: model(.ready))
-        XCTAssertEqual(entry.title, "Apple Speech")
-        XCTAssertTrue(entry.isEnabled)
-    }
-
-    /// A model not on the Mac offers its download, which then selects it.
-    func testNotDownloadedModelOffersDownload() {
-        let entry = MenuBarContent.menuEntry(for: model(.notDownloaded))
-        XCTAssertEqual(entry.title, "Download Apple Speech")
-        XCTAssertTrue(entry.isEnabled)
-    }
-
-    func testPreparingModelCanStillBeChosen() {
-        let entry = MenuBarContent.menuEntry(for: model(.preparing))
-        XCTAssertEqual(entry.title, "Apple Speech — preparing")
-        XCTAssertTrue(entry.isEnabled)
-    }
-
-    func testDownloadingModelShowsProgressAndWaits() {
-        let entry = MenuBarContent.menuEntry(for: model(.downloading(0.42)))
-        XCTAssertEqual(entry.title, "Apple Speech — downloading 42%")
-        XCTAssertFalse(entry.isEnabled)
-    }
-
-    func testUnavailableModelSaysWhy() {
-        let entry = MenuBarContent.menuEntry(for: model(.unavailable("Not supported on this Mac")))
-        XCTAssertEqual(entry.title, "Apple Speech — Not supported on this Mac")
-        XCTAssertFalse(entry.isEnabled)
-    }
-
-    // MARK: - The submenu's layout
-
-    /// One group per engine, with no heading, in the order the service lists
-    /// them, which is the order of the app's engines: whisper.cpp, the
-    /// default, first.
-    @MainActor
-    func testModelsAreGroupedByEngineWithNoHeadings() {
-        let listed = AppModel.engines().map(\.kind).flatMap { kind in models.filter { $0.id.engine == kind } }
-
-        let sections = MenuBarContent.modelSections(listed)
-
-        XCTAssertEqual(sections.map(\.engine), [.whisperCpp, .appleSpeech, .whisperKit])
-        XCTAssertEqual(sections.map { $0.models.map(\.displayName) },
-                       [["whisper.cpp base.en"], ["Apple Speech", "Apple Dictation"], ["tiny.en", "base.en"]])
-    }
+    // MARK: - The Model submenu (its list is ModelPickerTests')
 
     func testModelSubmenuIsTitledWithTheModelInUse() {
         XCTAssertEqual(MenuBarContent.modelMenuTitle(models: models, selected: .appleDictation), "Model: Apple Dictation")
@@ -138,10 +91,6 @@ final class MenuBarContentTests: XCTestCase {
     }
 
     // MARK: - Helpers
-
-    private func model(_ state: ModelDescriptor.State) -> ModelDescriptor {
-        ModelDescriptor(id: .appleSpeech, displayName: "Apple Speech", detail: "", state: state)
-    }
 
     private var models: [ModelDescriptor] {
         [
