@@ -34,8 +34,8 @@ targets:
       properties:
         CFBundleName: VoiceDictation
         CFBundleDisplayName: VoiceDictation
-        CFBundleShortVersionString: "1.0.1"
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "3"
         # Menu bar only: no Dock icon until the window opens.
         LSUIElement: true
         NSMicrophoneUsageDescription: VoiceDictation needs microphone access to record your voice for transcription.
