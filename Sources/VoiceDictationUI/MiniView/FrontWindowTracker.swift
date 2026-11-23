@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import QuartzCore
 import VoiceDictationLib
 
 /// Watches which window is in front and where it is, for the mini view's tab.
@@ -12,13 +13,27 @@ import VoiceDictationLib
 }
 
 /// Follows the frontmost app through `NSWorkspace` and its focused window
-/// through one `AXObserver`: macOS's notifications, never a timer. It reads
-/// only a window's subrole, full-screen and minimised state, position and
-/// size; never its title or contents. Without Accessibility, `current` stays
-/// nil. VoiceDictation's own windows are not followed.
+/// through one `AXObserver`: macOS's notifications. While the window moves,
+/// its bounds are also read from the window server every screen frame, until
+/// it has been still for a moment (`MoveFollower`); no timer runs otherwise.
+/// It reads only a window's subrole, full-screen and minimised state,
+/// position and size; never its title or contents. Without Accessibility,
+/// `current` stays nil. VoiceDictation's own windows are not followed.
 @MainActor final class FrontWindowTracker: FrontWindowWatching {
     var onChange: ((FrontWindow?) -> Void)?
     private(set) var current: FrontWindow?
+
+    /// Tries again to follow an app too busy to answer, just launched.
+    private var retry = FollowRetry()
+    private var retryTask: Task<Void, Never>?
+
+    /// While the window moves: the per-frame rule, its tick, and the window
+    /// server's number for the window (found when it is focused).
+    private var follower = MoveFollower()
+    private var ticker: DisplayTicker?
+    private var serverNumber: CGWindowID?
+    /// The focused window's frame as Accessibility last gave it, top-left.
+    private var axFrame: CGRect?
 
     /// The front app being followed, and the observer that tells of it.
     private struct FollowedApp {
@@ -69,6 +84,8 @@ import VoiceDictationLib
     func stop() {
         if let activation { NSWorkspace.shared.notificationCenter.removeObserver(activation) }
         activation = nil
+        retryTask?.cancel()
+        retryTask = nil
         unfollowApp()
         current = nil
     }
@@ -79,6 +96,8 @@ import VoiceDictationLib
         switch notification {
         case kAXFocusedWindowChangedNotification, kAXUIElementDestroyedNotification:
             focusChanged()
+        case kAXMovedNotification, kAXResizedNotification:
+            moved()
         default:
             refresh()
         }
@@ -87,8 +106,11 @@ import VoiceDictationLib
     // MARK: - Following
 
     /// The app now in front: a new observer for a new app, a fresh read of
-    /// the same one.
-    private func follow(pid: pid_t?) {
+    /// the same one. An app too busy to answer is tried again (`FollowRetry`).
+    private func follow(pid: pid_t?, retrying: Bool = false) {
+        retryTask?.cancel()
+        retryTask = nil
+        if !retrying { retry.reset() }
         guard let pid, pid != ProcessInfo.processInfo.processIdentifier, AXIsProcessTrusted() else {
             unfollowApp()
             update(nil)
@@ -96,25 +118,45 @@ import VoiceDictationLib
         }
         if app?.pid != pid {
             unfollowApp()
-            app = Self.observe(pid: pid, refcon: Unmanaged.passUnretained(self).toOpaque())
+            switch Self.observe(pid: pid, refcon: Unmanaged.passUnretained(self).toOpaque()) {
+            case .followed(let followed):
+                app = followed
+            case .failed(let error):
+                tryAgainLater(pid: pid, after: error)
+            }
         }
         focusChanged()
     }
 
-    private static func observe(pid: pid_t, refcon: UnsafeMutableRawPointer) -> FollowedApp? {
-        var created: AXObserver?
-        guard AXObserverCreate(pid, frontWindowNotified, &created) == .success, let observer = created else {
-            return nil
+    /// Follows `pid` again after a wait, while it is still in front; or gives up.
+    private func tryAgainLater(pid: pid_t, after error: AXError) {
+        guard let delay = retry.failed(error) else {
+            Log.info("[MINI] Cannot follow the front app's windows (AXError \(error.rawValue))")
+            return
         }
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+            self?.follow(pid: pid, retrying: true)
+        }
+    }
+
+    /// An app followed, or why it could not be.
+    private enum Observed {
+        case followed(FollowedApp)
+        case failed(AXError)
+    }
+
+    private static func observe(pid: pid_t, refcon: UnsafeMutableRawPointer) -> Observed {
+        var created: AXObserver?
+        let made = AXObserverCreate(pid, frontWindowNotified, &created)
+        guard made == .success, let observer = created else { return .failed(made) }
         let element = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(element, messagingTimeout)
         let added = AXObserverAddNotification(observer, element, kAXFocusedWindowChangedNotification as CFString, refcon)
-        guard added == .success else {
-            Log.info("[MINI] Cannot follow the front app's windows (AXError \(added.rawValue))")
-            return nil
-        }
+        guard added == .success else { return .failed(added) }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        return FollowedApp(pid: pid, element: element, observer: observer)
+        return .followed(FollowedApp(pid: pid, element: element, observer: observer))
     }
 
     private func unfollowApp() {
@@ -139,9 +181,13 @@ import VoiceDictationLib
             window = focused
         }
         refresh()
+        // Usually still now, so its frame matches the window server's exactly.
+        serverNumber = matchServerNumber()
     }
 
     private func unwatchWindow() {
+        stopFollowingMoves()
+        serverNumber = nil
         if let app, let window {
             for name in Self.windowNotifications {
                 AXObserverRemoveNotification(app.observer, window, name as CFString)
@@ -158,15 +204,78 @@ import VoiceDictationLib
                          isMinimized: Self.attribute(window, kAXMinimizedAttribute) as? Bool ?? false,
                          isOwnApp: app.pid == ProcessInfo.processInfo.processIdentifier),
               let position = Self.position(window), let size = Self.size(window) else {
+            axFrame = nil
             update(nil)
             return
         }
+        axFrame = CGRect(origin: position, size: size)
         let frame = MiniViewLayout.appKitFrame(axPosition: position, axSize: size,
                                                primaryScreenHeight: primary.frame.height)
-        let centre = CGPoint(x: frame.midX, y: frame.midY)
-        let screen = NSScreen.screens.first { $0.frame.contains(centre) } ?? primary
         update(FrontWindow(id: WindowIdentity(pid: app.pid, token: WindowToken(element: window)),
-                           frame: frame, visibleFrame: screen.visibleFrame))
+                           frame: frame, visibleFrame: Self.screen(containing: frame, primary: primary).visibleFrame))
+    }
+
+    /// The screen with the frame's centre on it, else the primary one.
+    private static func screen(containing frame: CGRect, primary: NSScreen) -> NSScreen {
+        let centre = CGPoint(x: frame.midX, y: frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(centre) } ?? primary
+    }
+
+    // MARK: - Moving windows
+
+    /// A move or resize report. The first starts following the window every
+    /// screen frame; while following, a report only keeps it going, since its
+    /// position can trail the window server's and would pull the tab back.
+    private func moved() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if ticker != nil, let current {
+            follower.reported(current.frame, at: now)
+            return
+        }
+        refresh()
+        guard let current, app != nil, let primary = NSScreen.screens.first else { return }
+        if serverNumber == nil { serverNumber = matchServerNumber() }
+        guard serverNumber != nil else { return }
+        follower.reported(current.frame, at: now)
+        let ticker = DisplayTicker { [weak self] in self?.followTick() }
+        ticker.start(on: Self.screen(containing: current.frame, primary: primary))
+        self.ticker = ticker
+    }
+
+    /// One screen frame while the window moves: the tab goes where the
+    /// window server has the window. Once it has been still, Accessibility
+    /// has the last word.
+    private func followTick() {
+        guard let serverNumber, let current, let primary = NSScreen.screens.first else {
+            stopFollowingMoves()
+            return
+        }
+        let frame = WindowServerFrame.frame(of: serverNumber).map {
+            MiniViewLayout.appKitFrame(axPosition: $0.origin, axSize: $0.size, primaryScreenHeight: primary.frame.height)
+        }
+        switch follower.tick(frame, at: ProcessInfo.processInfo.systemUptime) {
+        case .moved(let frame):
+            update(FrontWindow(id: current.id, frame: frame,
+                               visibleFrame: Self.screen(containing: frame, primary: primary).visibleFrame))
+        case .still:
+            break
+        case .stop:
+            stopFollowingMoves()
+            refresh()
+        }
+    }
+
+    private func stopFollowingMoves() {
+        ticker?.stop()
+        ticker = nil
+        follower.cancel()
+    }
+
+    /// The window server's number for the focused window, matched on its
+    /// app and its frame; nil when that is not one window exactly.
+    private func matchServerNumber() -> CGWindowID? {
+        guard let app, let axFrame else { return nil }
+        return WindowServerFrame.number(pid: app.pid, frame: axFrame, in: WindowServerFrame.onScreen())
     }
 
     private func update(_ window: FrontWindow?) {
@@ -218,4 +327,32 @@ private func frontWindowNotified(_ observer: AXObserver, _ element: AXUIElement,
     let tracker = Unmanaged<FrontWindowTracker>.fromOpaque(refcon).takeUnretainedValue()
     let name = notification as String
     MainActor.assumeIsolated { tracker.handle(name) }
+}
+
+/// Calls `tick` once per frame of a screen, from `start` until `stop`: the
+/// display link the tracker runs only while a window moves.
+@MainActor private final class DisplayTicker: NSObject {
+    private let tick: () -> Void
+    private var link: CADisplayLink?
+
+    init(_ tick: @escaping () -> Void) {
+        self.tick = tick
+        super.init()
+    }
+
+    func start(on screen: NSScreen) {
+        let link = screen.displayLink(target: self, selector: #selector(fire))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    /// The link holds its target, so it is let go here.
+    func stop() {
+        link?.invalidate()
+        link = nil
+    }
+
+    @objc private func fire(_ link: CADisplayLink) {
+        tick()
+    }
 }
