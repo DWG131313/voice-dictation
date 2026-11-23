@@ -20,7 +20,7 @@ IDENTITY="Developer ID Application"
 NOTARY_PROFILE="voicedictation-notary"
 TEAM_ID="F7DL4CTLLL"   # same as DEVELOPMENT_TEAM in project.yml
 
-BUILD_DIR="dist/build"          # scratch: archive, export, notarisation zip, appcast
+BUILD_DIR="dist/build.noindex"  # scratch: archive, export, notarisation zip, appcast; .noindex keeps Spotlight (and the App Library) from listing the exported app
 ARCHIVE="$BUILD_DIR/VoiceDictation.xcarchive"
 EXPORT_DIR="$BUILD_DIR/export"
 APP="$EXPORT_DIR/VoiceDictation.app"
