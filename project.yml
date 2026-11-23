@@ -69,3 +69,9 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: Apple Development
+          # The dev build is its own app to macOS: its own microphone and
+          # Accessibility permissions and its own settings. Sharing the
+          # released app's identity, but not its signature, meant allowing
+          # the dev build the microphone took it from the installed app.
+          # Transcripts, models and vocabulary are still shared.
+          PRODUCT_BUNDLE_IDENTIFIER: com.danny.VoiceDictation.dev
