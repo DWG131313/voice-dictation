@@ -289,6 +289,16 @@ public actor TranscriptionService {
         }
     }
 
+    /// Unloads every engine, and returns once their models are freed.
+    /// Quitting calls it (`AppLifecycle`): a whisper.cpp model still alive
+    /// when the app exits holds Metal memory, and whisper.cpp aborts the exit
+    /// (`ggml_metal_rsets_free`). A model still transcribing is freed when it
+    /// finishes.
+    public func unloadAll() async {
+        for engine in engines { unload(engine.kind, because: "quitting") }
+        for engine in engines { await unloads[engine.kind]?.value }
+    }
+
     /// Unloads the engine now. Its models are prepared again before their
     /// next use, and that prepare waits for this unload to finish.
     private func unload(_ kind: EngineKind, because reason: String) {

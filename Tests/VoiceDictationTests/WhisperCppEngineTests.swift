@@ -283,6 +283,31 @@ final class WhisperCppEngineTests: XCTestCase {
         XCTAssertEqual(loaded, [])
     }
 
+    /// Quitting frees every whisper.cpp context before the app exits: one
+    /// still alive then holds Metal memory, and `ggml_metal_rsets_free`
+    /// aborts the exit (the "quit unexpectedly" reports of 2026-11-20 and
+    /// 2026-11-22). The loader keeps a weak hold on the context it opens, so
+    /// the test sees `whisper_free` run.
+    func testUnloadAllFreesTheContextBeforeReturning() async throws {
+        final class Watch: @unchecked Sendable { weak var context: WhisperContext? }
+        let watch = Watch()
+        let engine = WhisperCppEngine(directory: try Self.appModels(), loader: { url in
+            let context = WhisperContext.open(url)
+            watch.context = context
+            return context
+        })
+        guard await engine.models().first(where: { $0.id == base })?.state == .ready else {
+            throw XCTSkip("ggml-base.en.bin is not in the app's models folder")
+        }
+        let service = TranscriptionService(engines: [engine], selected: base)
+        await service.prepareSelected()
+        XCTAssertNotNil(watch.context, "base.en is loaded")
+
+        await service.unloadAll()
+
+        XCTAssertNil(watch.context, "whisper_free has run")
+    }
+
     func testPrepareReportsPreparing() async throws {
         try makeFile("ggml-base.en.bin", bytes: 147_964_211)
         let engine = WhisperCppEngine(directory: directory, loader: { _ in

@@ -309,6 +309,13 @@ public final class AppModel {
         return true
     }
 
+    // MARK: - Quitting
+
+    /// Frees every speech model before the app exits (`AppLifecycle`).
+    func prepareToQuit() async {
+        await service.unloadAll()
+    }
+
     // MARK: - Models
 
     /// Lists every model again, and the one dictation uses. A model this app
@@ -651,6 +658,22 @@ extension AppModel: @preconcurrency HotkeyDelegate {
     }
 }
 
+/// The answer to AppKit's "may the app quit?", sent once: by whichever comes
+/// first, the models being freed or the time limit.
+@MainActor
+private final class QuitReply {
+    private var reply: ((Bool) -> Void)?
+
+    init(_ reply: @escaping @MainActor (Bool) -> Void) {
+        self.reply = reply
+    }
+
+    func send() {
+        reply?(true)
+        reply = nil
+    }
+}
+
 /// The app's AppKit side, installed by `VoiceDictationApp` through
 /// `@NSApplicationDelegateAdaptor`. It builds the `AppModel` when first asked
 /// for it and starts it once launching has finished. It keeps the app in the
@@ -714,6 +737,27 @@ public final class AppLifecycle: NSObject, NSApplicationDelegate {
     /// app would be gone by then.
     public func applicationWillTerminate(_ notification: Notification) {
         model.library.commitEdit()
+    }
+
+    /// How long quitting waits, at most, for the speech models to be freed.
+    static let quitWait: Duration = .seconds(2)
+
+    /// Quitting (Quit in the menu, ⌘Q, Sparkle's update, a logout) frees the
+    /// speech models first: whisper.cpp aborts the exit, and macOS reports
+    /// a crash, if a model still holds Metal memory then.
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        quitWhenModelsAreFreed(within: Self.quitWait) { sender.reply(toApplicationShouldTerminate: $0) }
+        return .terminateLater
+    }
+
+    /// Calls `reply(true)` once the models are freed or once `limit` has
+    /// passed, whichever comes first, and only once; a slow unload never
+    /// holds the quit up.
+    func quitWhenModelsAreFreed(within limit: Duration, reply: @escaping @MainActor (Bool) -> Void) {
+        let once = QuitReply(reply)
+        let model = model
+        Task { await model.prepareToQuit(); once.send() }
+        Task { try? await Task.sleep(for: limit); once.send() }
     }
 
     /// Closing the window leaves the app running in the menu bar.

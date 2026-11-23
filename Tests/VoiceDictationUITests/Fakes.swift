@@ -94,7 +94,21 @@ final class FakeEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     func delete(_ model: ModelID) async throws {}
-    func unload() async {}
+
+    private var _unloads = 0
+    private var _unloadDelay: TimeInterval = 0
+    /// How many times `unload` has finished.
+    var unloads: Int { lock.withLock { _unloads } }
+    /// How long each `unload` takes, in seconds.
+    var unloadDelay: TimeInterval {
+        get { lock.withLock { _unloadDelay } }
+        set { lock.withLock { _unloadDelay = newValue } }
+    }
+
+    func unload() async {
+        if unloadDelay > 0 { try? await Task.sleep(for: .seconds(unloadDelay)) }
+        lock.withLock { _unloads += 1 }
+    }
 }
 
 /// A cleaner that replies after `delay` seconds; state behind one lock.

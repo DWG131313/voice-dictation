@@ -825,6 +825,45 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(t.isEdited)
     }
 
+    /// Quitting frees the speech models first, then lets the quit go on:
+    /// whisper.cpp aborts the exit, and macOS reports a crash, if a model
+    /// still holds Metal memory then (the reports of 2026-11-20 and -22).
+    @MainActor
+    func testQuittingFreesTheModelsBeforeTheQuitGoesOn() async {
+        let engine = appleEngine()
+        let lifecycle = AppLifecycle(model: makeModel([engine]))
+        let wentOn = expectation(description: "the quit goes on")
+
+        lifecycle.quitWhenModelsAreFreed(within: .seconds(5)) { quit in
+            XCTAssertTrue(quit)
+            XCTAssertEqual(engine.unloads, 1, "freed before the quit goes on")
+            wentOn.fulfill()
+        }
+
+        await fulfillment(of: [wentOn], timeout: 5)
+    }
+
+    /// A model slow to free never holds the quit up past the limit, and the
+    /// quit goes on once only, even when the freeing finishes later.
+    @MainActor
+    func testQuittingGoesOnOnceWhenFreeingTakesTooLong() async throws {
+        let engine = appleEngine()
+        engine.unloadDelay = 0.5
+        let lifecycle = AppLifecycle(model: makeModel([engine]))
+        let wentOn = expectation(description: "the quit goes on")
+        let started = Date()
+
+        lifecycle.quitWhenModelsAreFreed(within: .milliseconds(100)) { quit in
+            XCTAssertTrue(quit)
+            XCTAssertLessThan(Date().timeIntervalSince(started), 0.4, "not held up by the slow unload")
+            wentOn.fulfill()
+        }
+
+        await fulfillment(of: [wentOn], timeout: 2)
+        try await Task.sleep(for: .seconds(0.8))
+        XCTAssertEqual(engine.unloads, 1, "the slow unload has finished, and the quit went on only once")
+    }
+
     // MARK: - Windows and Paste again (Ruling T19-5)
 
     /// A real opening of the main window activates the app and opens the
